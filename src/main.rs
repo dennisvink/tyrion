@@ -43,6 +43,7 @@ struct Program {
 #[derive(Debug, Clone)]
 enum Stmt {
     Function { name: String, params: Vec<String>, body: Vec<Stmt> },
+    Class { name: String, methods: Vec<Stmt> },
     Assign { target: AssignTarget, expr: Expr, op: AssignOp },
     Print { args: Vec<Expr> },
     ExprStmt { expr: Expr },
@@ -73,6 +74,7 @@ struct ExceptHandler {
 enum AssignTarget {
     Name(String),
     Subscript { object: Expr, index: Expr },
+    Attr { object: Expr, attr: String },
     Tuple { items: Vec<AssignTarget> },
     Starred(String),
 }
@@ -131,6 +133,10 @@ enum Expr {
         object: Box<Expr>,
         method: String,
         arg: Option<Box<Expr>>,
+    },
+    Attr {
+        object: Box<Expr>,
+        attr: String,
     },
 }
 
@@ -270,6 +276,8 @@ fn parse_statement(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stm
         parse_def(lines, idx, indent)
     } else if content.starts_with("return") {
         parse_return(lines, idx)
+    } else if content.starts_with("class ") {
+        parse_class(lines, idx, indent)
     } else if content.starts_with("try") {
         parse_try(lines, idx, indent)
     } else if content.starts_with("raise") {
@@ -542,6 +550,57 @@ fn parse_def(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usi
     let body_indent = lines[idx + 1].indent;
     let (body, next_idx) = parse_block(lines, idx + 1, body_indent)?;
     Ok((Stmt::Function { name: name.to_string(), params, body }, next_idx))
+}
+
+fn parse_class(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usize), ParseError> {
+    let line = &lines[idx];
+    let content = line.content.as_str();
+    let colon = content.find(':').ok_or_else(|| {
+        parse_error(
+            line.line_no,
+            line.indent + content.len(),
+            "Expected ':' after class name",
+            &line.raw,
+        )
+    })?;
+    let name = content[5..colon].trim();
+    if !is_valid_ident(name) {
+        return Err(parse_error(line.line_no, line.indent + 1, "Invalid class name", &line.raw));
+    }
+    if !content[colon + 1..].trim().is_empty() {
+        return Err(parse_error(
+            line.line_no,
+            line.indent + colon + 2,
+            "Unexpected characters after ':'",
+            &line.raw,
+        ));
+    }
+    if idx + 1 >= lines.len() || lines[idx + 1].indent <= indent {
+        return Err(parse_error(
+            line.line_no,
+            line.indent + colon + 1,
+            "Missing indented block after class",
+            &line.raw,
+        ));
+    }
+    let body_indent = lines[idx + 1].indent;
+    let (body, next_idx) = parse_block(lines, idx + 1, body_indent)?;
+    // filter methods
+    let mut methods = Vec::new();
+    for stmt in body {
+        match stmt {
+            Stmt::Function { .. } => methods.push(stmt),
+            _ => {
+                return Err(parse_error(
+                    line.line_no,
+                    line.indent + 1,
+                    "Only method definitions are allowed inside class",
+                    &line.raw,
+                ))
+            }
+        }
+    }
+    Ok((Stmt::Class { name: name.to_string(), methods }, next_idx))
 }
 
 fn parse_return(lines: &[LineInfo], idx: usize) -> Result<(Stmt, usize), ParseError> {
@@ -1061,6 +1120,16 @@ fn parse_assign_target(segment: &str, line_no: usize, column_offset: usize, line
                 line_no,
                 lhs_offset,
                 "Can only assign to a variable subscript",
+                line_src,
+            )),
+        },
+        Expr::Attr { object, attr } => match *object {
+            Expr::Var(name) => Ok(AssignTarget::Attr { object: Expr::Var(name), attr }),
+            Expr::Attr { .. } => Ok(AssignTarget::Attr { object: *object, attr }),
+            _ => Err(parse_error(
+                line_no,
+                lhs_offset,
+                "Can only assign to an attribute of a variable or attribute",
                 line_src,
             )),
         },
@@ -1720,48 +1789,50 @@ fn parse_method_call(
     }
     let method = &segment[ident_start..i];
     i = skip_ws(bytes, i);
-    if i >= bytes.len() || bytes[i] != b'(' {
-        return Err(parse_error(
-            line_no,
-            column_offset + i + 1,
-            "Expected '(' after method name",
-            line_src,
-        ));
-    }
-    i += 1;
-    i = skip_ws(bytes, i);
-    if i >= bytes.len() {
-        return Err(parse_error(line_no, column_offset + i + 1, "Missing ')'", line_src));
-    }
-    let mut arg = None;
-    if bytes[i] != b')' {
-        let (expr, next) = parse_expression(segment, i, line_no, column_offset, line_src)?;
-        arg = Some(Box::new(expr));
-        i = skip_ws(bytes, next);
-        if i < bytes.len() && bytes[i] == b',' {
+    if i < bytes.len() && bytes[i] == b'(' {
+        // method call
+        i += 1;
+        i = skip_ws(bytes, i);
+        if i >= bytes.len() {
+            return Err(parse_error(line_no, column_offset + i + 1, "Missing ')'", line_src));
+        }
+        let mut arg = None;
+        if bytes[i] != b')' {
+            let (expr, next) = parse_expression(segment, i, line_no, column_offset, line_src)?;
+            arg = Some(Box::new(expr));
+            i = skip_ws(bytes, next);
+            if i < bytes.len() && bytes[i] == b',' {
+                return Err(parse_error(
+                    line_no,
+                    column_offset + i + 1,
+                    "Only one argument supported in method calls",
+                    line_src,
+                ));
+            }
+        }
+        if i >= bytes.len() || bytes[i] != b')' {
             return Err(parse_error(
                 line_no,
                 column_offset + i + 1,
-                "Only one argument supported in method calls",
+                "Missing ')' after method call",
                 line_src,
             ));
         }
-    }
-    if i >= bytes.len() || bytes[i] != b')' {
-        return Err(parse_error(
-            line_no,
-            column_offset + i + 1,
-            "Missing ')' after method call",
-            line_src,
+        return Ok((
+            Expr::MethodCall {
+                object: Box::new(object),
+                method: method.to_string(),
+                arg,
+            },
+            i + 1,
         ));
     }
     Ok((
-        Expr::MethodCall {
+        Expr::Attr {
             object: Box::new(object),
-            method: method.to_string(),
-            arg,
+            attr: method.to_string(),
         },
-        i + 1,
+        i,
     ))
 }
 
@@ -2092,6 +2163,9 @@ fn collect_targets_in_expr(expr: &Expr, set: &mut HashSet<String>) {
                 collect_targets_in_expr(a, set);
             }
         }
+        Expr::Attr { object, .. } => {
+            collect_targets_in_expr(object, set);
+        }
         _ => {}
     }
 }
@@ -2104,12 +2178,21 @@ fn collect_assigned_vars(program: &Program) -> Vec<String> {
                     set.insert(name.clone());
                     visit(body, set);
                 }
+                Stmt::Class { name, methods } => {
+                    set.insert(name.clone());
+                    visit(methods, set);
+                }
                 Stmt::Assign { target, expr, .. } => {
                     match target {
                         AssignTarget::Name(n) => {
                             set.insert(n.clone());
                         }
                         AssignTarget::Subscript { object, .. } => {
+                            if let Expr::Var(n) = object {
+                                set.insert(n.clone());
+                            }
+                        }
+                        AssignTarget::Attr { object, .. } => {
                             if let Expr::Var(n) = object {
                                 set.insert(n.clone());
                             }
@@ -2121,6 +2204,11 @@ fn collect_assigned_vars(program: &Program) -> Vec<String> {
                                         set.insert(n.clone());
                                     }
                                     AssignTarget::Subscript { object, .. } => {
+                                        if let Expr::Var(n) = object {
+                                            set.insert(n.clone());
+                                        }
+                                    }
+                                    AssignTarget::Attr { object, .. } => {
                                         if let Expr::Var(n) = object {
                                             set.insert(n.clone());
                                         }
@@ -2221,6 +2309,11 @@ fn collect_assigned_vars_body(body: &[Stmt]) -> Vec<String> {
                                 set.insert(n.clone());
                             }
                         }
+                        AssignTarget::Attr { object, .. } => {
+                            if let Expr::Var(n) = object {
+                                set.insert(n.clone());
+                            }
+                        }
                         AssignTarget::Tuple { items } => {
                             for t in items {
                                 match t {
@@ -2228,6 +2321,11 @@ fn collect_assigned_vars_body(body: &[Stmt]) -> Vec<String> {
                                         set.insert(n.clone());
                                     }
                                     AssignTarget::Subscript { object, .. } => {
+                                        if let Expr::Var(n) = object {
+                                            set.insert(n.clone());
+                                        }
+                                    }
+                                    AssignTarget::Attr { object, .. } => {
                                         if let Expr::Var(n) = object {
                                             set.insert(n.clone());
                                         }
@@ -2302,6 +2400,10 @@ fn collect_assigned_vars_body(body: &[Stmt]) -> Vec<String> {
                     }
                 }
                 Stmt::Function { .. } => {}
+                Stmt::Class { name, methods } => {
+                    set.insert(name.clone());
+                    visit(methods, set);
+                }
             }
         }
     }
@@ -2371,6 +2473,7 @@ struct CodeGen {
     functions: Vec<FunctionDef>,
     function_map: std::collections::HashMap<String, String>,
     lambda_map: std::collections::HashMap<String, String>,
+    class_methods: std::collections::HashMap<String, Vec<(String, String)>>,
     return_ctx: Option<ReturnContext>,
 }
 
@@ -2395,6 +2498,7 @@ impl CodeGen {
             functions: Vec::new(),
             function_map: std::collections::HashMap::new(),
             lambda_map: std::collections::HashMap::new(),
+            class_methods: std::collections::HashMap::new(),
             return_ctx: None,
         }
     }
@@ -2437,6 +2541,12 @@ impl CodeGen {
         id
     }
 
+    fn add_method(&mut self, class: &str, name: &str, params: Vec<String>, body: Vec<Stmt>) -> String {
+        let id = self.add_function(None, params, body);
+        self.class_methods.entry(class.to_string()).or_default().push((name.to_string(), id.clone()));
+        id
+    }
+
     fn emit_prelude(&mut self) {
         self.out.push_str(include_str!("prelude_c.txt"));
     }
@@ -2447,6 +2557,14 @@ impl CodeGen {
                 Stmt::Function { name, params, body } => {
                     self.add_function(Some(name.clone()), params.clone(), body.clone());
                     self.register_functions(body);
+                }
+                Stmt::Class { name, methods } => {
+                    for m in methods {
+                        if let Stmt::Function { name: mname, params, body } = m {
+                            self.add_method(name, mname, params.clone(), body.clone());
+                            self.register_functions(body);
+                        }
+                    }
                 }
                 Stmt::If { branches, else_branch } => {
                     for (_, b) in branches {
@@ -2634,6 +2752,32 @@ impl CodeGen {
                     self.push_indent(indent);
                     self.out
                         .push_str(&format!("{} = value_func(&{});\n", self.cname(name), id_val));
+                }
+            }
+            Stmt::Class { name, .. } => {
+                self.push_indent(indent);
+                self.out
+                    .push_str(&format!("value_free({});\n", self.cname(name)));
+                self.push_indent(indent);
+                self.out
+                    .push_str(&format!("{} = value_class(\"{}\");\n", self.cname(name), name));
+                if let Some(methods) = self.class_methods.get(name).cloned() {
+                    for (mname, fid) in methods {
+                        let tmp = self.new_temp();
+                        self.push_indent(indent);
+                        self.out
+                            .push_str(&format!("Value {} = value_func(&{});\n", tmp, fid));
+                        self.push_indent(indent);
+                        self.out.push_str(&format!(
+                            "class_add_method({}, \"{}\", {});\n",
+                            self.cname(name),
+                            mname,
+                            tmp
+                        ));
+                        self.push_indent(indent);
+                        self.out
+                            .push_str(&format!("value_free({});\n", tmp));
+                    }
                 }
             }
             Stmt::Assign { target, expr, op } => self.emit_assign(target, expr, *op, indent),
@@ -2992,6 +3136,60 @@ impl CodeGen {
                         .push_str(&format!("value_free({});\n", res_tmp));
                 }
             }
+            AssignTarget::Attr { object, attr } => {
+                let obj_tmp = self.new_temp();
+                self.emit_expr(object, &obj_tmp, indent);
+                if matches!(op, AssignOp::Assign) {
+                    let val_tmp = self.new_temp();
+                    self.emit_expr(expr, &val_tmp, indent);
+                    self.push_indent(indent);
+                    self.out.push_str(&format!(
+                        "value_set_attr({}, \"{}\", {});\n",
+                        obj_tmp, attr, val_tmp
+                    ));
+                    self.push_indent(indent);
+                    self.out
+                        .push_str(&format!("value_free({});\n", obj_tmp));
+                    self.push_indent(indent);
+                    self.out
+                        .push_str(&format!("value_free({});\n", val_tmp));
+                } else {
+                    let cur_tmp = self.new_temp();
+                    self.push_indent(indent);
+                    self.out
+                        .push_str(&format!("Value {} = value_get_attr({}, \"{}\");\n", cur_tmp, obj_tmp, attr));
+                    let rhs_tmp = self.new_temp();
+                    self.emit_expr(expr, &rhs_tmp, indent);
+                    let func = match op {
+                        AssignOp::Add => "value_add",
+                        AssignOp::Sub => "value_sub",
+                        AssignOp::Mul => "value_mul",
+                        AssignOp::Div => "value_div",
+                        AssignOp::Assign => unreachable!(),
+                    };
+                    let res_tmp = self.new_temp();
+                    self.push_indent(indent);
+                    self.out.push_str(&format!(
+                        "Value {} = {}({}, {});\n",
+                        res_tmp, func, cur_tmp, rhs_tmp
+                    ));
+                    self.push_indent(indent);
+                    self.out
+                        .push_str(&format!("value_set_attr({}, \"{}\", {});\n", obj_tmp, attr, res_tmp));
+                    self.push_indent(indent);
+                    self.out
+                        .push_str(&format!("value_free({});\n", obj_tmp));
+                    self.push_indent(indent);
+                    self.out
+                        .push_str(&format!("value_free({});\n", cur_tmp));
+                    self.push_indent(indent);
+                    self.out
+                        .push_str(&format!("value_free({});\n", rhs_tmp));
+                    self.push_indent(indent);
+                    self.out
+                        .push_str(&format!("value_free({});\n", res_tmp));
+                }
+            }
             AssignTarget::Tuple { items } => {
                 let src_tmp = self.new_temp();
                 self.emit_expr(expr, &src_tmp, indent);
@@ -3150,6 +3348,16 @@ impl CodeGen {
                 self.push_indent(indent);
                 self.out
                     .push_str(&format!("{} = value_clone({});\n", self.cname(name), value_tmp));
+            }
+            AssignTarget::Attr { object, attr } => {
+                let obj_tmp = self.new_temp();
+                self.emit_expr(object, &obj_tmp, indent);
+                self.push_indent(indent);
+                self.out
+                    .push_str(&format!("value_set_attr({}, \"{}\", {});\n", obj_tmp, attr, value_tmp));
+                self.push_indent(indent);
+                self.out
+                    .push_str(&format!("value_free({});\n", obj_tmp));
             }
             AssignTarget::Tuple { .. } => {}
         }
@@ -3649,53 +3857,50 @@ impl CodeGen {
                     .push_str(&format!("value_free({});\n", end_tmp));
             }
             Expr::MethodCall { object, method, arg } => {
-                let (obj_name, needs_free) = match object.as_ref() {
-                    Expr::Var(name) => (self.cname(name), false),
-                    _ => {
-                        let tmp = self.new_temp();
-                        self.emit_expr(object, &tmp, indent);
-                        (tmp, true)
-                    }
-                };
-                let arg_tmp = self.new_temp();
+                let obj_tmp = self.new_temp();
+                self.emit_expr(object, &obj_tmp, indent);
+                let mut args_vec = Vec::new();
                 if let Some(a) = arg {
-                    self.emit_expr(a, &arg_tmp, indent);
-                } else {
-                    self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("Value {} = value_int(0);\n", arg_tmp));
+                    let tmpa = self.new_temp();
+                    self.emit_expr(a, &tmpa, indent);
+                    args_vec.push(tmpa);
                 }
-                let func = match method.as_str() {
-                    "append" => "value_list_append",
-                    "remove" => "value_list_remove",
-                    "add" => "value_set_add",
-                    "items" => "value_dict_items",
-                    "keys" => "value_dict_keys",
-                    "read" => "value_file_read",
-                    "write" => "value_file_write",
-                    _ => "",
-                };
-                if func.is_empty() {
+                let argc = args_vec.len();
+                if argc == 0 {
                     self.push_indent(indent);
                     self.out.push_str(&format!(
-                        "Value {} = value_str(\"<unknown method {}>\");\n",
-                        target, method
+                        "Value {} = value_method_call({}, \"{}\", 0, NULL);\n",
+                        target, obj_tmp, method
                     ));
                 } else {
+                    let args_name = self.new_sym("args");
                     self.push_indent(indent);
-                    self.out.push_str(&format!(
-                        "Value {} = {}({}, {});\n",
-                        target, func, obj_name, arg_tmp
-                    ));
-                }
-                if needs_free {
+                    self.out.push_str(&format!("Value {}[1];\n", args_name));
                     self.push_indent(indent);
                     self.out
-                        .push_str(&format!("value_free({});\n", obj_name));
+                        .push_str(&format!("{}[0] = {};\n", args_name, args_vec[0]));
+                    self.push_indent(indent);
+                    self.out.push_str(&format!(
+                        "Value {} = value_method_call({}, \"{}\", {}, {});\n",
+                        target, obj_tmp, method, argc, args_name
+                    ));
                 }
                 self.push_indent(indent);
+                self.out.push_str(&format!("value_free({});\n", obj_tmp));
+                for a in args_vec {
+                    self.push_indent(indent);
+                    self.out.push_str(&format!("value_free({});\n", a));
+                }
+            }
+            Expr::Attr { object, attr } => {
+                let obj_tmp = self.new_temp();
+                self.emit_expr(object, &obj_tmp, indent);
+                self.push_indent(indent);
                 self.out
-                    .push_str(&format!("value_free({});\n", arg_tmp));
+                    .push_str(&format!("Value {} = value_get_attr({}, \"{}\");\n", target, obj_tmp, attr));
+                self.push_indent(indent);
+                self.out
+                    .push_str(&format!("value_free({});\n", obj_tmp));
             }
             Expr::Call { callee, args } => {
                 let mut tmp_args = Vec::new();

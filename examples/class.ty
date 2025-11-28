@@ -1,0 +1,9 @@
+class Greeter:
+    def __init__(self, name):
+        self.name = name
+    def greet(self, other):
+        print("Hello", other, "I'm", self.name)
+
+
+person = Greeter("Arya")
+person.greet("Sansa")

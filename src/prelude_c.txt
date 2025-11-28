@@ -9,9 +9,12 @@ typedef struct Dict Dict;
 typedef struct Set Set;
 typedef struct File File;
 typedef struct Function Function;
+typedef struct Class Class;
+typedef struct Instance Instance;
+typedef struct Bound Bound;
 typedef struct ExcFrame ExcFrame;
 
-typedef enum { VAL_INT, VAL_FLOAT, VAL_STR, VAL_BOOL, VAL_LIST, VAL_TUPLE, VAL_DICT, VAL_SET, VAL_FILE, VAL_FUNC } Tag;
+typedef enum { VAL_INT, VAL_FLOAT, VAL_STR, VAL_BOOL, VAL_LIST, VAL_TUPLE, VAL_DICT, VAL_SET, VAL_FILE, VAL_FUNC, VAL_CLASS, VAL_INSTANCE, VAL_BOUND } Tag;
 
 typedef struct Value {
     Tag tag;
@@ -26,6 +29,9 @@ typedef struct Value {
         Set* setv;
         struct File* file;
         struct Function* func;
+        struct Class* cls;
+        struct Instance* inst;
+        struct Bound* bound;
     } as;
 } Value;
 
@@ -69,6 +75,24 @@ struct File {
     int refs;
 };
 
+struct Class {
+    char* name;
+    Dict* methods;
+    int refs;
+};
+
+struct Instance {
+    Class* cls;
+    Dict* fields;
+    int refs;
+};
+
+struct Bound {
+    Instance* inst;
+    Value func;
+    int refs;
+};
+
 typedef Value (*FuncPtr)(int argc, Value* args);
 struct Function {
     FuncPtr ptr;
@@ -76,6 +100,17 @@ struct Function {
 };
 
 static Value value_call(Value func, int argc, Value* args);
+static Value value_bound(Instance* inst, Value func);
+static Value value_list_append(Value obj, Value arg);
+static Value value_list_remove(Value obj, Value arg);
+static Value value_set_add(Value obj, Value arg);
+static Value value_dict_items(Value obj);
+static Value value_dict_keys(Value obj);
+static Value value_file_read(Value obj);
+static Value value_file_write(Value obj, Value arg);
+static Value value_get_attr(Value obj, const char* name);
+static void value_set_attr(Value obj, const char* name, Value val);
+static Value value_method_call(Value obj, const char* name, int argc, Value* args);
 
 struct ExcFrame {
     jmp_buf buf;
@@ -136,6 +171,18 @@ static Value value_clone(Value v) {
         }
         case VAL_FUNC: {
             if (v.as.func) v.as.func->refs += 1;
+            return v;
+        }
+        case VAL_CLASS: {
+            if (v.as.cls) v.as.cls->refs += 1;
+            return v;
+        }
+        case VAL_INSTANCE: {
+            if (v.as.inst) v.as.inst->refs += 1;
+            return v;
+        }
+        case VAL_BOUND: {
+            if (v.as.bound) v.as.bound->refs += 1;
             return v;
         }
         case VAL_LIST: {
@@ -251,6 +298,58 @@ static void value_free(Value v) {
                 v.as.func->refs -= 1;
                 if (v.as.func->refs == 0) {
                     free(v.as.func);
+                }
+            }
+            break;
+        case VAL_CLASS:
+            if (v.as.cls) {
+                v.as.cls->refs -= 1;
+                if (v.as.cls->refs == 0) {
+                    if (v.as.cls->name) free(v.as.cls->name);
+                    if (v.as.cls->methods) {
+                        for (size_t i = 0; i < v.as.cls->methods->len; i++) {
+                            if (v.as.cls->methods->entries[i].used) {
+                                value_free(v.as.cls->methods->entries[i].key);
+                                value_free(v.as.cls->methods->entries[i].value);
+                            }
+                        }
+                        free(v.as.cls->methods->entries);
+                        free(v.as.cls->methods);
+                    }
+                    free(v.as.cls);
+                }
+            }
+            break;
+        case VAL_INSTANCE:
+            if (v.as.inst) {
+                v.as.inst->refs -= 1;
+                if (v.as.inst->refs == 0) {
+                    if (v.as.inst->cls) {
+                        Value c; c.tag = VAL_CLASS; c.as.cls = v.as.inst->cls; value_free(c);
+                    }
+                    if (v.as.inst->fields) {
+                        for (size_t i = 0; i < v.as.inst->fields->len; i++) {
+                            if (v.as.inst->fields->entries[i].used) {
+                                value_free(v.as.inst->fields->entries[i].key);
+                                value_free(v.as.inst->fields->entries[i].value);
+                            }
+                        }
+                        free(v.as.inst->fields->entries);
+                        free(v.as.inst->fields);
+                    }
+                    free(v.as.inst);
+                }
+            }
+            break;
+        case VAL_BOUND:
+            if (v.as.bound) {
+                v.as.bound->refs -= 1;
+                if (v.as.bound->refs == 0) {
+                    value_free(v.as.bound->func);
+                    if (v.as.bound->inst) {
+                        Value tmp; tmp.tag = VAL_INSTANCE; tmp.as.inst = v.as.bound->inst; value_free(tmp);
+                    }
+                    free(v.as.bound);
                 }
             }
             break;
@@ -486,6 +585,9 @@ static int value_truthy(Value v) {
         case VAL_SET: return v.as.setv && v.as.setv->len > 0;
         case VAL_FILE: return v.as.file && !v.as.file->closed;
         case VAL_FUNC: return 1;
+        case VAL_CLASS: return 1;
+        case VAL_INSTANCE: return 1;
+        case VAL_BOUND: return 1;
     }
     return 0;
 }
@@ -572,6 +674,108 @@ static void value_set_item(Value obj, Value idx, Value val) {
         return;
     }
     fprintf(stderr, "Type error: cannot assign to this subscript\n"); exit(1);
+}
+
+static Value value_get_attr(Value obj, const char* name) {
+    if (obj.tag == VAL_INSTANCE && obj.as.inst) {
+        Value key = value_str(name);
+        for (size_t i = 0; i < obj.as.inst->fields->len; i++) {
+            if (obj.as.inst->fields->entries[i].used && value_eq(obj.as.inst->fields->entries[i].key, key)) {
+                Value v = value_clone(obj.as.inst->fields->entries[i].value);
+                value_free(key);
+                return v;
+            }
+        }
+        if (obj.as.inst->cls && obj.as.inst->cls->methods) {
+            for (size_t i = 0; i < obj.as.inst->cls->methods->len; i++) {
+                if (obj.as.inst->cls->methods->entries[i].used &&
+                    value_eq(obj.as.inst->cls->methods->entries[i].key, key)) {
+                    Value b = value_bound(obj.as.inst, obj.as.inst->cls->methods->entries[i].value);
+                    value_free(key);
+                    return b;
+                }
+            }
+        }
+        value_free(key);
+        fprintf(stderr, "AttributeError: %s\n", name);
+        exit(1);
+    }
+    if (obj.tag == VAL_CLASS && obj.as.cls) {
+        Value key = value_str(name);
+        for (size_t i = 0; i < obj.as.cls->methods->len; i++) {
+            if (obj.as.cls->methods->entries[i].used && value_eq(obj.as.cls->methods->entries[i].key, key)) {
+                Value v = value_clone(obj.as.cls->methods->entries[i].value);
+                value_free(key);
+                return v;
+            }
+        }
+        value_free(key);
+        fprintf(stderr, "AttributeError: %s\n", name);
+        exit(1);
+    }
+    fprintf(stderr, "AttributeError: unsupported attribute access\n");
+    exit(1);
+}
+
+static void value_set_attr(Value obj, const char* name, Value val) {
+    if (obj.tag == VAL_INSTANCE && obj.as.inst) {
+        Value key = value_str(name);
+        dict_set(obj.as.inst->fields, key, val);
+        value_free(key);
+        return;
+    }
+    if (obj.tag == VAL_CLASS && obj.as.cls) {
+        Value key = value_str(name);
+        dict_set(obj.as.cls->methods, key, val);
+        value_free(key);
+        return;
+    }
+    fprintf(stderr, "Type error: cannot set attribute on this object\n");
+    exit(1);
+}
+
+static Value value_method_call(Value obj, const char* name, int argc, Value* args) {
+    // built-in methods on collections/files
+    if (obj.tag == VAL_LIST) {
+        if (strcmp(name, "append") == 0) {
+            if (argc != 1) { fprintf(stderr, "append expects 1 arg\n"); exit(1); }
+            return value_list_append(obj, args[0]);
+        }
+        if (strcmp(name, "remove") == 0) {
+            if (argc != 1) { fprintf(stderr, "remove expects 1 arg\n"); exit(1); }
+            return value_list_remove(obj, args[0]);
+        }
+    }
+    if (obj.tag == VAL_SET) {
+        if (strcmp(name, "add") == 0) {
+            if (argc != 1) { fprintf(stderr, "add expects 1 arg\n"); exit(1); }
+            return value_set_add(obj, args[0]);
+        }
+    }
+    if (obj.tag == VAL_DICT) {
+        if (strcmp(name, "items") == 0) {
+            if (argc != 0) { fprintf(stderr, "items expects 0 args\n"); exit(1); }
+            return value_dict_items(obj);
+        }
+        if (strcmp(name, "keys") == 0) {
+            if (argc != 0) { fprintf(stderr, "keys expects 0 args\n"); exit(1); }
+            return value_dict_keys(obj);
+        }
+    }
+    if (obj.tag == VAL_FILE) {
+        if (strcmp(name, "read") == 0) {
+            if (argc != 0) { fprintf(stderr, "read expects 0 args\n"); exit(1); }
+            return value_file_read(obj);
+        }
+        if (strcmp(name, "write") == 0) {
+            if (argc != 1) { fprintf(stderr, "write expects 1 arg\n"); exit(1); }
+            return value_file_write(obj, args[0]);
+        }
+    }
+    Value attr = value_get_attr(obj, name);
+    Value res = value_call(attr, argc, args);
+    value_free(attr);
+    return res;
 }
 
 static Value value_slice(Value obj, Value* start_opt, int has_start, Value* end_opt, int has_end) {
@@ -686,7 +890,7 @@ static void value_with_close(Value v) {
     }
 }
 
-static Value value_dict_keys(Value obj, Value _ignored) {
+static Value value_dict_keys(Value obj) {
     if (obj.tag != VAL_DICT) { fprintf(stderr, "keys on non-dict\n"); exit(1); }
     Dict* d = obj.as.dict;
     Value res = value_list_literal(0, NULL);
@@ -702,7 +906,7 @@ static Value value_dict_keys(Value obj, Value _ignored) {
     return res;
 }
 
-static Value value_dict_items(Value obj, Value _ignored) {
+static Value value_dict_items(Value obj) {
     if (obj.tag != VAL_DICT) { fprintf(stderr, "items on non-dict\n"); exit(1); }
     Dict* d = obj.as.dict;
     Value res = value_list_literal(0, NULL);
@@ -855,6 +1059,30 @@ static Value value_str_from_value(Value v) {
             Value r = value_str("<function>");
             return r;
         }
+        case VAL_CLASS: {
+            const char* nm = (v.as.cls && v.as.cls->name) ? v.as.cls->name : "<class>";
+            int n = snprintf(NULL, 0, "<class %s>", nm);
+            char* buf = (char*)xmalloc((size_t)n + 1);
+            snprintf(buf, (size_t)n + 1, "<class %s>", nm);
+            Value r = value_str("");
+            free(r.as.s);
+            r.as.s = buf;
+            return r;
+        }
+        case VAL_INSTANCE: {
+            const char* nm = (v.as.inst && v.as.inst->cls && v.as.inst->cls->name) ? v.as.inst->cls->name : "<instance>";
+            int n = snprintf(NULL, 0, "<%s instance>", nm);
+            char* buf = (char*)xmalloc((size_t)n + 1);
+            snprintf(buf, (size_t)n + 1, "<%s instance>", nm);
+            Value r = value_str("");
+            free(r.as.s);
+            r.as.s = buf;
+            return r;
+        }
+        case VAL_BOUND: {
+            Value r = value_str("<bound method>");
+            return r;
+        }
     }
     return value_str("");
 }
@@ -888,6 +1116,51 @@ static Value value_func(FuncPtr ptr) {
     f->ptr = ptr;
     f->refs = 1;
     Value v; v.tag = VAL_FUNC; v.as.func = f; return v;
+}
+
+static Value value_class(const char* name) {
+    Class* c = (Class*)xmalloc(sizeof(Class));
+    size_t n = strlen(name);
+    c->name = (char*)xmalloc(n + 1);
+    memcpy(c->name, name, n + 1);
+    c->methods = (Dict*)xmalloc(sizeof(Dict));
+    c->methods->len = 0;
+    c->methods->cap = 0;
+    c->methods->entries = NULL;
+    c->refs = 1;
+    Value v; v.tag = VAL_CLASS; v.as.cls = c; return v;
+}
+
+static Value value_instance(Class* cls) {
+    if (cls) cls->refs += 1;
+    Instance* inst = (Instance*)xmalloc(sizeof(Instance));
+    inst->cls = cls;
+    inst->fields = (Dict*)xmalloc(sizeof(Dict));
+    inst->fields->len = 0;
+    inst->fields->cap = 0;
+    inst->fields->entries = NULL;
+    inst->refs = 1;
+    Value v; v.tag = VAL_INSTANCE; v.as.inst = inst; return v;
+}
+
+static Value value_bound(Instance* inst, Value func) {
+    if (!inst) { fprintf(stderr, "bound method missing instance\n"); exit(1); }
+    inst->refs += 1;
+    Bound* b = (Bound*)xmalloc(sizeof(Bound));
+    b->inst = inst;
+    b->func = value_clone(func);
+    b->refs = 1;
+    Value v; v.tag = VAL_BOUND; v.as.bound = b; return v;
+}
+
+static void class_add_method(Value cls, const char* name, Value func) {
+    if (cls.tag != VAL_CLASS || !cls.as.cls) {
+        fprintf(stderr, "class_add_method on non-class\n");
+        exit(1);
+    }
+    Value key = value_str(name);
+    dict_set(cls.as.cls->methods, key, func);
+    value_free(key);
 }
 
 static Value builtin_open(Value path, Value mode) {
@@ -992,7 +1265,7 @@ static Value builtin_sorted(Value iterable, Value key, int has_key) {
     return list;
 }
 
-static Value value_file_read(Value obj, Value _ignored) {
+static Value value_file_read(Value obj) {
     if (obj.tag != VAL_FILE || !obj.as.file) { fprintf(stderr, "read on non-file\n"); exit(1); }
     if (obj.as.file->closed || !obj.as.file->handle) { fprintf(stderr, "read on closed file\n"); exit(1); }
     FILE* f = obj.as.file->handle;
@@ -1019,6 +1292,54 @@ static Value value_file_write(Value obj, Value arg) {
 }
 
 static Value value_call(Value func, int argc, Value* args) {
+    if (func.tag == VAL_BOUND) {
+        if (!func.as.bound || !func.as.bound->func.as.func || !func.as.bound->func.as.func->ptr) {
+            fprintf(stderr, "Type error: invalid bound method\n"); exit(1);
+        }
+        Value selfv; selfv.tag = VAL_INSTANCE; selfv.as.inst = func.as.bound->inst; if (selfv.as.inst) selfv.as.inst->refs += 1;
+        int nargc = argc + 1;
+        Value* nargs = (Value*)xmalloc(sizeof(Value) * (size_t)nargc);
+        nargs[0] = selfv;
+        for (int i = 0; i < argc; i++) {
+            nargs[i + 1] = args[i];
+        }
+        Value r = func.as.bound->func.as.func->ptr(nargc, nargs);
+        value_free(selfv);
+        free(nargs);
+        return r;
+    }
+    if (func.tag == VAL_CLASS) {
+        if (!func.as.cls) { fprintf(stderr, "Type error: call on null class\n"); exit(1); }
+        // construct instance and call __init__ if present
+        Value inst = value_instance(func.as.cls);
+        // find __init__
+        Value key = value_str("__init__");
+        Value init = value_int(0);
+        int has_init = 0;
+        for (size_t i = 0; i < func.as.cls->methods->len; i++) {
+            if (func.as.cls->methods->entries[i].used && value_eq(func.as.cls->methods->entries[i].key, key)) {
+                init = value_clone(func.as.cls->methods->entries[i].value);
+                has_init = 1;
+                break;
+            }
+        }
+        value_free(key);
+        if (has_init) {
+            int nargc = argc + 1;
+            Value* nargs = (Value*)xmalloc(sizeof(Value) * (size_t)nargc);
+            Value selfv = value_clone(inst);
+            nargs[0] = selfv;
+            for (int i = 0; i < argc; i++) {
+                nargs[i + 1] = args[i];
+            }
+            Value tmp = value_call(init, nargc, nargs);
+            value_free(tmp);
+            value_free(selfv);
+            free(nargs);
+            value_free(init);
+        }
+        return inst;
+    }
     if (func.tag != VAL_FUNC || !func.as.func || !func.as.func->ptr) {
         fprintf(stderr, "Type error: call on non-function\n"); exit(1);
     }

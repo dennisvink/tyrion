@@ -36,6 +36,7 @@ cargo build --release
 - **Collections**: list `[...]`, tuple `(...)`, dict `{k: v}`, set `{1, 2}`; indexing/slicing (`x[0]`, `x[1:3]`); methods `.append/.remove` (list), `.add` (set), `.keys/.items` (dict); dict assignment `d["k"] = v`.
 - **Control flow**: `if/elif/else`, `while`, `for` over `range`, `enumerate`, list/tuple/set/dict/str iteration.
 - **Functions + lambdas**: `def name(args): ... return x`, `lambda args: expr`, first-class callables.
+- **Classes**: `class C: def __init__(self,...); self.x`; instantiate with `C(...)`; attribute get/set; methods bind `self`.
 - **With + files**: `with open(path, mode) as f: ...`, `f.read()`, `f.write(s)`.
 - **Exceptions**: `try/except/finally`, `raise <value>`, catch by name (`except MyErr as e:` compares string name).
 - **Comprehensions**: list/dict comprehensions with optional `if` guard.
@@ -115,6 +116,18 @@ squares = [x * x for x in nums]
 big = [x for x in nums if x > 2]
 pairs = {k: k + 1 for k in nums if k < 4}
 print("comps", squares, big, pairs)
+```
+
+### Classes
+```python
+class Greeter:
+    def __init__(self, name):
+        self.name = name
+    def greet(self, other):
+        print("Hello", other, "I'm", self.name)
+
+g = Greeter("Arya")
+g.greet("Sansa")
 ```
 
 ### Exceptions
