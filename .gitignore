@@ -1,0 +1,13 @@
+attic/
+target/
+*.tyrion
+*.py
+*.ty
+*.out
+*.o
+*.obj
+*.tmp
+*.swp
+*.swo
+*.log
+P*N.md

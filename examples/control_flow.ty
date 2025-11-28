@@ -1,0 +1,35 @@
+# If/elif/else, loops, range, enumerate, and functions
+
+def add(x, y):
+    return x + y
+
+def describe(val):
+    if val < 0:
+        return "neg"
+    elif val == 0:
+        return "zero"
+    else:
+        return "pos"
+
+print("add", add(5, 7))
+print("describe", describe(-1), describe(0), describe(2))
+
+total = 0
+for n in [1, 2, 3, 4]:
+    total = total + n
+print("sum list", total)
+
+enum_pairs = []
+for i, v in enumerate((10, 20, 30)):
+    enum_pairs.append((i, v))
+print("enumerate tuple", enum_pairs)
+
+countdown = []
+for r in range(3, 0, -1):
+    countdown.append(r)
+print("range reverse", countdown)
+
+i = 3
+while i > 0:
+    print("tick", i)
+    i = i - 1
