@@ -2,7 +2,6 @@ attic/
 target/
 *.tyrion
 *.py
-*.ty
 *.out
 *.o
 *.obj
