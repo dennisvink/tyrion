@@ -592,6 +592,11 @@ static int value_truthy(Value v) {
     return 0;
 }
 
+static Value value_not(Value v) {
+    Value r = value_bool(!value_truthy(v));
+    return r;
+}
+
 static long long value_to_index(Value v) {
     if (v.tag == VAL_INT) return v.as.i;
     if (v.tag == VAL_BOOL) return (long long)v.as.b;

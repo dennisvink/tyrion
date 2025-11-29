@@ -31,7 +31,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let c_source = codegen_c(&program);
     compile_c_to_exe(&c_source, &output_path)?;
 
-    println!("Compiled {} -> {}", input_path.display(), output_path.display());
+    println!(
+        "Compiled {} -> {}",
+        input_path.display(),
+        output_path.display()
+    );
     Ok(())
 }
 
@@ -42,25 +46,55 @@ struct Program {
 
 #[derive(Debug, Clone)]
 enum Stmt {
-    Function { name: String, params: Vec<String>, body: Vec<Stmt> },
-    Class { name: String, methods: Vec<Stmt> },
-    Assign { target: AssignTarget, expr: Expr, op: AssignOp },
-    Print { args: Vec<Expr> },
-    ExprStmt { expr: Expr },
+    Function {
+        name: String,
+        params: Vec<String>,
+        body: Vec<Stmt>,
+    },
+    Class {
+        name: String,
+        methods: Vec<Stmt>,
+    },
+    Assign {
+        target: AssignTarget,
+        expr: Expr,
+        op: AssignOp,
+    },
+    Print {
+        args: Vec<Expr>,
+    },
+    ExprStmt {
+        expr: Expr,
+    },
     Try {
         body: Vec<Stmt>,
         handlers: Vec<ExceptHandler>,
         finally_body: Option<Vec<Stmt>>,
     },
-    Raise { expr: Expr },
+    Raise {
+        expr: Expr,
+    },
     If {
         branches: Vec<(Expr, Vec<Stmt>)>,
         else_branch: Option<Vec<Stmt>>,
     },
-    While { cond: Expr, body: Vec<Stmt> },
-    For { target: ForTarget, iter: Expr, body: Vec<Stmt> },
-    With { target: String, expr: Expr, body: Vec<Stmt> },
-    Return { expr: Option<Expr> },
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+    },
+    For {
+        target: ForTarget,
+        iter: Expr,
+        body: Vec<Stmt>,
+    },
+    With {
+        target: String,
+        expr: Expr,
+        body: Vec<Stmt>,
+    },
+    Return {
+        expr: Option<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -101,11 +135,17 @@ enum Expr {
     Str(String),
     Bool(bool),
     Var(String),
-    Lambda { params: Vec<String>, body: Box<Expr> },
+    Lambda {
+        params: Vec<String>,
+        body: Box<Expr>,
+    },
     Unary(UnOp, Box<Expr>),
     Binary(Box<Expr>, BinOp, Box<Expr>),
     Compare(Box<Expr>, CmpOp, Box<Expr>),
-    Call { callee: Box<Expr>, args: Vec<Expr> },
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
     List(Vec<Expr>),
     Tuple(Vec<Expr>),
     Dict(Vec<(Expr, Expr)>),
@@ -143,6 +183,7 @@ enum Expr {
 #[derive(Debug, Clone, Copy)]
 enum UnOp {
     Neg,
+    Not,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -202,30 +243,53 @@ fn parse_error(line: usize, column: usize, message: &str, line_src: &str) -> Par
 struct LineInfo {
     line_no: usize,
     indent: usize,
+    level: usize,
     content: String,
     raw: String,
+    opens_brace: bool,
 }
 
 fn collect_lines(source: &str) -> Vec<LineInfo> {
     let mut lines = Vec::new();
+    let mut brace_depth = 0usize;
     for (idx, raw_line) in source.lines().enumerate() {
         let line_no = idx + 1;
         let trimmed_end = raw_line.trim_end();
-        if trimmed_end.trim().is_empty() {
+        let mut content = trimmed_end.trim();
+        while content.starts_with('}') {
+            if brace_depth > 0 {
+                brace_depth -= 1;
+            }
+            content = content[1..].trim_start();
+        }
+        if content.is_empty() {
             continue;
         }
         let without_indent = trimmed_end.trim_start_matches(|c: char| c == ' ' || c == '\t');
         let indent = trimmed_end.len() - without_indent.len();
-        let content = without_indent.trim().to_string();
+        let mut opens_brace = false;
+        if content.ends_with('{') {
+            opens_brace = true;
+            content = content[..content.rfind('{').unwrap()].trim_end();
+        }
         if content.is_empty() {
+            if opens_brace {
+                brace_depth += 1;
+            }
             continue;
         }
+        let level = brace_depth * 1000 + indent;
         lines.push(LineInfo {
             line_no,
             indent,
-            content,
+            level,
+            content: content.to_string(),
             raw: raw_line.to_string(),
+            opens_brace,
         });
+        if opens_brace {
+            brace_depth += 1;
+        }
     }
     lines
 }
@@ -245,15 +309,19 @@ fn parse_program(source: &str) -> Result<Program, ParseError> {
     Ok(Program { stmts })
 }
 
-fn parse_block(lines: &[LineInfo], start: usize, indent: usize) -> Result<(Vec<Stmt>, usize), ParseError> {
+fn parse_block(
+    lines: &[LineInfo],
+    start: usize,
+    level: usize,
+) -> Result<(Vec<Stmt>, usize), ParseError> {
     let mut stmts = Vec::new();
     let mut idx = start;
     while idx < lines.len() {
         let line = &lines[idx];
-        if line.indent < indent {
+        if line.level < level {
             break;
         }
-        if line.indent > indent {
+        if line.level > level {
             return Err(parse_error(
                 line.line_no,
                 line.indent + 1,
@@ -261,35 +329,53 @@ fn parse_block(lines: &[LineInfo], start: usize, indent: usize) -> Result<(Vec<S
                 &line.raw,
             ));
         }
-        let (stmt, next_idx) = parse_statement(lines, idx, indent)?;
+        let (stmt, next_idx) = parse_statement(lines, idx, level)?;
         stmts.push(stmt);
         idx = next_idx;
     }
     Ok((stmts, idx))
 }
 
-fn parse_statement(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usize), ParseError> {
+fn parse_statement(
+    lines: &[LineInfo],
+    idx: usize,
+    level: usize,
+) -> Result<(Stmt, usize), ParseError> {
     let line = &lines[idx];
     let content = line.content.as_str();
     let col_offset = line.indent + 1;
+    if let Some((body_src, cond_src, is_unless)) = find_postfix_guard(content) {
+        let body_stmt = parse_guard_body(&body_src, line)?;
+        let cond_offset = line.raw.find(&cond_src).unwrap_or(line.indent) + 1;
+        let (mut cond_expr, _) =
+            parse_expression(&cond_src, 0, line.line_no, cond_offset, &line.raw)?;
+        if is_unless {
+            cond_expr = Expr::Unary(UnOp::Not, Box::new(cond_expr));
+        }
+        let stmt = Stmt::If {
+            branches: vec![(cond_expr, vec![body_stmt])],
+            else_branch: None,
+        };
+        return Ok((stmt, idx + 1));
+    }
     if content.starts_with("def ") {
-        parse_def(lines, idx, indent)
+        parse_def(lines, idx, level)
     } else if content.starts_with("return") {
         parse_return(lines, idx)
     } else if content.starts_with("class ") {
-        parse_class(lines, idx, indent)
+        parse_class(lines, idx, level)
     } else if content.starts_with("try") {
-        parse_try(lines, idx, indent)
+        parse_try(lines, idx, level)
     } else if content.starts_with("raise") {
         parse_raise(lines, idx)
     } else if content.starts_with("if ") || content.starts_with("if(") {
-        parse_if(lines, idx, indent)
+        parse_if(lines, idx, level)
     } else if content.starts_with("while ") || content.starts_with("while(") {
-        parse_while(lines, idx, indent)
+        parse_while(lines, idx, level)
     } else if content.starts_with("for ") {
-        parse_for(lines, idx, indent)
+        parse_for(lines, idx, level)
     } else if content.starts_with("with ") {
-        parse_with(lines, idx, indent)
+        parse_with(lines, idx, level)
     } else if content.starts_with("print") {
         let stmt = parse_print(content, line.line_no, col_offset, &line.raw)?;
         Ok((stmt, idx + 1))
@@ -311,105 +397,238 @@ fn parse_statement(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stm
     }
 }
 
-fn parse_if(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usize), ParseError> {
+fn find_postfix_guard(line: &str) -> Option<(String, String, bool)> {
+    let bytes = line.as_bytes();
+    let mut in_str = false;
+    let mut found: Option<(usize, usize, bool)> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if in_str {
+            if ch == b'\\' {
+                i += 2;
+                continue;
+            } else if ch == b'"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        if ch == b'"' {
+            in_str = true;
+            i += 1;
+            continue;
+        }
+        let is_if = line[i..].starts_with(" if ");
+        let is_unless = line[i..].starts_with(" unless ");
+        if is_if || is_unless {
+            let kw_len = if is_if { 4 } else { 8 }; // includes spaces
+            found = Some((i, kw_len, is_unless));
+        }
+        i += 1;
+    }
+    let (pos, kw_len, is_unless) = found?;
+    let body = line[..pos].trim_end();
+    let cond = line[(pos + kw_len)..].trim();
+    if body.is_empty() || cond.is_empty() {
+        return None;
+    }
+    Some((body.to_string(), cond.to_string(), is_unless))
+}
+
+fn parse_guard_body(body_src: &str, line: &LineInfo) -> Result<Stmt, ParseError> {
+    let fake_raw = format!("{}{}", " ".repeat(line.indent), body_src);
+    let col_offset = line.indent + 1;
+    if body_src.starts_with("return") {
+        let rest = body_src.strip_prefix("return").unwrap().trim();
+        if rest.is_empty() {
+            return Ok(Stmt::Return { expr: None });
+        }
+        let (expr, next) = parse_expression(
+            rest,
+            0,
+            line.line_no,
+            col_offset + body_src.find(rest).unwrap_or(0),
+            &fake_raw,
+        )?;
+        let next = skip_ws(rest.as_bytes(), next);
+        if next != rest.len() {
+            return Err(parse_error(
+                line.line_no,
+                col_offset + next,
+                "Unexpected trailing characters after return expression",
+                &fake_raw,
+            ));
+        }
+        return Ok(Stmt::Return { expr: Some(expr) });
+    }
+    if body_src.starts_with("raise") {
+        let rest = body_src.strip_prefix("raise").unwrap().trim();
+        if rest.is_empty() {
+            return Err(parse_error(
+                line.line_no,
+                col_offset + "raise".len(),
+                "Missing expression after raise",
+                &fake_raw,
+            ));
+        }
+        let (expr, next) = parse_expression(
+            rest,
+            0,
+            line.line_no,
+            col_offset + body_src.find(rest).unwrap_or(0),
+            &fake_raw,
+        )?;
+        let next = skip_ws(rest.as_bytes(), next);
+        if next != rest.len() {
+            return Err(parse_error(
+                line.line_no,
+                col_offset + next,
+                "Unexpected trailing characters after raise expression",
+                &fake_raw,
+            ));
+        }
+        return Ok(Stmt::Raise { expr });
+    }
+    if body_src.starts_with("print") {
+        return parse_print(body_src, line.line_no, col_offset, &fake_raw);
+    }
+    if find_assign_op(body_src).is_some() {
+        return parse_assign(body_src, line.line_no, col_offset, &fake_raw);
+    }
+    let (expr, next) = parse_expression(body_src, 0, line.line_no, col_offset, &fake_raw)?;
+    let next = skip_ws(body_src.as_bytes(), next);
+    if next != body_src.len() {
+        return Err(parse_error(
+            line.line_no,
+            col_offset + next,
+            "Unexpected trailing characters",
+            &fake_raw,
+        ));
+    }
+    Ok(Stmt::ExprStmt { expr })
+}
+
+fn parse_if(lines: &[LineInfo], idx: usize, level: usize) -> Result<(Stmt, usize), ParseError> {
     let line = &lines[idx];
     let content = line.content.as_str();
     if !content.starts_with("if") {
-        return Err(parse_error(line.line_no, line.indent + 1, "Expected 'if'", &line.raw));
+        return Err(parse_error(
+            line.line_no,
+            line.indent + 1,
+            "Expected 'if'",
+            &line.raw,
+        ));
     }
-    let colon = content.find(':').ok_or_else(|| {
-        parse_error(
+    let mut cond_src = content[2..].trim();
+    let mut has_colon = false;
+    if cond_src.ends_with(':') {
+        has_colon = true;
+        cond_src = cond_src[..cond_src.len().saturating_sub(1)].trim_end();
+    }
+    if cond_src.is_empty() {
+        return Err(parse_error(
+            line.line_no,
+            line.indent + 1,
+            "Expected condition after if",
+            &line.raw,
+        ));
+    }
+    if !has_colon && !line.opens_brace {
+        return Err(parse_error(
             line.line_no,
             line.indent + content.len(),
             "Expected ':' after if condition",
             &line.raw,
-        )
-    })?;
-    let cond_src = content[2..colon].trim();
-    let cond_offset = line.raw.find(cond_src).unwrap_or(line.indent) + 1;
-    let (cond, _) = parse_expression(cond_src, 0, line.line_no, cond_offset, &line.raw)?;
-    if !content[colon + 1..].trim().is_empty() {
-        return Err(parse_error(
-            line.line_no,
-            line.indent + colon + 2,
-            "Unexpected characters after ':'",
-            &line.raw,
         ));
     }
-    if idx + 1 >= lines.len() || lines[idx + 1].indent <= indent {
+    let cond_offset = line.raw.find(cond_src).unwrap_or(line.indent) + 1;
+    let (cond, _) = parse_expression(cond_src, 0, line.line_no, cond_offset, &line.raw)?;
+    if idx + 1 >= lines.len() || lines[idx + 1].level <= level {
         return Err(parse_error(
             line.line_no,
-            line.indent + colon + 1,
+            line.indent + content.len(),
             "Missing indented block after if",
             &line.raw,
         ));
     }
-    let body_indent = lines[idx + 1].indent;
-    let (body, mut next_idx) = parse_block(lines, idx + 1, body_indent)?;
+    let body_level = lines[idx + 1].level;
+    let (body, mut next_idx) = parse_block(lines, idx + 1, body_level)?;
     let mut branches = vec![(cond, body)];
     let mut else_branch = None;
-    while next_idx < lines.len() && lines[next_idx].indent == indent {
+    while next_idx < lines.len() && lines[next_idx].level == level {
         let nxt = &lines[next_idx];
         if nxt.content.starts_with("elif") {
-            let colon = nxt.content.find(':').ok_or_else(|| {
-                parse_error(
+            let mut cond_src = nxt.content[4..].trim();
+            let mut has_colon = false;
+            if cond_src.ends_with(':') {
+                has_colon = true;
+                cond_src = cond_src[..cond_src.len().saturating_sub(1)].trim_end();
+            }
+            if cond_src.is_empty() {
+                return Err(parse_error(
+                    nxt.line_no,
+                    nxt.indent + 1,
+                    "Expected condition after elif",
+                    &nxt.raw,
+                ));
+            }
+            if !has_colon && !nxt.opens_brace {
+                return Err(parse_error(
                     nxt.line_no,
                     nxt.indent + nxt.content.len(),
                     "Expected ':' after elif condition",
                     &nxt.raw,
-                )
-            })?;
-            let cond_src = nxt.content[4..colon].trim();
-            let cond_offset = nxt.raw.find(cond_src).unwrap_or(nxt.indent) + 1;
-            let (elif_cond, _) = parse_expression(cond_src, 0, nxt.line_no, cond_offset, &nxt.raw)?;
-            if !nxt.content[colon + 1..].trim().is_empty() {
-                return Err(parse_error(
-                    nxt.line_no,
-                    nxt.indent + colon + 2,
-                    "Unexpected characters after ':'",
-                    &nxt.raw,
                 ));
             }
-            if next_idx + 1 >= lines.len() || lines[next_idx + 1].indent <= indent {
+            let cond_offset = nxt.raw.find(cond_src).unwrap_or(nxt.indent) + 1;
+            let (elif_cond, _) = parse_expression(cond_src, 0, nxt.line_no, cond_offset, &nxt.raw)?;
+            if next_idx + 1 >= lines.len() || lines[next_idx + 1].level <= level {
                 return Err(parse_error(
                     nxt.line_no,
-                    nxt.indent + colon + 1,
+                    nxt.indent + nxt.content.len(),
                     "Missing indented block after elif",
                     &nxt.raw,
                 ));
             }
-            let body_indent = lines[next_idx + 1].indent;
-            let (elif_body, n2) = parse_block(lines, next_idx + 1, body_indent)?;
+            let body_level = lines[next_idx + 1].level;
+            let (elif_body, n2) = parse_block(lines, next_idx + 1, body_level)?;
             branches.push((elif_cond, elif_body));
             next_idx = n2;
             continue;
         } else if nxt.content.starts_with("else") {
-            let colon = nxt.content.find(':').ok_or_else(|| {
-                parse_error(
-                    nxt.line_no,
-                    nxt.indent + nxt.content.len(),
-                    "Expected ':' after else",
-                    &nxt.raw,
-                )
-            })?;
-            if !nxt.content[colon + 1..].trim().is_empty() {
+            let mut tail = nxt.content["else".len()..].trim();
+            let mut has_colon = false;
+            if tail.ends_with(':') {
+                has_colon = true;
+                tail = tail[..tail.len().saturating_sub(1)].trim_end();
+            }
+            if !tail.is_empty() {
                 return Err(parse_error(
                     nxt.line_no,
-                    nxt.indent + colon + 2,
+                    nxt.indent + nxt.content.len(),
                     "Unexpected characters after ':'",
                     &nxt.raw,
                 ));
             }
-            if next_idx + 1 >= lines.len() || lines[next_idx + 1].indent <= indent {
+            if !has_colon && !nxt.opens_brace {
                 return Err(parse_error(
                     nxt.line_no,
-                    nxt.indent + colon + 1,
+                    nxt.indent + nxt.content.len(),
+                    "Expected ':' after else",
+                    &nxt.raw,
+                ));
+            }
+            if next_idx + 1 >= lines.len() || lines[next_idx + 1].level <= level {
+                return Err(parse_error(
+                    nxt.line_no,
+                    nxt.indent + nxt.content.len(),
                     "Missing indented block after else",
                     &nxt.raw,
                 ));
             }
-            let body_indent = lines[next_idx + 1].indent;
-            let (body, n2) = parse_block(lines, next_idx + 1, body_indent)?;
+            let body_level = lines[next_idx + 1].level;
+            let (body, n2) = parse_block(lines, next_idx + 1, body_level)?;
             else_branch = Some(body);
             next_idx = n2;
             break;
@@ -417,56 +636,72 @@ fn parse_if(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usiz
             break;
         }
     }
-    Ok((Stmt::If { branches, else_branch }, next_idx))
+    Ok((
+        Stmt::If {
+            branches,
+            else_branch,
+        },
+        next_idx,
+    ))
 }
 
-fn parse_while(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usize), ParseError> {
+fn parse_while(lines: &[LineInfo], idx: usize, level: usize) -> Result<(Stmt, usize), ParseError> {
     let line = &lines[idx];
     let content = line.content.as_str();
-    let colon = content.find(':').ok_or_else(|| {
-        parse_error(
+    let mut cond_src = content[5..].trim();
+    let mut has_colon = false;
+    if cond_src.ends_with(':') {
+        has_colon = true;
+        cond_src = cond_src[..cond_src.len().saturating_sub(1)].trim_end();
+    }
+    if cond_src.is_empty() {
+        return Err(parse_error(
+            line.line_no,
+            line.indent + 1,
+            "Expected condition after while",
+            &line.raw,
+        ));
+    }
+    if !has_colon && !line.opens_brace {
+        return Err(parse_error(
             line.line_no,
             line.indent + content.len(),
             "Expected ':' after while condition",
             &line.raw,
-        )
-    })?;
-    let cond_src = content[5..colon].trim();
-    let cond_offset = line.raw.find(cond_src).unwrap_or(line.indent) + 1;
-    let (cond, _) = parse_expression(cond_src, 0, line.line_no, cond_offset, &line.raw)?;
-    if !content[colon + 1..].trim().is_empty() {
-        return Err(parse_error(
-            line.line_no,
-            line.indent + colon + 2,
-            "Unexpected characters after ':'",
-            &line.raw,
         ));
     }
-    if idx + 1 >= lines.len() || lines[idx + 1].indent <= indent {
+    let cond_offset = line.raw.find(cond_src).unwrap_or(line.indent) + 1;
+    let (cond, _) = parse_expression(cond_src, 0, line.line_no, cond_offset, &line.raw)?;
+    if idx + 1 >= lines.len() || lines[idx + 1].level <= level {
         return Err(parse_error(
             line.line_no,
-            line.indent + colon + 1,
+            line.indent + content.len(),
             "Missing indented block after while",
             &line.raw,
         ));
     }
-    let body_indent = lines[idx + 1].indent;
-    let (body, next_idx) = parse_block(lines, idx + 1, body_indent)?;
+    let body_level = lines[idx + 1].level;
+    let (body, next_idx) = parse_block(lines, idx + 1, body_level)?;
     Ok((Stmt::While { cond, body }, next_idx))
 }
 
-fn parse_for(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usize), ParseError> {
+fn parse_for(lines: &[LineInfo], idx: usize, level: usize) -> Result<(Stmt, usize), ParseError> {
     let line = &lines[idx];
     let content = line.content.as_str();
-    let colon = content.find(':').ok_or_else(|| {
-        parse_error(
+    let mut head = content[3..].trim();
+    let mut has_colon = false;
+    if head.ends_with(':') {
+        has_colon = true;
+        head = head[..head.len().saturating_sub(1)].trim_end();
+    }
+    if !has_colon && !line.opens_brace {
+        return Err(parse_error(
             line.line_no,
             line.indent + content.len(),
             "Expected ':' after for clause",
             &line.raw,
-        )
-    })?;
-    let head = content[3..colon].trim();
+        ));
+    }
     let parts: Vec<&str> = head.splitn(2, " in ").collect();
     if parts.len() != 2 {
         return Err(parse_error(
@@ -481,44 +716,62 @@ fn parse_for(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usi
     let target = parse_for_target(target_src, line.line_no, line.indent + 1, &line.raw)?;
     let iter_offset = line.raw.find(iter_src).unwrap_or(line.indent) + 1;
     let (iter_expr, _) = parse_expression(iter_src, 0, line.line_no, iter_offset, &line.raw)?;
-    if !content[colon + 1..].trim().is_empty() {
+    if idx + 1 >= lines.len() || lines[idx + 1].level <= level {
         return Err(parse_error(
             line.line_no,
-            line.indent + colon + 2,
-            "Unexpected characters after ':'",
-            &line.raw,
-        ));
-    }
-    if idx + 1 >= lines.len() || lines[idx + 1].indent <= indent {
-        return Err(parse_error(
-            line.line_no,
-            line.indent + colon + 1,
+            line.indent + content.len(),
             "Missing indented block after for",
             &line.raw,
         ));
     }
-    let body_indent = lines[idx + 1].indent;
-    let (body, next_idx) = parse_block(lines, idx + 1, body_indent)?;
-    Ok((Stmt::For { target, iter: iter_expr, body }, next_idx))
+    let body_level = lines[idx + 1].level;
+    let (body, next_idx) = parse_block(lines, idx + 1, body_level)?;
+    Ok((
+        Stmt::For {
+            target,
+            iter: iter_expr,
+            body,
+        },
+        next_idx,
+    ))
 }
 
-fn parse_def(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usize), ParseError> {
+fn parse_def(lines: &[LineInfo], idx: usize, level: usize) -> Result<(Stmt, usize), ParseError> {
     let line = &lines[idx];
     let content = line.content.as_str();
-    let colon = content.find(':').ok_or_else(|| {
-        parse_error(
+    let mut head = content[3..].trim();
+    let mut has_colon = false;
+    if head.ends_with(':') {
+        has_colon = true;
+        head = head[..head.len().saturating_sub(1)].trim_end();
+    }
+    if !has_colon && !line.opens_brace {
+        return Err(parse_error(
             line.line_no,
             line.indent + content.len(),
             "Expected ':' after function signature",
             &line.raw,
+        ));
+    }
+    let open = head
+        .find('(')
+        .ok_or_else(|| parse_error(line.line_no, line.indent + 4, "Expected '('", &line.raw))?;
+    let close = head.rfind(')').ok_or_else(|| {
+        parse_error(
+            line.line_no,
+            line.indent + head.len(),
+            "Missing ')'",
+            &line.raw,
         )
     })?;
-    let head = content[3..colon].trim();
-    let open = head.find('(').ok_or_else(|| parse_error(line.line_no, line.indent + 4, "Expected '('", &line.raw))?;
-    let close = head.rfind(')').ok_or_else(|| parse_error(line.line_no, line.indent + head.len(), "Missing ')'", &line.raw))?;
     let name = head[..open].trim();
     if !is_valid_ident(name) {
-        return Err(parse_error(line.line_no, line.indent + 1, "Invalid function name", &line.raw));
+        return Err(parse_error(
+            line.line_no,
+            line.indent + 1,
+            "Invalid function name",
+            &line.raw,
+        ));
     }
     let params_src = &head[(open + 1)..close];
     let mut params = Vec::new();
@@ -526,65 +779,72 @@ fn parse_def(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usi
         for p in params_src.split(',') {
             let p = p.trim();
             if !is_valid_ident(p) {
-                return Err(parse_error(line.line_no, line.indent + 1, "Invalid parameter", &line.raw));
+                return Err(parse_error(
+                    line.line_no,
+                    line.indent + 1,
+                    "Invalid parameter",
+                    &line.raw,
+                ));
             }
             params.push(p.to_string());
         }
     }
-    if !content[colon + 1..].trim().is_empty() {
+    if idx + 1 >= lines.len() || lines[idx + 1].level <= level {
         return Err(parse_error(
             line.line_no,
-            line.indent + colon + 2,
-            "Unexpected characters after ':'",
-            &line.raw,
-        ));
-    }
-    if idx + 1 >= lines.len() || lines[idx + 1].indent <= indent {
-        return Err(parse_error(
-            line.line_no,
-            line.indent + colon + 1,
+            line.indent + content.len(),
             "Missing indented block after function",
             &line.raw,
         ));
     }
-    let body_indent = lines[idx + 1].indent;
-    let (body, next_idx) = parse_block(lines, idx + 1, body_indent)?;
-    Ok((Stmt::Function { name: name.to_string(), params, body }, next_idx))
+    let body_level = lines[idx + 1].level;
+    let (body, next_idx) = parse_block(lines, idx + 1, body_level)?;
+    Ok((
+        Stmt::Function {
+            name: name.to_string(),
+            params,
+            body,
+        },
+        next_idx,
+    ))
 }
 
-fn parse_class(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usize), ParseError> {
+fn parse_class(lines: &[LineInfo], idx: usize, level: usize) -> Result<(Stmt, usize), ParseError> {
     let line = &lines[idx];
     let content = line.content.as_str();
-    let colon = content.find(':').ok_or_else(|| {
-        parse_error(
+    let mut name_src = content[5..].trim();
+    let mut has_colon = false;
+    if name_src.ends_with(':') {
+        has_colon = true;
+        name_src = name_src[..name_src.len().saturating_sub(1)].trim_end();
+    }
+    let name = name_src;
+    if !is_valid_ident(name) {
+        return Err(parse_error(
+            line.line_no,
+            line.indent + 1,
+            "Invalid class name",
+            &line.raw,
+        ));
+    }
+    if !has_colon && !line.opens_brace {
+        return Err(parse_error(
             line.line_no,
             line.indent + content.len(),
             "Expected ':' after class name",
             &line.raw,
-        )
-    })?;
-    let name = content[5..colon].trim();
-    if !is_valid_ident(name) {
-        return Err(parse_error(line.line_no, line.indent + 1, "Invalid class name", &line.raw));
-    }
-    if !content[colon + 1..].trim().is_empty() {
-        return Err(parse_error(
-            line.line_no,
-            line.indent + colon + 2,
-            "Unexpected characters after ':'",
-            &line.raw,
         ));
     }
-    if idx + 1 >= lines.len() || lines[idx + 1].indent <= indent {
+    if idx + 1 >= lines.len() || lines[idx + 1].level <= level {
         return Err(parse_error(
             line.line_no,
-            line.indent + colon + 1,
+            line.indent + content.len(),
             "Missing indented block after class",
             &line.raw,
         ));
     }
-    let body_indent = lines[idx + 1].indent;
-    let (body, next_idx) = parse_block(lines, idx + 1, body_indent)?;
+    let body_level = lines[idx + 1].level;
+    let (body, next_idx) = parse_block(lines, idx + 1, body_level)?;
     // filter methods
     let mut methods = Vec::new();
     for stmt in body {
@@ -600,7 +860,13 @@ fn parse_class(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, u
             }
         }
     }
-    Ok((Stmt::Class { name: name.to_string(), methods }, next_idx))
+    Ok((
+        Stmt::Class {
+            name: name.to_string(),
+            methods,
+        },
+        next_idx,
+    ))
 }
 
 fn parse_return(lines: &[LineInfo], idx: usize) -> Result<(Stmt, usize), ParseError> {
@@ -650,49 +916,52 @@ fn parse_raise(lines: &[LineInfo], idx: usize) -> Result<(Stmt, usize), ParseErr
     Ok((Stmt::Raise { expr }, idx + 1))
 }
 
-fn parse_try(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usize), ParseError> {
+fn parse_try(lines: &[LineInfo], idx: usize, level: usize) -> Result<(Stmt, usize), ParseError> {
     let line = &lines[idx];
     let content = line.content.as_str();
-    let colon = content.find(':').ok_or_else(|| {
-        parse_error(
+    let mut tail = content["try".len()..].trim();
+    let mut has_colon = false;
+    if tail.ends_with(':') {
+        has_colon = true;
+        tail = tail[..tail.len().saturating_sub(1)].trim_end();
+    }
+    if !tail.is_empty() {
+        return Err(parse_error(
+            line.line_no,
+            line.indent + content.len(),
+            "Unexpected characters after try",
+            &line.raw,
+        ));
+    }
+    if !has_colon && !line.opens_brace {
+        return Err(parse_error(
             line.line_no,
             line.indent + content.len(),
             "Expected ':' after try",
             &line.raw,
-        )
-    })?;
-    if !content[colon + 1..].trim().is_empty() {
-        return Err(parse_error(
-            line.line_no,
-            line.indent + colon + 2,
-            "Unexpected characters after ':'",
-            &line.raw,
         ));
     }
-    if idx + 1 >= lines.len() || lines[idx + 1].indent <= indent {
+    if idx + 1 >= lines.len() || lines[idx + 1].level <= level {
         return Err(parse_error(
             line.line_no,
-            line.indent + colon + 1,
+            line.indent + content.len(),
             "Missing indented block after try",
             &line.raw,
         ));
     }
-    let body_indent = lines[idx + 1].indent;
-    let (body, mut next_idx) = parse_block(lines, idx + 1, body_indent)?;
+    let body_level = lines[idx + 1].level;
+    let (body, mut next_idx) = parse_block(lines, idx + 1, body_level)?;
     let mut handlers = Vec::new();
     let mut finally_body = None;
-    while next_idx < lines.len() && lines[next_idx].indent == indent {
+    while next_idx < lines.len() && lines[next_idx].level == level {
         let nxt = &lines[next_idx];
         if nxt.content.starts_with("except") {
-            let colon_pos = nxt.content.find(':').ok_or_else(|| {
-                parse_error(
-                    nxt.line_no,
-                    nxt.indent + nxt.content.len(),
-                    "Expected ':' after except",
-                    &nxt.raw,
-                )
-            })?;
-            let head = nxt.content["except".len()..colon_pos].trim();
+            let mut head = nxt.content["except".len()..].trim();
+            let mut has_colon = false;
+            if head.ends_with(':') {
+                has_colon = true;
+                head = head[..head.len().saturating_sub(1)].trim_end();
+            }
             let mut name = None;
             let mut bind = None;
             if !head.is_empty() {
@@ -724,25 +993,29 @@ fn parse_try(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usi
                     }
                 }
             }
-            if !nxt.content[colon_pos + 1..].trim().is_empty() {
+            if !has_colon && !nxt.opens_brace {
                 return Err(parse_error(
                     nxt.line_no,
-                    nxt.indent + colon_pos + 2,
-                    "Unexpected characters after ':'",
+                    nxt.indent + nxt.content.len(),
+                    "Expected ':' after except",
                     &nxt.raw,
                 ));
             }
-            if next_idx + 1 >= lines.len() || lines[next_idx + 1].indent <= indent {
+            if next_idx + 1 >= lines.len() || lines[next_idx + 1].level <= level {
                 return Err(parse_error(
                     nxt.line_no,
-                    nxt.indent + colon_pos + 1,
+                    nxt.indent + nxt.content.len(),
                     "Missing indented block after except",
                     &nxt.raw,
                 ));
             }
-            let body_indent = lines[next_idx + 1].indent;
-            let (handler_body, n2) = parse_block(lines, next_idx + 1, body_indent)?;
-            handlers.push(ExceptHandler { name, bind, body: handler_body });
+            let body_level = lines[next_idx + 1].level;
+            let (handler_body, n2) = parse_block(lines, next_idx + 1, body_level)?;
+            handlers.push(ExceptHandler {
+                name,
+                bind,
+                body: handler_body,
+            });
             next_idx = n2;
             continue;
         }
@@ -755,32 +1028,38 @@ fn parse_try(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usi
                     &nxt.raw,
                 ));
             }
-            let colon_pos = nxt.content.find(':').ok_or_else(|| {
-                parse_error(
+            let mut tail = nxt.content["finally".len()..].trim();
+            let mut has_colon = false;
+            if tail.ends_with(':') {
+                has_colon = true;
+                tail = tail[..tail.len().saturating_sub(1)].trim_end();
+            }
+            if !tail.is_empty() {
+                return Err(parse_error(
+                    nxt.line_no,
+                    nxt.indent + nxt.content.len(),
+                    "Unexpected characters after finally",
+                    &nxt.raw,
+                ));
+            }
+            if !has_colon && !nxt.opens_brace {
+                return Err(parse_error(
                     nxt.line_no,
                     nxt.indent + nxt.content.len(),
                     "Expected ':' after finally",
                     &nxt.raw,
-                )
-            })?;
-            if !nxt.content[colon_pos + 1..].trim().is_empty() {
-                return Err(parse_error(
-                    nxt.line_no,
-                    nxt.indent + colon_pos + 2,
-                    "Unexpected characters after ':'",
-                    &nxt.raw,
                 ));
             }
-            if next_idx + 1 >= lines.len() || lines[next_idx + 1].indent <= indent {
+            if next_idx + 1 >= lines.len() || lines[next_idx + 1].level <= level {
                 return Err(parse_error(
                     nxt.line_no,
-                    nxt.indent + colon_pos + 1,
+                    nxt.indent + nxt.content.len(),
                     "Missing indented block after finally",
                     &nxt.raw,
                 ));
             }
-            let body_indent = lines[next_idx + 1].indent;
-            let (f_body, n2) = parse_block(lines, next_idx + 1, body_indent)?;
+            let body_level = lines[next_idx + 1].level;
+            let (f_body, n2) = parse_block(lines, next_idx + 1, body_level)?;
             finally_body = Some(f_body);
             next_idx = n2;
             continue;
@@ -795,21 +1074,33 @@ fn parse_try(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usi
             &line.raw,
         ));
     }
-    Ok((Stmt::Try { body, handlers, finally_body }, next_idx))
+    Ok((
+        Stmt::Try {
+            body,
+            handlers,
+            finally_body,
+        },
+        next_idx,
+    ))
 }
 
-fn parse_with(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, usize), ParseError> {
+fn parse_with(lines: &[LineInfo], idx: usize, level: usize) -> Result<(Stmt, usize), ParseError> {
     let line = &lines[idx];
     let content = line.content.as_str();
-    let colon = content.find(':').ok_or_else(|| {
-        parse_error(
+    let mut head = content[4..].trim();
+    let mut has_colon = false;
+    if head.ends_with(':') {
+        has_colon = true;
+        head = head[..head.len().saturating_sub(1)].trim_end();
+    }
+    if !has_colon && !line.opens_brace {
+        return Err(parse_error(
             line.line_no,
             line.indent + content.len(),
             "Expected ':' after with clause",
             &line.raw,
-        )
-    })?;
-    let head = content[4..colon].trim();
+        ));
+    }
     let parts: Vec<&str> = head.splitn(2, " as ").collect();
     if parts.len() != 2 {
         return Err(parse_error(
@@ -831,28 +1122,32 @@ fn parse_with(lines: &[LineInfo], idx: usize, indent: usize) -> Result<(Stmt, us
     }
     let expr_offset = line.raw.find(expr_src).unwrap_or(line.indent) + 1;
     let (expr, _) = parse_expression(expr_src, 0, line.line_no, expr_offset, &line.raw)?;
-    if !content[colon + 1..].trim().is_empty() {
+    if idx + 1 >= lines.len() || lines[idx + 1].level <= level {
         return Err(parse_error(
             line.line_no,
-            line.indent + colon + 2,
-            "Unexpected characters after ':'",
-            &line.raw,
-        ));
-    }
-    if idx + 1 >= lines.len() || lines[idx + 1].indent <= indent {
-        return Err(parse_error(
-            line.line_no,
-            line.indent + colon + 1,
+            line.indent + content.len(),
             "Missing indented block after with",
             &line.raw,
         ));
     }
-    let body_indent = lines[idx + 1].indent;
-    let (body, next_idx) = parse_block(lines, idx + 1, body_indent)?;
-    Ok((Stmt::With { target: target_src.to_string(), expr, body }, next_idx))
+    let body_level = lines[idx + 1].level;
+    let (body, next_idx) = parse_block(lines, idx + 1, body_level)?;
+    Ok((
+        Stmt::With {
+            target: target_src.to_string(),
+            expr,
+            body,
+        },
+        next_idx,
+    ))
 }
 
-fn parse_for_target(segment: &str, line_no: usize, column_offset: usize, line_src: &str) -> Result<ForTarget, ParseError> {
+fn parse_for_target(
+    segment: &str,
+    line_no: usize,
+    column_offset: usize,
+    line_src: &str,
+) -> Result<ForTarget, ParseError> {
     let mut seg = segment.trim();
     if seg.starts_with('(') && seg.ends_with(')') {
         seg = &seg[1..seg.len().saturating_sub(1)];
@@ -943,7 +1238,12 @@ fn find_assign_op(line: &str) -> Option<(usize, AssignOp)> {
     None
 }
 
-fn parse_print(line: &str, line_no: usize, column_offset: usize, line_src: &str) -> Result<Stmt, ParseError> {
+fn parse_print(
+    line: &str,
+    line_no: usize,
+    column_offset: usize,
+    line_src: &str,
+) -> Result<Stmt, ParseError> {
     let prefix = "print";
     if !line.starts_with(prefix) {
         return Err(parse_error(
@@ -981,13 +1281,24 @@ fn parse_print(line: &str, line_no: usize, column_offset: usize, line_src: &str)
     Ok(Stmt::Print { args })
 }
 
-fn parse_assign(line: &str, line_no: usize, column_offset: usize, line_src: &str) -> Result<Stmt, ParseError> {
-    let (op_pos, op) = find_assign_op(line).ok_or_else(|| parse_error(line_no, column_offset, "Expected '='", line_src))?;
+fn parse_assign(
+    line: &str,
+    line_no: usize,
+    column_offset: usize,
+    line_src: &str,
+) -> Result<Stmt, ParseError> {
+    let (op_pos, op) = find_assign_op(line)
+        .ok_or_else(|| parse_error(line_no, column_offset, "Expected '='", line_src))?;
     let op_len = if matches!(op, AssignOp::Assign) { 1 } else { 2 };
     let (left, right) = line.split_at(op_pos);
     let lhs_str = left.trim();
     if lhs_str.is_empty() {
-        return Err(parse_error(line_no, column_offset, "Missing assignment target", line_src));
+        return Err(parse_error(
+            line_no,
+            column_offset,
+            "Missing assignment target",
+            line_src,
+        ));
     }
     let target = parse_assign_target(lhs_str, line_no, column_offset, line_src)?;
     let expr_str = right[op_len..].trim();
@@ -999,8 +1310,13 @@ fn parse_assign(line: &str, line_no: usize, column_offset: usize, line_src: &str
             line_src,
         ));
     }
-    let (expr, next) =
-        parse_expression(expr_str, 0, line_no, line_src.find(expr_str).unwrap_or(column_offset) + 1, line_src)?;
+    let (expr, next) = parse_expression(
+        expr_str,
+        0,
+        line_no,
+        line_src.find(expr_str).unwrap_or(column_offset) + 1,
+        line_src,
+    )?;
     let next = skip_ws(expr_str.as_bytes(), next);
     if next != expr_str.len() {
         return Err(parse_error(
@@ -1013,7 +1329,12 @@ fn parse_assign(line: &str, line_no: usize, column_offset: usize, line_src: &str
     Ok(Stmt::Assign { target, expr, op })
 }
 
-fn parse_assign_target(segment: &str, line_no: usize, column_offset: usize, line_src: &str) -> Result<AssignTarget, ParseError> {
+fn parse_assign_target(
+    segment: &str,
+    line_no: usize,
+    column_offset: usize,
+    line_src: &str,
+) -> Result<AssignTarget, ParseError> {
     // split on top-level commas
     let mut depth = 0;
     let bytes = segment.as_bytes();
@@ -1115,7 +1436,10 @@ fn parse_assign_target(segment: &str, line_no: usize, column_offset: usize, line
     match lhs_expr {
         Expr::Var(name) => Ok(AssignTarget::Name(name)),
         Expr::Index(obj, idx) => match *obj {
-            Expr::Var(name) => Ok(AssignTarget::Subscript { object: Expr::Var(name), index: *idx }),
+            Expr::Var(name) => Ok(AssignTarget::Subscript {
+                object: Expr::Var(name),
+                index: *idx,
+            }),
             _ => Err(parse_error(
                 line_no,
                 lhs_offset,
@@ -1124,8 +1448,14 @@ fn parse_assign_target(segment: &str, line_no: usize, column_offset: usize, line
             )),
         },
         Expr::Attr { object, attr } => match *object {
-            Expr::Var(name) => Ok(AssignTarget::Attr { object: Expr::Var(name), attr }),
-            Expr::Attr { .. } => Ok(AssignTarget::Attr { object: *object, attr }),
+            Expr::Var(name) => Ok(AssignTarget::Attr {
+                object: Expr::Var(name),
+                attr,
+            }),
+            Expr::Attr { .. } => Ok(AssignTarget::Attr {
+                object: *object,
+                attr,
+            }),
             _ => Err(parse_error(
                 line_no,
                 lhs_offset,
@@ -1142,7 +1472,12 @@ fn parse_assign_target(segment: &str, line_no: usize, column_offset: usize, line
     }
 }
 
-fn parse_args(segment: &str, line_no: usize, column_offset: usize, line_src: &str) -> Result<Vec<Expr>, ParseError> {
+fn parse_args(
+    segment: &str,
+    line_no: usize,
+    column_offset: usize,
+    line_src: &str,
+) -> Result<Vec<Expr>, ParseError> {
     let mut args = Vec::new();
     let bytes = segment.as_bytes();
     let mut i = 0;
@@ -1196,7 +1531,12 @@ fn parse_lambda(
     let bytes = segment.as_bytes();
     i = skip_ws(bytes, i);
     if !segment[i..].starts_with("lambda") {
-        return Err(parse_error(line_no, column_offset + i + 1, "Expected lambda", line_src));
+        return Err(parse_error(
+            line_no,
+            column_offset + i + 1,
+            "Expected lambda",
+            line_src,
+        ));
     }
     i += "lambda".len();
     i = skip_ws(bytes, i);
@@ -1218,15 +1558,27 @@ fn parse_lambda(
         for p in params_src.split(',') {
             let p = p.trim();
             if !is_valid_ident(p) {
-                return Err(parse_error(line_no, column_offset + params_start + 1, "Invalid lambda param", line_src));
+                return Err(parse_error(
+                    line_no,
+                    column_offset + params_start + 1,
+                    "Invalid lambda param",
+                    line_src,
+                ));
             }
             params.push(p.to_string());
         }
     }
     i += 1; // skip ':'
     let body_start = skip_ws(bytes, i);
-    let (body_expr, next) = parse_expression(segment, body_start, line_no, column_offset, line_src)?;
-    Ok((Expr::Lambda { params, body: Box::new(body_expr) }, next))
+    let (body_expr, next) =
+        parse_expression(segment, body_start, line_no, column_offset, line_src)?;
+    Ok((
+        Expr::Lambda {
+            params,
+            body: Box::new(body_expr),
+        },
+        next,
+    ))
 }
 
 fn parse_comparison(
@@ -1338,6 +1690,10 @@ fn parse_unary(
         let (expr, next) = parse_primary(segment, i + 1, line_no, column_offset, line_src)?;
         return Ok((Expr::Unary(UnOp::Neg, Box::new(expr)), next));
     }
+    if i < bytes.len() && bytes[i] == b'!' {
+        let (expr, next) = parse_primary(segment, i + 1, line_no, column_offset, line_src)?;
+        return Ok((Expr::Unary(UnOp::Not, Box::new(expr)), next));
+    }
     parse_primary(segment, i, line_no, column_offset, line_src)
 }
 
@@ -1377,19 +1733,22 @@ fn parse_primary(
     idx = skip_ws(bytes, idx);
     loop {
         if idx < bytes.len() && bytes[idx] == b'(' {
-            let (new_expr, next) = parse_call(expr, segment, idx, line_no, column_offset, line_src)?;
+            let (new_expr, next) =
+                parse_call(expr, segment, idx, line_no, column_offset, line_src)?;
             expr = new_expr;
             idx = skip_ws(bytes, next);
             continue;
         }
         if idx < bytes.len() && bytes[idx] == b'[' {
-            let (new_expr, next) = parse_subscript(expr, segment, idx, line_no, column_offset, line_src)?;
+            let (new_expr, next) =
+                parse_subscript(expr, segment, idx, line_no, column_offset, line_src)?;
             expr = new_expr;
             idx = skip_ws(bytes, next);
             continue;
         }
         if idx < bytes.len() && bytes[idx] == b'.' {
-            let (new_expr, next) = parse_method_call(expr, segment, idx, line_no, column_offset, line_src)?;
+            let (new_expr, next) =
+                parse_method_call(expr, segment, idx, line_no, column_offset, line_src)?;
             expr = new_expr;
             idx = skip_ws(bytes, next);
             continue;
@@ -1409,7 +1768,12 @@ fn parse_tuple_or_group(
     let bytes = segment.as_bytes();
     let i = skip_ws(bytes, start + 1);
     if i >= bytes.len() {
-        return Err(parse_error(line_no, column_offset + start + 1, "Missing ')'", line_src));
+        return Err(parse_error(
+            line_no,
+            column_offset + start + 1,
+            "Missing ')'",
+            line_src,
+        ));
     }
     if bytes[i] == b')' {
         return Ok((Expr::Tuple(Vec::new()), i + 1));
@@ -1422,7 +1786,12 @@ fn parse_tuple_or_group(
         loop {
             idx = skip_ws(bytes, idx);
             if idx >= bytes.len() {
-                return Err(parse_error(line_no, column_offset + idx + 1, "Missing ')'", line_src));
+                return Err(parse_error(
+                    line_no,
+                    column_offset + idx + 1,
+                    "Missing ')'",
+                    line_src,
+                ));
             }
             if bytes[idx] == b')' {
                 return Ok((Expr::Tuple(items), idx + 1));
@@ -1466,7 +1835,12 @@ fn parse_list_literal(
     let bytes = segment.as_bytes();
     let mut i = skip_ws(bytes, start + 1);
     if i >= bytes.len() {
-        return Err(parse_error(line_no, column_offset + i + 1, "Missing ']'", line_src));
+        return Err(parse_error(
+            line_no,
+            column_offset + i + 1,
+            "Missing ']'",
+            line_src,
+        ));
     }
     if bytes[i] == b']' {
         return Ok((Expr::List(Vec::new()), i + 1));
@@ -1491,12 +1865,14 @@ fn parse_list_literal(
         let target_src = rest[..in_pos].trim();
         let target = parse_for_target(target_src, line_no, column_offset + after_for, line_src)?;
         let iter_start = after_for + in_pos + " in ".len();
-        let (iter_expr, iter_end) = parse_expression(segment, iter_start, line_no, column_offset, line_src)?;
+        let (iter_expr, iter_end) =
+            parse_expression(segment, iter_start, line_no, column_offset, line_src)?;
         let mut end_pos = skip_ws(bytes, iter_end);
         let mut cond = None;
         if end_pos < bytes.len() && segment[end_pos..].starts_with("if") {
             let cond_start = skip_ws(bytes, end_pos + "if".len());
-            let (cond_expr, cond_end) = parse_expression(segment, cond_start, line_no, column_offset, line_src)?;
+            let (cond_expr, cond_end) =
+                parse_expression(segment, cond_start, line_no, column_offset, line_src)?;
             cond = Some(Box::new(cond_expr));
             end_pos = skip_ws(bytes, cond_end);
         }
@@ -1524,7 +1900,12 @@ fn parse_list_literal(
     i = next;
     loop {
         if i >= bytes.len() {
-            return Err(parse_error(line_no, column_offset + i + 1, "Missing ']'", line_src));
+            return Err(parse_error(
+                line_no,
+                column_offset + i + 1,
+                "Missing ']'",
+                line_src,
+            ));
         }
         if bytes[i] == b']' {
             return Ok((Expr::List(items), i + 1));
@@ -1532,7 +1913,12 @@ fn parse_list_literal(
         if bytes[i] == b',' {
             i = skip_ws(bytes, i + 1);
             if i >= bytes.len() {
-                return Err(parse_error(line_no, column_offset + i + 1, "Missing ']'", line_src));
+                return Err(parse_error(
+                    line_no,
+                    column_offset + i + 1,
+                    "Missing ']'",
+                    line_src,
+                ));
             }
             if bytes[i] == b']' {
                 return Ok((Expr::List(items), i + 1));
@@ -1561,7 +1947,12 @@ fn parse_brace_literal(
     let bytes = segment.as_bytes();
     let mut i = skip_ws(bytes, start + 1);
     if i >= bytes.len() {
-        return Err(parse_error(line_no, column_offset + i + 1, "Missing '}'", line_src));
+        return Err(parse_error(
+            line_no,
+            column_offset + i + 1,
+            "Missing '}'",
+            line_src,
+        ));
     }
     if bytes[i] == b'}' {
         return Ok((Expr::Dict(Vec::new()), i + 1));
@@ -1589,14 +1980,17 @@ fn parse_brace_literal(
                 )
             })?;
             let target_src = rest[..in_pos].trim();
-            let target = parse_for_target(target_src, line_no, column_offset + after_for, line_src)?;
+            let target =
+                parse_for_target(target_src, line_no, column_offset + after_for, line_src)?;
             let iter_start = after_for + in_pos + " in ".len();
-            let (iter_expr, iter_end) = parse_expression(segment, iter_start, line_no, column_offset, line_src)?;
+            let (iter_expr, iter_end) =
+                parse_expression(segment, iter_start, line_no, column_offset, line_src)?;
             let mut end_pos = skip_ws(bytes, iter_end);
             let mut cond = None;
             if end_pos < bytes.len() && segment[end_pos..].starts_with("if") {
                 let cond_start = skip_ws(bytes, end_pos + "if".len());
-                let (cond_expr, cond_end) = parse_expression(segment, cond_start, line_no, column_offset, line_src)?;
+                let (cond_expr, cond_end) =
+                    parse_expression(segment, cond_start, line_no, column_offset, line_src)?;
                 cond = Some(Box::new(cond_expr));
                 end_pos = skip_ws(bytes, cond_end);
             }
@@ -1625,7 +2019,12 @@ fn parse_brace_literal(
             loop {
                 i = skip_ws(bytes, i);
                 if i >= bytes.len() {
-                    return Err(parse_error(line_no, column_offset + i + 1, "Missing '}'", line_src));
+                    return Err(parse_error(
+                        line_no,
+                        column_offset + i + 1,
+                        "Missing '}'",
+                        line_src,
+                    ));
                 }
                 if bytes[i] == b'}' {
                     return Ok((Expr::Dict(entries), i + 1));
@@ -1640,7 +2039,8 @@ fn parse_brace_literal(
                         line_src,
                     ));
                 }
-                let (v, mut n3) = parse_expression(segment, n2 + 1, line_no, column_offset, line_src)?;
+                let (v, mut n3) =
+                    parse_expression(segment, n2 + 1, line_no, column_offset, line_src)?;
                 entries.push((k, v));
                 n3 = skip_ws(bytes, n3);
                 if n3 < bytes.len() && bytes[n3] == b',' {
@@ -1673,7 +2073,12 @@ fn parse_brace_literal(
         loop {
             i = skip_ws(bytes, i);
             if i >= bytes.len() {
-                return Err(parse_error(line_no, column_offset + i + 1, "Missing '}'", line_src));
+                return Err(parse_error(
+                    line_no,
+                    column_offset + i + 1,
+                    "Missing '}'",
+                    line_src,
+                ));
             }
             if bytes[i] == b'}' {
                 return Ok((Expr::Set(items), i + 1));
@@ -1709,12 +2114,14 @@ fn parse_subscript(
     line_src: &str,
 ) -> Result<(Expr, usize), ParseError> {
     let bytes = segment.as_bytes();
-    let (colon_pos, close_idx) = scan_subscript(segment, open_idx, line_no, column_offset, line_src)?;
+    let (colon_pos, close_idx) =
+        scan_subscript(segment, open_idx, line_no, column_offset, line_src)?;
     let content_start = skip_ws(bytes, open_idx + 1);
     if let Some(colon) = colon_pos {
         let mut start_expr = None;
         if content_start < colon {
-            let (s, next) = parse_expression(segment, content_start, line_no, column_offset, line_src)?;
+            let (s, next) =
+                parse_expression(segment, content_start, line_no, column_offset, line_src)?;
             let next = skip_ws(bytes, next);
             if next > colon {
                 return Err(parse_error(
@@ -1750,7 +2157,8 @@ fn parse_subscript(
             close_idx + 1,
         ))
     } else {
-        let (index_expr, next) = parse_expression(segment, content_start, line_no, column_offset, line_src)?;
+        let (index_expr, next) =
+            parse_expression(segment, content_start, line_no, column_offset, line_src)?;
         let next = skip_ws(bytes, next);
         if next != close_idx {
             return Err(parse_error(
@@ -1760,7 +2168,10 @@ fn parse_subscript(
                 line_src,
             ));
         }
-        Ok((Expr::Index(Box::new(object), Box::new(index_expr)), close_idx + 1))
+        Ok((
+            Expr::Index(Box::new(object), Box::new(index_expr)),
+            close_idx + 1,
+        ))
     }
 }
 
@@ -1794,7 +2205,12 @@ fn parse_method_call(
         i += 1;
         i = skip_ws(bytes, i);
         if i >= bytes.len() {
-            return Err(parse_error(line_no, column_offset + i + 1, "Missing ')'", line_src));
+            return Err(parse_error(
+                line_no,
+                column_offset + i + 1,
+                "Missing ')'",
+                line_src,
+            ));
         }
         let mut arg = None;
         if bytes[i] != b')' {
@@ -1850,10 +2266,21 @@ fn parse_call(
     loop {
         i = skip_ws(bytes, i);
         if i >= bytes.len() {
-            return Err(parse_error(line_no, column_offset + i + 1, "Missing ')'", line_src));
+            return Err(parse_error(
+                line_no,
+                column_offset + i + 1,
+                "Missing ')'",
+                line_src,
+            ));
         }
         if bytes[i] == b')' {
-            return Ok((Expr::Call { callee: Box::new(callee), args }, i + 1));
+            return Ok((
+                Expr::Call {
+                    callee: Box::new(callee),
+                    args,
+                },
+                i + 1,
+            ));
         }
         if segment[i..].starts_with("key") {
             let mut k = i + 3;
@@ -1868,9 +2295,20 @@ fn parse_call(
                     i += 1;
                     continue;
                 } else if i < bytes.len() && bytes[i] == b')' {
-                    return Ok((Expr::Call { callee: Box::new(callee), args }, i + 1));
+                    return Ok((
+                        Expr::Call {
+                            callee: Box::new(callee),
+                            args,
+                        },
+                        i + 1,
+                    ));
                 } else if i >= bytes.len() {
-                    return Err(parse_error(line_no, column_offset + i + 1, "Missing ')'", line_src));
+                    return Err(parse_error(
+                        line_no,
+                        column_offset + i + 1,
+                        "Missing ')'",
+                        line_src,
+                    ));
                 }
                 continue;
             }
@@ -1882,7 +2320,13 @@ fn parse_call(
             i += 1;
             continue;
         } else if i < bytes.len() && bytes[i] == b')' {
-            return Ok((Expr::Call { callee: Box::new(callee), args }, i + 1));
+            return Ok((
+                Expr::Call {
+                    callee: Box::new(callee),
+                    args,
+                },
+                i + 1,
+            ));
         } else {
             return Err(parse_error(
                 line_no,
@@ -2102,7 +2546,12 @@ fn collect_targets_in_expr(expr: &Expr, set: &mut HashSet<String>) {
                 collect_targets_in_expr(v, set);
             }
         }
-        Expr::ListComp { target, iter, expr, cond } => {
+        Expr::ListComp {
+            target,
+            iter,
+            expr,
+            cond,
+        } => {
             match target {
                 ForTarget::Name(n) => {
                     set.insert(n.clone());
@@ -2119,7 +2568,13 @@ fn collect_targets_in_expr(expr: &Expr, set: &mut HashSet<String>) {
                 collect_targets_in_expr(c, set);
             }
         }
-        Expr::DictComp { target, iter, key, value, cond } => {
+        Expr::DictComp {
+            target,
+            iter,
+            key,
+            value,
+            cond,
+        } => {
             match target {
                 ForTarget::Name(n) => {
                     set.insert(n.clone());
@@ -2226,7 +2681,10 @@ fn collect_assigned_vars(program: &Program) -> Vec<String> {
                     }
                     collect_targets_in_expr(expr, set);
                 }
-                Stmt::If { branches, else_branch } => {
+                Stmt::If {
+                    branches,
+                    else_branch,
+                } => {
                     for (cond, body) in branches {
                         collect_targets_in_expr(cond, set);
                         visit(body, set);
@@ -2258,7 +2716,11 @@ fn collect_assigned_vars(program: &Program) -> Vec<String> {
                     collect_targets_in_expr(expr, set);
                     visit(body, set);
                 }
-                Stmt::Try { body, handlers, finally_body } => {
+                Stmt::Try {
+                    body,
+                    handlers,
+                    finally_body,
+                } => {
                     visit(body, set);
                     for h in handlers {
                         if let Some(b) = &h.bind {
@@ -2343,7 +2805,10 @@ fn collect_assigned_vars_body(body: &[Stmt]) -> Vec<String> {
                     }
                     collect_targets_in_expr(expr, set);
                 }
-                Stmt::If { branches, else_branch } => {
+                Stmt::If {
+                    branches,
+                    else_branch,
+                } => {
                     for (cond, b) in branches {
                         collect_targets_in_expr(cond, set);
                         visit(b, set);
@@ -2375,7 +2840,11 @@ fn collect_assigned_vars_body(body: &[Stmt]) -> Vec<String> {
                     collect_targets_in_expr(expr, set);
                     visit(body, set);
                 }
-                Stmt::Try { body, handlers, finally_body } => {
+                Stmt::Try {
+                    body,
+                    handlers,
+                    finally_body,
+                } => {
                     visit(body, set);
                     for h in handlers {
                         if let Some(b) = &h.bind {
@@ -2446,8 +2915,7 @@ fn codegen_c(program: &Program) -> String {
     for f in funcs_clone {
         if let Some(ref n) = f.name {
             cg.push_indent(1);
-            cg.out
-                .push_str(&format!("value_free({});\n", cg.cname(n)));
+            cg.out.push_str(&format!("value_free({});\n", cg.cname(n)));
             cg.push_indent(1);
             cg.out
                 .push_str(&format!("{} = value_func(&{});\n", cg.cname(n), f.id));
@@ -2523,12 +2991,22 @@ impl CodeGen {
         format!("{}{}", prefix, self.temp_counter)
     }
 
-    fn add_function(&mut self, name: Option<String>, params: Vec<String>, body: Vec<Stmt>) -> String {
+    fn add_function(
+        &mut self,
+        name: Option<String>,
+        params: Vec<String>,
+        body: Vec<Stmt>,
+    ) -> String {
         let id = self.new_sym("fn");
         if let Some(ref n) = name {
             self.function_map.insert(n.clone(), id.clone());
         }
-        self.functions.push(FunctionDef { id: id.clone(), name, params, body });
+        self.functions.push(FunctionDef {
+            id: id.clone(),
+            name,
+            params,
+            body,
+        });
         id
     }
 
@@ -2541,9 +3019,18 @@ impl CodeGen {
         id
     }
 
-    fn add_method(&mut self, class: &str, name: &str, params: Vec<String>, body: Vec<Stmt>) -> String {
+    fn add_method(
+        &mut self,
+        class: &str,
+        name: &str,
+        params: Vec<String>,
+        body: Vec<Stmt>,
+    ) -> String {
         let id = self.add_function(None, params, body);
-        self.class_methods.entry(class.to_string()).or_default().push((name.to_string(), id.clone()));
+        self.class_methods
+            .entry(class.to_string())
+            .or_default()
+            .push((name.to_string(), id.clone()));
         id
     }
 
@@ -2560,13 +3047,21 @@ impl CodeGen {
                 }
                 Stmt::Class { name, methods } => {
                     for m in methods {
-                        if let Stmt::Function { name: mname, params, body } = m {
+                        if let Stmt::Function {
+                            name: mname,
+                            params,
+                            body,
+                        } = m
+                        {
                             self.add_method(name, mname, params.clone(), body.clone());
                             self.register_functions(body);
                         }
                     }
                 }
-                Stmt::If { branches, else_branch } => {
+                Stmt::If {
+                    branches,
+                    else_branch,
+                } => {
                     for (_, b) in branches {
                         self.register_functions(b);
                     }
@@ -2577,7 +3072,11 @@ impl CodeGen {
                 Stmt::While { body, .. } => self.register_functions(body),
                 Stmt::For { body, .. } => self.register_functions(body),
                 Stmt::With { body, .. } => self.register_functions(body),
-                Stmt::Try { body, handlers, finally_body } => {
+                Stmt::Try {
+                    body,
+                    handlers,
+                    finally_body,
+                } => {
                     self.register_functions(body);
                     for h in handlers {
                         self.register_functions(&h.body);
@@ -2586,9 +3085,9 @@ impl CodeGen {
                         self.register_functions(f);
                     }
                 }
-                Stmt::ExprStmt { .. }
-                | Stmt::Assign { .. }
-                | Stmt::Print { .. } => self.register_exprs_in_stmt(stmt),
+                Stmt::ExprStmt { .. } | Stmt::Assign { .. } | Stmt::Print { .. } => {
+                    self.register_exprs_in_stmt(stmt)
+                }
                 Stmt::Return { expr } => {
                     if let Some(e) = expr {
                         self.register_functions_expr(e);
@@ -2615,7 +3114,9 @@ impl CodeGen {
     fn register_functions_expr(&mut self, expr: &Expr) {
         match expr {
             Expr::Lambda { params, body } => {
-                let func_body = vec![Stmt::Return { expr: Some((**body).clone()) }];
+                let func_body = vec![Stmt::Return {
+                    expr: Some((**body).clone()),
+                }];
                 let key = format!("lambda:{:?}", expr);
                 self.add_lambda(key, params.clone(), func_body);
             }
@@ -2654,7 +3155,9 @@ impl CodeGen {
                     self.register_functions_expr(e);
                 }
             }
-            Expr::ListComp { iter, expr, cond, .. } => {
+            Expr::ListComp {
+                iter, expr, cond, ..
+            } => {
                 self.register_functions_expr(iter);
                 self.register_functions_expr(expr);
                 if let Some(c) = cond {
@@ -2667,7 +3170,13 @@ impl CodeGen {
                     self.register_functions_expr(v);
                 }
             }
-            Expr::DictComp { iter, key, value, cond, .. } => {
+            Expr::DictComp {
+                iter,
+                key,
+                value,
+                cond,
+                ..
+            } => {
                 self.register_functions_expr(iter);
                 self.register_functions_expr(key);
                 self.register_functions_expr(value);
@@ -2709,8 +3218,11 @@ impl CodeGen {
             self.out
                 .push_str(&format!("value_free({});\n", self.cname(p)));
             self.push_indent(1);
-            self.out
-                .push_str(&format!("{} = value_clone(args[{}]);\n", self.cname(p), idx));
+            self.out.push_str(&format!(
+                "{} = value_clone(args[{}]);\n",
+                self.cname(p),
+                idx
+            ));
         }
         let prev_return = self.return_ctx.replace(ReturnContext {
             ret_var: ret_var.clone(),
@@ -2723,16 +3235,17 @@ impl CodeGen {
             self.return_ctx = None;
         }
         self.push_indent(1);
-        self.out.push_str(&format!("goto {};\n", format!("{}_ret", def.id)));
-        self.out.push_str(&format!("{}:\n", format!("{}_ret", def.id)));
+        self.out
+            .push_str(&format!("goto {};\n", format!("{}_ret", def.id)));
+        self.out
+            .push_str(&format!("{}:\n", format!("{}_ret", def.id)));
         for name in &assigned {
             self.push_indent(1);
             self.out
                 .push_str(&format!("value_free({});\n", self.cname(name)));
         }
         self.push_indent(1);
-        self.out
-            .push_str(&format!("return {};\n", ret_var));
+        self.out.push_str(&format!("return {};\n", ret_var));
         self.out.push_str("}\n\n");
     }
 
@@ -2750,8 +3263,11 @@ impl CodeGen {
                     self.out
                         .push_str(&format!("value_free({});\n", self.cname(name)));
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("{} = value_func(&{});\n", self.cname(name), id_val));
+                    self.out.push_str(&format!(
+                        "{} = value_func(&{});\n",
+                        self.cname(name),
+                        id_val
+                    ));
                 }
             }
             Stmt::Class { name, .. } => {
@@ -2759,8 +3275,11 @@ impl CodeGen {
                 self.out
                     .push_str(&format!("value_free({});\n", self.cname(name)));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("{} = value_class(\"{}\");\n", self.cname(name), name));
+                self.out.push_str(&format!(
+                    "{} = value_class(\"{}\");\n",
+                    self.cname(name),
+                    name
+                ));
                 if let Some(methods) = self.class_methods.get(name).cloned() {
                     for (mname, fid) in methods {
                         let tmp = self.new_temp();
@@ -2775,8 +3294,7 @@ impl CodeGen {
                             tmp
                         ));
                         self.push_indent(indent);
-                        self.out
-                            .push_str(&format!("value_free({});\n", tmp));
+                        self.out.push_str(&format!("value_free({});\n", tmp));
                     }
                 }
             }
@@ -2807,7 +3325,10 @@ impl CodeGen {
                 self.push_indent(indent);
                 self.out.push_str(&format!("value_free({});\n", tmp));
             }
-            Stmt::If { branches, else_branch } => {
+            Stmt::If {
+                branches,
+                else_branch,
+            } => {
                 self.emit_if(branches, else_branch.as_ref(), indent);
             }
             Stmt::While { cond, body } => {
@@ -2819,15 +3340,13 @@ impl CodeGen {
                 self.out
                     .push_str(&format!("if (!value_truthy({})) {{\n", cond_tmp));
                 self.push_indent(indent + 2);
-                self.out
-                    .push_str(&format!("value_free({});\n", cond_tmp));
+                self.out.push_str(&format!("value_free({});\n", cond_tmp));
                 self.push_indent(indent + 2);
                 self.out.push_str("break;\n");
                 self.push_indent(indent + 1);
                 self.out.push_str("}\n");
                 self.push_indent(indent + 1);
-                self.out
-                    .push_str(&format!("value_free({});\n", cond_tmp));
+                self.out.push_str(&format!("value_free({});\n", cond_tmp));
                 self.emit_block(body, indent + 1);
                 self.push_indent(indent);
                 self.out.push_str("}\n");
@@ -2837,8 +3356,10 @@ impl CodeGen {
                 self.emit_expr(iter, &iter_tmp, indent);
                 let list_tmp = self.new_temp();
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("Value {} = value_iterable_to_list({});\n", list_tmp, iter_tmp));
+                self.out.push_str(&format!(
+                    "Value {} = value_iterable_to_list({});\n",
+                    list_tmp, iter_tmp
+                ));
                 self.push_indent(indent);
                 self.out.push_str(&format!("value_free({});\n", iter_tmp));
                 let idx_name = self.new_sym("i");
@@ -2856,14 +3377,12 @@ impl CodeGen {
                 ));
                 self.emit_for_target_bind(target, &item_tmp, indent + 1);
                 self.push_indent(indent + 1);
-                self.out
-                    .push_str(&format!("value_free({});\n", item_tmp));
+                self.out.push_str(&format!("value_free({});\n", item_tmp));
                 self.emit_block(body, indent + 1);
                 self.push_indent(indent);
                 self.out.push_str("}\n");
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", list_tmp));
+                self.out.push_str(&format!("value_free({});\n", list_tmp));
             }
             Stmt::With { target, expr, body } => {
                 let ctx_tmp = self.new_temp();
@@ -2872,44 +3391,44 @@ impl CodeGen {
                 self.out
                     .push_str(&format!("value_free({});\n", self.cname(target)));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("{} = value_clone({});\n", self.cname(target), ctx_tmp));
+                self.out.push_str(&format!(
+                    "{} = value_clone({});\n",
+                    self.cname(target),
+                    ctx_tmp
+                ));
                 self.emit_block(body, indent + 1);
                 self.push_indent(indent);
                 self.out
                     .push_str(&format!("value_with_close({});\n", ctx_tmp));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", ctx_tmp));
+                self.out.push_str(&format!("value_free({});\n", ctx_tmp));
             }
-            Stmt::Try { body, handlers, finally_body } => {
+            Stmt::Try {
+                body,
+                handlers,
+                finally_body,
+            } => {
                 let frame = self.new_sym("exc_frame");
                 let flag = self.new_sym("exc_flag");
                 let handled = self.new_sym("exc_handled");
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("ExcFrame {};\n", frame));
+                self.out.push_str(&format!("ExcFrame {};\n", frame));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("exc_push(&{});\n", frame));
+                self.out.push_str(&format!("exc_push(&{});\n", frame));
                 self.push_indent(indent);
                 self.out
                     .push_str(&format!("int {} = setjmp({}.buf);\n", flag, frame));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("int {} = 0;\n", handled));
+                self.out.push_str(&format!("int {} = 0;\n", handled));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("if (!{}) {{\n", flag));
+                self.out.push_str(&format!("if (!{}) {{\n", flag));
                 self.emit_block(body, indent + 1);
                 self.push_indent(indent);
                 self.out.push_str("}\n");
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("exc_pop(&{});\n", frame));
+                self.out.push_str(&format!("exc_pop(&{});\n", frame));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("if ({}) {{\n", flag));
+                self.out.push_str(&format!("if ({}) {{\n", flag));
                 for h in handlers {
                     self.push_indent(indent + 1);
                     self.out.push_str(&format!(
@@ -2929,8 +3448,7 @@ impl CodeGen {
                             .push_str(&format!("{} = exc_get();\n", self.cname(bind)));
                     }
                     self.push_indent(indent + 2);
-                    self.out
-                        .push_str(&format!("{} = 1;\n", handled));
+                    self.out.push_str(&format!("{} = 1;\n", handled));
                     self.push_indent(indent + 2);
                     self.out.push_str("exc_clear();\n");
                     self.emit_block(&h.body, indent + 2);
@@ -2961,33 +3479,27 @@ impl CodeGen {
                         let tmp = self.new_temp();
                         self.emit_expr(e, &tmp, indent);
                         self.push_indent(indent);
-                        self.out
-                            .push_str(&format!("value_free({});\n", ret_var));
+                        self.out.push_str(&format!("value_free({});\n", ret_var));
                         self.push_indent(indent);
-                        self.out
-                            .push_str(&format!("{} = {};\n", ret_var, tmp));
+                        self.out.push_str(&format!("{} = {};\n", ret_var, tmp));
                     } else {
                         let tmp = self.new_temp();
                         self.push_indent(indent);
                         self.out
                             .push_str(&format!("Value {} = value_int(0);\n", tmp));
                         self.push_indent(indent);
-                        self.out
-                            .push_str(&format!("value_free({});\n", ret_var));
+                        self.out.push_str(&format!("value_free({});\n", ret_var));
                         self.push_indent(indent);
-                        self.out
-                            .push_str(&format!("{} = {};\n", ret_var, tmp));
+                        self.out.push_str(&format!("{} = {};\n", ret_var, tmp));
                     }
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("goto {};\n", label));
+                    self.out.push_str(&format!("goto {};\n", label));
                 } else {
                     if let Some(e) = expr {
                         let tmp = self.new_temp();
                         self.emit_expr(e, &tmp, indent);
                         self.push_indent(indent);
-                        self.out
-                            .push_str(&format!("value_free({});\n", tmp));
+                        self.out.push_str(&format!("value_free({});\n", tmp));
                     }
                 }
             }
@@ -2995,13 +3507,17 @@ impl CodeGen {
                 let tmp = self.new_temp();
                 self.emit_expr(expr, &tmp, indent);
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("exc_raise({});\n", tmp));
+                self.out.push_str(&format!("exc_raise({});\n", tmp));
             }
         }
     }
 
-    fn emit_if(&mut self, branches: &[(Expr, Vec<Stmt>)], else_branch: Option<&Vec<Stmt>>, indent: usize) {
+    fn emit_if(
+        &mut self,
+        branches: &[(Expr, Vec<Stmt>)],
+        else_branch: Option<&Vec<Stmt>>,
+        indent: usize,
+    ) {
         if branches.is_empty() {
             if let Some(body) = else_branch {
                 self.emit_block(body, indent);
@@ -3015,14 +3531,12 @@ impl CodeGen {
         self.out
             .push_str(&format!("if (value_truthy({})) {{\n", cond_tmp));
         self.push_indent(indent + 1);
-        self.out
-            .push_str(&format!("value_free({});\n", cond_tmp));
+        self.out.push_str(&format!("value_free({});\n", cond_tmp));
         self.emit_block(body, indent + 1);
         self.push_indent(indent);
         self.out.push_str("} else {\n");
         self.push_indent(indent + 1);
-        self.out
-            .push_str(&format!("value_free({});\n", cond_tmp));
+        self.out.push_str(&format!("value_free({});\n", cond_tmp));
         if branches.len() > 1 {
             self.emit_if(&branches[1..], else_branch, indent + 1);
         } else if let Some(body) = else_branch {
@@ -3047,8 +3561,11 @@ impl CodeGen {
                 } else {
                     let lhs_tmp = self.new_temp();
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("Value {} = value_clone({});\n", lhs_tmp, self.cname(name)));
+                    self.out.push_str(&format!(
+                        "Value {} = value_clone({});\n",
+                        lhs_tmp,
+                        self.cname(name)
+                    ));
                     let rhs_tmp = self.new_temp();
                     self.emit_expr(expr, &rhs_tmp, indent);
                     let func = match op {
@@ -3060,8 +3577,10 @@ impl CodeGen {
                     };
                     let res_tmp = self.new_temp();
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("Value {} = {}({}, {});\n", res_tmp, func, lhs_tmp, rhs_tmp));
+                    self.out.push_str(&format!(
+                        "Value {} = {}({}, {});\n",
+                        res_tmp, func, lhs_tmp, rhs_tmp
+                    ));
                     self.push_indent(indent);
                     self.out
                         .push_str(&format!("value_free({});\n", self.cname(name)));
@@ -3069,11 +3588,9 @@ impl CodeGen {
                     self.out
                         .push_str(&format!("{} = {};\n", self.cname(name), res_tmp));
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", lhs_tmp));
+                    self.out.push_str(&format!("value_free({});\n", lhs_tmp));
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", rhs_tmp));
+                    self.out.push_str(&format!("value_free({});\n", rhs_tmp));
                 }
             }
             AssignTarget::Subscript { object, index } => {
@@ -3089,75 +3606,23 @@ impl CodeGen {
                     self.push_indent(indent);
                     self.out.push_str(&format!(
                         "value_set_item({}, {}, {});\n",
-                        self.cname(container_name), idx_tmp, val_tmp
+                        self.cname(container_name),
+                        idx_tmp,
+                        val_tmp
                     ));
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", idx_tmp));
+                    self.out.push_str(&format!("value_free({});\n", idx_tmp));
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", val_tmp));
+                    self.out.push_str(&format!("value_free({});\n", val_tmp));
                 } else {
                     let cur_tmp = self.new_temp();
                     self.push_indent(indent);
                     self.out.push_str(&format!(
                         "Value {} = value_index({}, {});\n",
-                        cur_tmp, self.cname(container_name), idx_tmp
+                        cur_tmp,
+                        self.cname(container_name),
+                        idx_tmp
                     ));
-                    let rhs_tmp = self.new_temp();
-                    self.emit_expr(expr, &rhs_tmp, indent);
-                    let func = match op {
-                        AssignOp::Add => "value_add",
-                        AssignOp::Sub => "value_sub",
-                        AssignOp::Mul => "value_mul",
-                        AssignOp::Div => "value_div",
-                        AssignOp::Assign => unreachable!(),
-                    };
-                    let res_tmp = self.new_temp();
-                    self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("Value {} = {}({}, {});\n", res_tmp, func, cur_tmp, rhs_tmp));
-                    self.push_indent(indent);
-                    self.out.push_str(&format!(
-                        "value_set_item({}, {}, {});\n",
-                        self.cname(container_name), idx_tmp, res_tmp
-                    ));
-                    self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", idx_tmp));
-                    self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", cur_tmp));
-                    self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", rhs_tmp));
-                    self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", res_tmp));
-                }
-            }
-            AssignTarget::Attr { object, attr } => {
-                let obj_tmp = self.new_temp();
-                self.emit_expr(object, &obj_tmp, indent);
-                if matches!(op, AssignOp::Assign) {
-                    let val_tmp = self.new_temp();
-                    self.emit_expr(expr, &val_tmp, indent);
-                    self.push_indent(indent);
-                    self.out.push_str(&format!(
-                        "value_set_attr({}, \"{}\", {});\n",
-                        obj_tmp, attr, val_tmp
-                    ));
-                    self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", obj_tmp));
-                    self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", val_tmp));
-                } else {
-                    let cur_tmp = self.new_temp();
-                    self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("Value {} = value_get_attr({}, \"{}\");\n", cur_tmp, obj_tmp, attr));
                     let rhs_tmp = self.new_temp();
                     self.emit_expr(expr, &rhs_tmp, indent);
                     let func = match op {
@@ -3174,20 +3639,72 @@ impl CodeGen {
                         res_tmp, func, cur_tmp, rhs_tmp
                     ));
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_set_attr({}, \"{}\", {});\n", obj_tmp, attr, res_tmp));
+                    self.out.push_str(&format!(
+                        "value_set_item({}, {}, {});\n",
+                        self.cname(container_name),
+                        idx_tmp,
+                        res_tmp
+                    ));
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", obj_tmp));
+                    self.out.push_str(&format!("value_free({});\n", idx_tmp));
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", cur_tmp));
+                    self.out.push_str(&format!("value_free({});\n", cur_tmp));
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", rhs_tmp));
+                    self.out.push_str(&format!("value_free({});\n", rhs_tmp));
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", res_tmp));
+                    self.out.push_str(&format!("value_free({});\n", res_tmp));
+                }
+            }
+            AssignTarget::Attr { object, attr } => {
+                let obj_tmp = self.new_temp();
+                self.emit_expr(object, &obj_tmp, indent);
+                if matches!(op, AssignOp::Assign) {
+                    let val_tmp = self.new_temp();
+                    self.emit_expr(expr, &val_tmp, indent);
+                    self.push_indent(indent);
+                    self.out.push_str(&format!(
+                        "value_set_attr({}, \"{}\", {});\n",
+                        obj_tmp, attr, val_tmp
+                    ));
+                    self.push_indent(indent);
+                    self.out.push_str(&format!("value_free({});\n", obj_tmp));
+                    self.push_indent(indent);
+                    self.out.push_str(&format!("value_free({});\n", val_tmp));
+                } else {
+                    let cur_tmp = self.new_temp();
+                    self.push_indent(indent);
+                    self.out.push_str(&format!(
+                        "Value {} = value_get_attr({}, \"{}\");\n",
+                        cur_tmp, obj_tmp, attr
+                    ));
+                    let rhs_tmp = self.new_temp();
+                    self.emit_expr(expr, &rhs_tmp, indent);
+                    let func = match op {
+                        AssignOp::Add => "value_add",
+                        AssignOp::Sub => "value_sub",
+                        AssignOp::Mul => "value_mul",
+                        AssignOp::Div => "value_div",
+                        AssignOp::Assign => unreachable!(),
+                    };
+                    let res_tmp = self.new_temp();
+                    self.push_indent(indent);
+                    self.out.push_str(&format!(
+                        "Value {} = {}({}, {});\n",
+                        res_tmp, func, cur_tmp, rhs_tmp
+                    ));
+                    self.push_indent(indent);
+                    self.out.push_str(&format!(
+                        "value_set_attr({}, \"{}\", {});\n",
+                        obj_tmp, attr, res_tmp
+                    ));
+                    self.push_indent(indent);
+                    self.out.push_str(&format!("value_free({});\n", obj_tmp));
+                    self.push_indent(indent);
+                    self.out.push_str(&format!("value_free({});\n", cur_tmp));
+                    self.push_indent(indent);
+                    self.out.push_str(&format!("value_free({});\n", rhs_tmp));
+                    self.push_indent(indent);
+                    self.out.push_str(&format!("value_free({});\n", res_tmp));
                 }
             }
             AssignTarget::Tuple { items } => {
@@ -3195,15 +3712,18 @@ impl CodeGen {
                 self.emit_expr(expr, &src_tmp, indent);
                 let list_tmp = self.new_temp();
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("Value {} = value_iterable_to_list({});\n", list_tmp, src_tmp));
+                self.out.push_str(&format!(
+                    "Value {} = value_iterable_to_list({});\n",
+                    list_tmp, src_tmp
+                ));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", src_tmp));
+                self.out.push_str(&format!("value_free({});\n", src_tmp));
                 let len_sym = self.new_sym("len");
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("size_t {} = {}.as.list ? {}.as.list->len : 0;\n", len_sym, list_tmp, list_tmp));
+                self.out.push_str(&format!(
+                    "size_t {} = {}.as.list ? {}.as.list->len : 0;\n",
+                    len_sym, list_tmp, list_tmp
+                ));
                 let mut star_idx = None;
                 for (idx, it) in items.iter().enumerate() {
                     if let AssignTarget::Starred(_) = it {
@@ -3225,8 +3745,10 @@ impl CodeGen {
                                 let start_tmp = self.new_temp();
                                 let end_tmp = self.new_temp();
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("Value {} = value_int({});\n", start_tmp, idx));
+                                self.out.push_str(&format!(
+                                    "Value {} = value_int({});\n",
+                                    start_tmp, idx
+                                ));
                                 self.push_indent(indent);
                                 self.out.push_str(&format!(
                                     "Value {} = value_int((long long){} - {} + {});\n",
@@ -3238,11 +3760,9 @@ impl CodeGen {
                                     list_tmp, start_tmp, end_tmp
                                 ));
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("value_free({});\n", start_tmp));
+                                self.out.push_str(&format!("value_free({});\n", start_tmp));
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("value_free({});\n", end_tmp));
+                                self.out.push_str(&format!("value_free({});\n", end_tmp));
                                 self.push_indent(indent);
                                 self.out
                                     .push_str(&format!("value_free({});\n", self.cname(name)));
@@ -3265,8 +3785,7 @@ impl CodeGen {
                                 ));
                                 self.assign_to_target(it, &item_tmp, indent);
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("value_free({});\n", item_tmp));
+                                self.out.push_str(&format!("value_free({});\n", item_tmp));
                             }
                         }
                     }
@@ -3287,24 +3806,23 @@ impl CodeGen {
                         ));
                         self.assign_to_target(it, &item_tmp, indent);
                         self.push_indent(indent);
-                        self.out
-                            .push_str(&format!("value_free({});\n", item_tmp));
+                        self.out.push_str(&format!("value_free({});\n", item_tmp));
                     }
                 }
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", list_tmp));
+                self.out.push_str(&format!("value_free({});\n", list_tmp));
             }
             AssignTarget::Starred(name) => {
                 let tmp = self.new_temp();
                 self.emit_expr(expr, &tmp, indent);
                 let list_tmp = self.new_temp();
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("Value {} = value_iterable_to_list({});\n", list_tmp, tmp));
+                self.out.push_str(&format!(
+                    "Value {} = value_iterable_to_list({});\n",
+                    list_tmp, tmp
+                ));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", tmp));
+                self.out.push_str(&format!("value_free({});\n", tmp));
                 self.push_indent(indent);
                 self.out
                     .push_str(&format!("value_free({});\n", self.cname(name)));
@@ -3322,8 +3840,11 @@ impl CodeGen {
                 self.out
                     .push_str(&format!("value_free({});\n", self.cname(name)));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("{} = value_clone({});\n", self.cname(name), value_tmp));
+                self.out.push_str(&format!(
+                    "{} = value_clone({});\n",
+                    self.cname(name),
+                    value_tmp
+                ));
             }
             AssignTarget::Subscript { object, index } => {
                 let container_name = match object {
@@ -3335,29 +3856,34 @@ impl CodeGen {
                 self.push_indent(indent);
                 self.out.push_str(&format!(
                     "value_set_item({}, {}, {});\n",
-                    self.cname(container_name), idx_tmp, value_tmp
+                    self.cname(container_name),
+                    idx_tmp,
+                    value_tmp
                 ));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", idx_tmp));
+                self.out.push_str(&format!("value_free({});\n", idx_tmp));
             }
             AssignTarget::Starred(name) => {
                 self.push_indent(indent);
                 self.out
                     .push_str(&format!("value_free({});\n", self.cname(name)));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("{} = value_clone({});\n", self.cname(name), value_tmp));
+                self.out.push_str(&format!(
+                    "{} = value_clone({});\n",
+                    self.cname(name),
+                    value_tmp
+                ));
             }
             AssignTarget::Attr { object, attr } => {
                 let obj_tmp = self.new_temp();
                 self.emit_expr(object, &obj_tmp, indent);
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_set_attr({}, \"{}\", {});\n", obj_tmp, attr, value_tmp));
+                self.out.push_str(&format!(
+                    "value_set_attr({}, \"{}\", {});\n",
+                    obj_tmp, attr, value_tmp
+                ));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", obj_tmp));
+                self.out.push_str(&format!("value_free({});\n", obj_tmp));
             }
             AssignTarget::Tuple { .. } => {}
         }
@@ -3370,8 +3896,11 @@ impl CodeGen {
                 self.out
                     .push_str(&format!("value_free({});\n", self.cname(name)));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("{} = value_clone({});\n", self.cname(name), value_tmp));
+                self.out.push_str(&format!(
+                    "{} = value_clone({});\n",
+                    self.cname(name),
+                    value_tmp
+                ));
             }
             ForTarget::Tuple(names) => {
                 self.push_indent(indent);
@@ -3388,7 +3917,9 @@ impl CodeGen {
                     self.push_indent(indent);
                     self.out.push_str(&format!(
                         "{} = value_clone({}.as.tuple->items[{}]);\n",
-                        self.cname(name), value_tmp, idx
+                        self.cname(name),
+                        value_tmp,
+                        idx
                     ));
                 }
             }
@@ -3431,15 +3962,19 @@ impl CodeGen {
                         .push_str(&format!("Value {} = value_func(&{});\n", target, id));
                 } else {
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("Value {} = value_str(\"<lambda missing>\");\n", target));
+                    self.out.push_str(&format!(
+                        "Value {} = value_str(\"<lambda missing>\");\n",
+                        target
+                    ));
                 }
             }
             Expr::List(items) => {
                 if items.is_empty() {
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("Value {} = value_list_literal(0, NULL);\n", target));
+                    self.out.push_str(&format!(
+                        "Value {} = value_list_literal(0, NULL);\n",
+                        target
+                    ));
                 } else {
                     let mut temps = Vec::new();
                     for item in items {
@@ -3466,16 +4001,17 @@ impl CodeGen {
                     ));
                     for t in temps {
                         self.push_indent(indent);
-                        self.out
-                            .push_str(&format!("value_free({});\n", t));
+                        self.out.push_str(&format!("value_free({});\n", t));
                     }
                 }
             }
             Expr::Tuple(items) => {
                 if items.is_empty() {
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("Value {} = value_tuple_literal(0, NULL);\n", target));
+                    self.out.push_str(&format!(
+                        "Value {} = value_tuple_literal(0, NULL);\n",
+                        target
+                    ));
                 } else {
                     let mut temps = Vec::new();
                     for item in items {
@@ -3502,16 +4038,17 @@ impl CodeGen {
                     ));
                     for t in temps {
                         self.push_indent(indent);
-                        self.out
-                            .push_str(&format!("value_free({});\n", t));
+                        self.out.push_str(&format!("value_free({});\n", t));
                     }
                 }
             }
             Expr::Dict(entries) => {
                 if entries.is_empty() {
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("Value {} = value_dict_literal(0, NULL, NULL);\n", target));
+                    self.out.push_str(&format!(
+                        "Value {} = value_dict_literal(0, NULL, NULL);\n",
+                        target
+                    ));
                 } else {
                     let mut key_tmps = Vec::new();
                     let mut val_tmps = Vec::new();
@@ -3553,13 +4090,11 @@ impl CodeGen {
                     ));
                     for t in key_tmps {
                         self.push_indent(indent);
-                        self.out
-                            .push_str(&format!("value_free({});\n", t));
+                        self.out.push_str(&format!("value_free({});\n", t));
                     }
                     for t in val_tmps {
                         self.push_indent(indent);
-                        self.out
-                            .push_str(&format!("value_free({});\n", t));
+                        self.out.push_str(&format!("value_free({});\n", t));
                     }
                 }
             }
@@ -3594,15 +4129,21 @@ impl CodeGen {
                     ));
                     for t in temps {
                         self.push_indent(indent);
-                        self.out
-                            .push_str(&format!("value_free({});\n", t));
+                        self.out.push_str(&format!("value_free({});\n", t));
                     }
                 }
             }
-            Expr::ListComp { target: for_target, iter, expr, cond } => {
+            Expr::ListComp {
+                target: for_target,
+                iter,
+                expr,
+                cond,
+            } => {
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("Value {} = value_list_literal(0, NULL);\n", target));
+                self.out.push_str(&format!(
+                    "Value {} = value_list_literal(0, NULL);\n",
+                    target
+                ));
                 let iter_tmp = self.new_temp();
                 self.emit_expr(iter, &iter_tmp, indent);
                 let list_tmp = self.new_temp();
@@ -3612,8 +4153,7 @@ impl CodeGen {
                     list_tmp, iter_tmp
                 ));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", iter_tmp));
+                self.out.push_str(&format!("value_free({});\n", iter_tmp));
                 let idx = self.new_sym("i");
                 self.push_indent(indent);
                 self.out.push_str(&format!(
@@ -3629,8 +4169,7 @@ impl CodeGen {
                 ));
                 self.emit_for_target_bind(for_target, &item_tmp, indent + 1);
                 self.push_indent(indent + 1);
-                self.out
-                    .push_str(&format!("value_free({});\n", item_tmp));
+                self.out.push_str(&format!("value_free({});\n", item_tmp));
                 if let Some(c) = cond {
                     let cond_tmp = self.new_temp();
                     self.emit_expr(c, &cond_tmp, indent + 1);
@@ -3640,8 +4179,7 @@ impl CodeGen {
                         cond_tmp, cond_tmp
                     ));
                     self.push_indent(indent + 1);
-                    self.out
-                        .push_str(&format!("value_free({});\n", cond_tmp));
+                    self.out.push_str(&format!("value_free({});\n", cond_tmp));
                 }
                 let val_tmp = self.new_temp();
                 self.emit_expr(expr, &val_tmp, indent + 1);
@@ -3656,18 +4194,24 @@ impl CodeGen {
                     target, target, val_tmp
                 ));
                 self.push_indent(indent + 1);
-                self.out
-                    .push_str(&format!("value_free({});\n", val_tmp));
+                self.out.push_str(&format!("value_free({});\n", val_tmp));
                 self.push_indent(indent);
                 self.out.push_str("}\n");
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", list_tmp));
+                self.out.push_str(&format!("value_free({});\n", list_tmp));
             }
-            Expr::DictComp { target: for_target, iter, key, value, cond } => {
+            Expr::DictComp {
+                target: for_target,
+                iter,
+                key,
+                value,
+                cond,
+            } => {
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("Value {} = value_dict_literal(0, NULL, NULL);\n", target));
+                self.out.push_str(&format!(
+                    "Value {} = value_dict_literal(0, NULL, NULL);\n",
+                    target
+                ));
                 let iter_tmp = self.new_temp();
                 self.emit_expr(iter, &iter_tmp, indent);
                 let list_tmp = self.new_temp();
@@ -3677,8 +4221,7 @@ impl CodeGen {
                     list_tmp, iter_tmp
                 ));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", iter_tmp));
+                self.out.push_str(&format!("value_free({});\n", iter_tmp));
                 let idx = self.new_sym("i");
                 self.push_indent(indent);
                 self.out.push_str(&format!(
@@ -3694,8 +4237,7 @@ impl CodeGen {
                 ));
                 self.emit_for_target_bind(for_target, &item_tmp, indent + 1);
                 self.push_indent(indent + 1);
-                self.out
-                    .push_str(&format!("value_free({});\n", item_tmp));
+                self.out.push_str(&format!("value_free({});\n", item_tmp));
                 if let Some(c) = cond {
                     let cond_tmp = self.new_temp();
                     self.emit_expr(c, &cond_tmp, indent + 1);
@@ -3705,8 +4247,7 @@ impl CodeGen {
                         cond_tmp, cond_tmp
                     ));
                     self.push_indent(indent + 1);
-                    self.out
-                        .push_str(&format!("value_free({});\n", cond_tmp));
+                    self.out.push_str(&format!("value_free({});\n", cond_tmp));
                 }
                 let key_tmp = self.new_temp();
                 let val_tmp = self.new_temp();
@@ -3718,21 +4259,21 @@ impl CodeGen {
                     target, key_tmp, val_tmp
                 ));
                 self.push_indent(indent + 1);
-                self.out
-                    .push_str(&format!("value_free({});\n", key_tmp));
+                self.out.push_str(&format!("value_free({});\n", key_tmp));
                 self.push_indent(indent + 1);
-                self.out
-                    .push_str(&format!("value_free({});\n", val_tmp));
+                self.out.push_str(&format!("value_free({});\n", val_tmp));
                 self.push_indent(indent);
                 self.out.push_str("}\n");
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", list_tmp));
+                self.out.push_str(&format!("value_free({});\n", list_tmp));
             }
             Expr::Var(name) => {
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("Value {} = value_clone({});\n", target, self.cname(name)));
+                self.out.push_str(&format!(
+                    "Value {} = value_clone({});\n",
+                    target,
+                    self.cname(name)
+                ));
             }
             Expr::Unary(op, expr) => {
                 let tmp = self.new_temp();
@@ -3743,10 +4284,14 @@ impl CodeGen {
                         self.out
                             .push_str(&format!("Value {} = value_neg({});\n", target, tmp));
                     }
+                    UnOp::Not => {
+                        self.push_indent(indent);
+                        self.out
+                            .push_str(&format!("Value {} = value_not({});\n", target, tmp));
+                    }
                 }
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", tmp));
+                self.out.push_str(&format!("value_free({});\n", tmp));
             }
             Expr::Binary(left, op, right) => {
                 let ltmp = self.new_temp();
@@ -3760,14 +4305,14 @@ impl CodeGen {
                     BinOp::Div => "value_div",
                 };
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("Value {} = {}({}, {});\n", target, func, ltmp, rtmp));
+                self.out.push_str(&format!(
+                    "Value {} = {}({}, {});\n",
+                    target, func, ltmp, rtmp
+                ));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", ltmp));
+                self.out.push_str(&format!("value_free({});\n", ltmp));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", rtmp));
+                self.out.push_str(&format!("value_free({});\n", rtmp));
             }
             Expr::Compare(left, op, right) => {
                 let ltmp = self.new_temp();
@@ -3788,11 +4333,9 @@ impl CodeGen {
                     target, ltmp, rtmp, code
                 ));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", ltmp));
+                self.out.push_str(&format!("value_free({});\n", ltmp));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", rtmp));
+                self.out.push_str(&format!("value_free({});\n", rtmp));
             }
             Expr::Index(object, index) => {
                 let obj_tmp = self.new_temp();
@@ -3805,11 +4348,9 @@ impl CodeGen {
                     target, obj_tmp, idx_tmp
                 ));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", obj_tmp));
+                self.out.push_str(&format!("value_free({});\n", obj_tmp));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", idx_tmp));
+                self.out.push_str(&format!("value_free({});\n", idx_tmp));
             }
             Expr::Slice { value, start, end } => {
                 let obj_tmp = self.new_temp();
@@ -3839,24 +4380,28 @@ impl CodeGen {
                     if start.is_some() { 1 } else { 0 }
                 ));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("int {} = {};\n", has_end, if end.is_some() { 1 } else { 0 }));
+                self.out.push_str(&format!(
+                    "int {} = {};\n",
+                    has_end,
+                    if end.is_some() { 1 } else { 0 }
+                ));
                 self.push_indent(indent);
                 self.out.push_str(&format!(
                     "Value {} = value_slice({}, {} ? &{} : NULL, {}, {} ? &{} : NULL, {});\n",
                     target, obj_tmp, has_start, start_tmp, has_start, has_end, end_tmp, has_end
                 ));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", obj_tmp));
+                self.out.push_str(&format!("value_free({});\n", obj_tmp));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", start_tmp));
+                self.out.push_str(&format!("value_free({});\n", start_tmp));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", end_tmp));
+                self.out.push_str(&format!("value_free({});\n", end_tmp));
             }
-            Expr::MethodCall { object, method, arg } => {
+            Expr::MethodCall {
+                object,
+                method,
+                arg,
+            } => {
                 let obj_tmp = self.new_temp();
                 self.emit_expr(object, &obj_tmp, indent);
                 let mut args_vec = Vec::new();
@@ -3896,11 +4441,12 @@ impl CodeGen {
                 let obj_tmp = self.new_temp();
                 self.emit_expr(object, &obj_tmp, indent);
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("Value {} = value_get_attr({}, \"{}\");\n", target, obj_tmp, attr));
+                self.out.push_str(&format!(
+                    "Value {} = value_get_attr({}, \"{}\");\n",
+                    target, obj_tmp, attr
+                ));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", obj_tmp));
+                self.out.push_str(&format!("value_free({});\n", obj_tmp));
             }
             Expr::Call { callee, args } => {
                 let mut tmp_args = Vec::new();
@@ -3929,19 +4475,19 @@ impl CodeGen {
                             ));
                             for t in tmp_args {
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("value_free({});\n", t));
+                                self.out.push_str(&format!("value_free({});\n", t));
                             }
                             return;
                         }
                         "int" => {
                             self.push_indent(indent);
-                            self.out
-                                .push_str(&format!("Value {} = builtin_int({});\n", target, tmp_args[0]));
+                            self.out.push_str(&format!(
+                                "Value {} = builtin_int({});\n",
+                                target, tmp_args[0]
+                            ));
                             for t in tmp_args {
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("value_free({});\n", t));
+                                self.out.push_str(&format!("value_free({});\n", t));
                             }
                             return;
                         }
@@ -3953,19 +4499,19 @@ impl CodeGen {
                             ));
                             for t in tmp_args {
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("value_free({});\n", t));
+                                self.out.push_str(&format!("value_free({});\n", t));
                             }
                             return;
                         }
                         "str" => {
                             self.push_indent(indent);
-                            self.out
-                                .push_str(&format!("Value {} = builtin_str({});\n", target, tmp_args[0]));
+                            self.out.push_str(&format!(
+                                "Value {} = builtin_str({});\n",
+                                target, tmp_args[0]
+                            ));
                             for t in tmp_args {
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("value_free({});\n", t));
+                                self.out.push_str(&format!("value_free({});\n", t));
                             }
                             return;
                         }
@@ -3977,7 +4523,11 @@ impl CodeGen {
                                     target
                                 ));
                             } else {
-                                let mode_arg = if tmp_args.len() == 2 { tmp_args[1].as_str() } else { "value_str(\"r\")" };
+                                let mode_arg = if tmp_args.len() == 2 {
+                                    tmp_args[1].as_str()
+                                } else {
+                                    "value_str(\"r\")"
+                                };
                                 self.push_indent(indent);
                                 self.out.push_str(&format!(
                                     "Value {} = builtin_open({}, {});\n",
@@ -3986,8 +4536,7 @@ impl CodeGen {
                             }
                             for t in tmp_args {
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("value_free({});\n", t));
+                                self.out.push_str(&format!("value_free({});\n", t));
                             }
                             return;
                         }
@@ -4000,17 +4549,23 @@ impl CodeGen {
                                 ));
                             } else {
                                 let has_key = tmp_args.len() > 1;
-                                let key_arg = if has_key { tmp_args[1].clone() } else { "value_int(0)".to_string() };
+                                let key_arg = if has_key {
+                                    tmp_args[1].clone()
+                                } else {
+                                    "value_int(0)".to_string()
+                                };
                                 self.push_indent(indent);
                                 self.out.push_str(&format!(
                                     "Value {} = builtin_sorted({}, {}, {});\n",
-                                    target, tmp_args[0], key_arg, if has_key { 1 } else { 0 }
+                                    target,
+                                    tmp_args[0],
+                                    key_arg,
+                                    if has_key { 1 } else { 0 }
                                 ));
                             }
                             for t in tmp_args {
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("value_free({});\n", t));
+                                self.out.push_str(&format!("value_free({});\n", t));
                             }
                             return;
                         }
@@ -4018,8 +4573,10 @@ impl CodeGen {
                             let args_arr = self.new_sym("args");
                             self.push_indent(indent);
                             if tmp_args.is_empty() {
-                                self.out
-                                    .push_str(&format!("Value {} = builtin_range(0, NULL);\n", target));
+                                self.out.push_str(&format!(
+                                    "Value {} = builtin_range(0, NULL);\n",
+                                    target
+                                ));
                             } else {
                                 self.out.push_str(&format!("Value {}[] = {{", args_arr));
                                 for (idx, t) in tmp_args.iter().enumerate() {
@@ -4039,8 +4596,7 @@ impl CodeGen {
                             }
                             for t in tmp_args {
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("value_free({});\n", t));
+                                self.out.push_str(&format!("value_free({});\n", t));
                             }
                             return;
                         }
@@ -4054,21 +4610,21 @@ impl CodeGen {
                             } else {
                                 let empty = self.new_sym("empty_list");
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("Value {} = value_list_literal(0, NULL);\n", empty));
+                                self.out.push_str(&format!(
+                                    "Value {} = value_list_literal(0, NULL);\n",
+                                    empty
+                                ));
                                 self.push_indent(indent);
                                 self.out.push_str(&format!(
                                     "Value {} = builtin_enumerate({});\n",
                                     target, empty
                                 ));
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("value_free({});\n", empty));
+                                self.out.push_str(&format!("value_free({});\n", empty));
                             }
                             for t in tmp_args {
                                 self.push_indent(indent);
-                                self.out
-                                    .push_str(&format!("value_free({});\n", t));
+                                self.out.push_str(&format!("value_free({});\n", t));
                             }
                             return;
                         }
@@ -4096,12 +4652,10 @@ impl CodeGen {
                     args_arr
                 ));
                 self.push_indent(indent);
-                self.out
-                    .push_str(&format!("value_free({});\n", callee_tmp));
+                self.out.push_str(&format!("value_free({});\n", callee_tmp));
                 for t in tmp_args {
                     self.push_indent(indent);
-                    self.out
-                        .push_str(&format!("value_free({});\n", t));
+                    self.out.push_str(&format!("value_free({});\n", t));
                 }
             }
         }
@@ -4126,9 +4680,7 @@ fn compile_c_to_exe(c_source: &str, output: &Path) -> Result<(), Box<dyn std::er
     let tmp_name = format!(
         "pycomp_{}_{}.c",
         process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_millis()
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis()
     );
     let tmp_path = env::temp_dir().join(tmp_name);
     fs::write(&tmp_path, c_source)?;

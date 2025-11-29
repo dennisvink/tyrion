@@ -44,6 +44,8 @@ cargo build --release
 - **IO + conversions**: `print(...)`, `input(prompt)`, `int(x)`, `float(x)`, `str(x)`.
 - **Collections**: list `[...]`, tuple `(...)`, dict `{k: v}`, set `{1, 2}`; indexing/slicing (`x[0]`, `x[1:3]`); methods `.append/.remove` (list), `.add` (set), `.keys/.items` (dict); dict assignment `d["k"] = v`.
 - **Control flow**: `if/elif/else`, `while`, `for` over `range`, `enumerate`, list/tuple/set/dict/str iteration.
+- **Guards**: single-line `stmt if cond` or `stmt unless cond` as Ruby-style guard clauses.
+- **Blocks**: Python-style indentation _or_ `{ ... }` braces for control-flow/defs/classes/with/try bodies—use whichever you prefer.
 - **Functions + lambdas**: `def name(args): ... return x`, `lambda args: expr`, first-class callables.
 - **Classes**: `class C: def __init__(self,...); self.x`; instantiate with `C(...)`; attribute get/set; methods bind `self`.
 - **With + files**: `with open(path, mode) as f: ...`, `f.read()`, `f.write(s)`.
@@ -90,6 +92,12 @@ while count > 0:
     print("tick", count)
     count = count - 1
 
+count = 2
+while count > 0 {
+    print("brace tick", count)
+    count = count - 1
+}
+
 for i, v in enumerate((10, 20, 30)):
     print("enum", i, v)
 
@@ -97,6 +105,9 @@ rev = []
 for r in range(3, 0, -1):
     rev.append(r)
 print("range reverse", rev)
+
+print("guarded") if rev
+print("will not print") unless False
 ```
 
 ### Functions, lambdas, sorted, unpacking
