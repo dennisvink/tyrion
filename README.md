@@ -160,7 +160,7 @@ See `full_feature_test.ty` for a combined script covering all features.
 
 ## Limitations / Notes
 
-- No classes or modules yet.
+- No modules yet.
 - No keyword args (except `key=` in `sorted`), no default params, no kwargs/varargs.
 - Exceptions match by name string; there’s no class-based hierarchy.
 - Printing of containers is summarized (`<list len=...>` etc.) rather than full repr.
