@@ -322,7 +322,8 @@ fn collect_lines(source: &str) -> Vec<LineInfo> {
     let mut brace_depth = 0usize;
     for (idx, raw_line) in source.lines().enumerate() {
         let line_no = idx + 1;
-        let trimmed_end = raw_line.trim_end();
+        let stripped = strip_comment(raw_line);
+        let trimmed_end = stripped.trim_end();
         let mut content = trimmed_end.trim();
         while content.starts_with('}') {
             if brace_depth > 0 {
@@ -360,6 +361,34 @@ fn collect_lines(source: &str) -> Vec<LineInfo> {
         }
     }
     lines
+}
+
+fn strip_comment(line: &str) -> String {
+    let mut in_str = false;
+    let mut escaped = false;
+    let mut result = String::new();
+    for ch in line.chars() {
+        if escaped {
+            result.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            result.push(ch);
+            continue;
+        }
+        if ch == '"' {
+            in_str = !in_str;
+            result.push(ch);
+            continue;
+        }
+        if ch == '#' && !in_str {
+            break;
+        }
+        result.push(ch);
+    }
+    result
 }
 
 pub fn parse_program(source: &str) -> Result<Program, ParseError> {
