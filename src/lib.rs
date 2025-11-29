@@ -10,10 +10,11 @@ pub mod runtime;
 
 pub fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
+    let version = env!("CARGO_PKG_VERSION");
     if args.len() < 2 {
         eprintln!(
-            "Usage:\n  {} <input.ty>                      # interpret\n  {} --build <input.ty> --out <exe>     # compile to native binary (AOT)",
-            args[0], args[0]
+            "Tyrion {version}\nUsage:\n  {bin} <input.ty>                      # interpret\n  {bin} --build <input.ty> --out <exe>     # compile to native binary (AOT)\n  {bin} --version | version             # show version",
+            bin = args[0]
         );
         process::exit(1);
     }
@@ -24,6 +25,10 @@ pub fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--version" | "-V" | "version" => {
+                println!("tyrion {version}");
+                return Ok(());
+            }
             "--build" => {
                 interpret_mode = false;
                 i += 1;
