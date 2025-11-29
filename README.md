@@ -1,6 +1,6 @@
 # Tyrion
 
-Tyrion is a tiny, Python-derived scripting language that compiles to native binaries by first emitting C and then invoking your system C compiler. It keeps Pythonic syntax and semantics for a focused subset: primitives, collections, control flow, functions/lambdas, files, comprehensions, exceptions, and a handful of helpers like `sorted`, `range`, and unpacking. Source files use the `.ty` extension.
+Tyrion is a tiny, Python-derived scripting language with a hand-rolled parser and interpreter. The `tyrion` binary interprets `.ty` files directly. If you want a standalone binary, `tyrion --build foo.ty --out foo` emits a small Rust runner that embeds your source, then Cargo compiles that runner; the generated binary still executes the Tyrion program via the interpreter runtime.
 
 ## Quick Start
 
@@ -13,29 +13,26 @@ brew install tyrion
 
 ### Other ways of installing
 
-Prereqs: Rust (cargo) and a C toolchain (`cc` on PATH).
+Prereqs: Rust (cargo). No C toolchain needed anymore.
 
 Install globally (recommended):
 ```bash
 cargo install --path .
-# ensure ~/.cargo/bin is on PATH, then:
-tyrion examples/hello.ty ./hello_hello
-./hello_hello
+# ensure ~/.cargo/bin is on PATH
+tyrion examples/hello.ty
 ```
 
 Or run directly from source without installing:
 
 ```bash
-cargo run -- examples/hello.ty ./hello_hello
-./hello_hello
+cargo run -- examples/hello.ty
 ```
 
-You can also build the compiler once and reuse:
+Build and run a native binary:
 
 ```bash
-cargo build --release
-./target/release/tyrion program.ty ./program
-./program
+tyrion --build examples/hello.ty --out ./hello_bin
+./hello_bin
 ```
 
 ## Language Overview (current feature set)
@@ -176,7 +173,7 @@ print("file read", data)
 ```
 
 ### Full-feature demo
-See `full_feature_test.ty` for a combined script covering all features.
+See `examples/full_feature_test.ty` for a combined script covering all features.
 
 ## Limitations / Notes
 
@@ -184,10 +181,10 @@ See `full_feature_test.ty` for a combined script covering all features.
 - No keyword args (except `key=` in `sorted`), no default params, no kwargs/varargs.
 - Exceptions match by name string; there’s no class-based hierarchy.
 - Printing of containers is summarized (`<list len=...>` etc.) rather than full repr.
-- Generated C is a temporary step; the output binary is native. Cleanup of temp C files is automatic.
+- The `--build` path currently generates a Rust runner that embeds your source; Cargo is required at build time.
 
 ## Contributing / Hacking
 
-- Core code: Rust (`src/main.rs`) plus C runtime (`src/prelude_c.txt`).
-- Add new syntax in the hand-rolled parser, then thread through codegen and the runtime helpers.
-- Tests: use `full_feature_test.ty` or add new examples under `examples/`.
+- Core code: Rust (`src/lib.rs`, `src/interpreter.rs`, `src/runtime.rs`).
+- Add new syntax in the hand-rolled parser, then thread through the interpreter/runtime helpers.
+- Tests: run `cargo test`; integration tests live in `tests/` and programs under `examples/`.

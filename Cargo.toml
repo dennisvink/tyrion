@@ -1,6 +1,14 @@
 [package]
 name = "tyrion"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
+
+[lib]
+name = "tyrion"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tyrion"
+path = "src/main.rs"
 
 [dependencies]
