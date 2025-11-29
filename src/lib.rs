@@ -1,10 +1,10 @@
 use std::env;
 use std::fmt;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{self, Command};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
+use std::process;
 
+pub mod aot;
 pub mod interpreter;
 pub mod runtime;
 
@@ -12,7 +12,7 @@ pub fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "Usage:\n  {} <input.ty>                      # interpret\n  {} --build <input.ty> --out <exe>     # compile to binary",
+            "Usage:\n  {} <input.ty>                      # interpret\n  {} --build <input.ty> --out <exe>     # compile to native binary (AOT)",
             args[0], args[0]
         );
         process::exit(1);
@@ -58,7 +58,7 @@ pub fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let output_path = output_path.ok_or("Missing --out for build")?;
-    compile_rust_runner(&source, &output_path)?;
+    aot::compile_aot(&program, &output_path)?;
     println!(
         "Compiled {} -> {}",
         input_path.display(),
@@ -215,7 +215,7 @@ enum UnOp {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum BinOp {
+pub enum BinOp {
     Add,
     Sub,
     Mul,
@@ -223,7 +223,7 @@ enum BinOp {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum CmpOp {
+pub enum CmpOp {
     Eq,
     Ne,
     Lt,
@@ -265,46 +265,6 @@ fn parse_error(line: usize, column: usize, message: &str, line_src: &str) -> Par
         column,
         line_src: line_src.to_string(),
     }
-}
-
-fn compile_rust_runner(source: &str, output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let crate_root = env::current_dir()?.canonicalize()?;
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let runner_dir = crate_root
-        .join("target")
-        .join(format!("tyrion_build_{stamp}"));
-    fs::create_dir_all(runner_dir.join("src"))?;
-
-    let runner_cargo = format!(
-        "[package]\nname = \"tyrion_runner\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ntyrion = {{ path = \"{}\" }}\n",
-        crate_root.display()
-    );
-    fs::write(runner_dir.join("Cargo.toml"), runner_cargo)?;
-
-    let source_literal = format!("{source:?}");
-    let runner_main = format!(
-        "fn main() {{\n    const SRC: &str = {source_literal};\n    let program = tyrion::parse_program(SRC).expect(\"parse failed\");\n    let mut interp = tyrion::interpreter::Interpreter::new();\n    if let Err(e) = interp.run(&program) {{\n        eprintln!(\"{{}}\", e);\n        std::process::exit(1);\n    }}\n}}\n"
-    );
-    fs::write(runner_dir.join("src").join("main.rs"), runner_main)?;
-
-    let status = Command::new("cargo")
-        .arg("build")
-        .arg("--release")
-        .current_dir(&runner_dir)
-        .status()?;
-    if !status.success() {
-        return Err("cargo build failed".into());
-    }
-
-    let built = runner_dir
-        .join("target")
-        .join("release")
-        .join("tyrion_runner");
-    if !built.exists() {
-        return Err("built binary not found".into());
-    }
-    fs::copy(&built, output_path)?;
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -497,6 +457,9 @@ fn parse_statement(
 fn find_postfix_guard(line: &str) -> Option<(String, String, bool)> {
     let bytes = line.as_bytes();
     let mut in_str = false;
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut brace = 0usize;
     let mut found: Option<(usize, usize, bool)> = None;
     let mut i = 0;
     while i < bytes.len() {
@@ -513,6 +476,19 @@ fn find_postfix_guard(line: &str) -> Option<(String, String, bool)> {
         }
         if ch == b'"' {
             in_str = true;
+            i += 1;
+            continue;
+        }
+        match ch {
+            b'(' => paren += 1,
+            b')' => if paren > 0 { paren -= 1 },
+            b'[' => bracket += 1,
+            b']' => if bracket > 0 { bracket -= 1 },
+            b'{' => brace += 1,
+            b'}' => if brace > 0 { brace -= 1 },
+            _ => {}
+        }
+        if paren > 0 || bracket > 0 || brace > 0 {
             i += 1;
             continue;
         }

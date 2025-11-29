@@ -3,7 +3,7 @@ use std::io::Write;
 use std::rc::Rc;
 
 use crate::runtime::{
-    BoundMethodValue, ClassValue, FunctionImpl, FunctionValue, HashKey, InstanceValue,
+    BoundMethodValue, ClassValue, Env, FunctionImpl, FunctionValue, HashKey, InstanceValue,
     RuntimeError, Value,
 };
 use crate::{AssignOp, AssignTarget, BinOp, CmpOp, Expr, ForTarget, Program, Stmt, UnOp};
@@ -657,7 +657,7 @@ impl Interpreter {
                     if f.name.as_deref() == Some("sorted") {
                         return self.builtin_sorted(args, env);
                     }
-                    func(&args)
+                    func(&args, env, &mut self.globals)
                 }
                 FunctionImpl::User(id) => {
                     let def = self
@@ -859,7 +859,7 @@ impl Interpreter {
                 "append" => Ok(Value::Function(FunctionValue {
                     name: Some("append".into()),
                     arity: 1,
-                    impls: FunctionImpl::Native(Rc::new(move |args| {
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
                         let mut vec = list.borrow().clone();
                         vec.push(args[0].clone());
                         Ok(Value::List(Rc::new(std::cell::RefCell::new(vec))))
@@ -868,7 +868,7 @@ impl Interpreter {
                 "remove" => Ok(Value::Function(FunctionValue {
                     name: Some("remove".into()),
                     arity: 1,
-                    impls: FunctionImpl::Native(Rc::new(move |args| {
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
                         let mut vec = list.borrow().clone();
                         if let Some(pos) = vec
                             .iter()
@@ -885,7 +885,7 @@ impl Interpreter {
                 "add" => Ok(Value::Function(FunctionValue {
                     name: Some("add".into()),
                     arity: 1,
-                    impls: FunctionImpl::Native(Rc::new(move |args| {
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
                         let mut s = set.borrow().clone();
                         let key = HashKey::from_value(&args[0])
                             .ok_or_else(|| RuntimeError::new("unhashable set value"))?;
@@ -899,7 +899,7 @@ impl Interpreter {
                 "keys" => Ok(Value::Function(FunctionValue {
                     name: Some("keys".into()),
                     arity: 0,
-                    impls: FunctionImpl::Native(Rc::new(move |_| {
+                    impls: FunctionImpl::Native(Rc::new(move |_args, _env, _globals| {
                         let mut vals: Vec<Value> = map
                             .borrow()
                             .keys()
@@ -917,7 +917,7 @@ impl Interpreter {
                 "items" => Ok(Value::Function(FunctionValue {
                     name: Some("items".into()),
                     arity: 0,
-                    impls: FunctionImpl::Native(Rc::new(move |_| {
+                    impls: FunctionImpl::Native(Rc::new(move |_args, _env, _globals| {
                         let mut vals = Vec::new();
                         for (k, v) in map.borrow().iter() {
                             let key_val = match k {
@@ -944,7 +944,7 @@ impl Interpreter {
                 "read" => Ok(Value::Function(FunctionValue {
                     name: Some("read".into()),
                     arity: 0,
-                    impls: FunctionImpl::Native(Rc::new(move |_| {
+                    impls: FunctionImpl::Native(Rc::new(move |_args, _env, _globals| {
                         use std::io::Read;
                         let mut f = file.file.borrow_mut();
                         let mut buf = String::new();
@@ -956,7 +956,7 @@ impl Interpreter {
                 "write" => Ok(Value::Function(FunctionValue {
                     name: Some("write".into()),
                     arity: 1,
-                    impls: FunctionImpl::Native(Rc::new(move |args| {
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
                         use std::io::Write;
                         let mut f = file.file.borrow_mut();
                         let s = match &args[0] {
@@ -1071,32 +1071,41 @@ pub fn value_to_string(v: &Value) -> String {
             format!("({})", vals.join(", "))
         }
         Value::Dict(map) => {
-            let mut vals = Vec::new();
-            for (k, v) in map.borrow().iter() {
-                let key_str = match k {
+            let mut vals: Vec<(String, String)> = map
+                .borrow()
+                .iter()
+                .map(|(k, v)| {
+                    let key_str = match k {
+                        HashKey::Int(i) => i.to_string(),
+                        HashKey::FloatOrdered(b) => f64::from_bits(*b as u64).to_string(),
+                        HashKey::Bool(b) => b.to_string(),
+                        HashKey::Str(s) => s.clone(),
+                    };
+                    (key_str, value_to_string(v))
+                })
+                .collect();
+            vals.sort_by(|a, b| a.0.cmp(&b.0));
+            format!(
+                "{{{}}}",
+                vals.into_iter()
+                    .map(|(k, v)| format!("{k}: {v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+        Value::Set(set) => {
+            let mut vals: Vec<String> = set
+                .borrow()
+                .iter()
+                .map(|k| match k {
                     HashKey::Int(i) => i.to_string(),
                     HashKey::FloatOrdered(b) => f64::from_bits(*b as u64).to_string(),
                     HashKey::Bool(b) => b.to_string(),
                     HashKey::Str(s) => s.clone(),
-                };
-                vals.push(format!("{}: {}", key_str, value_to_string(v)));
-            }
-            format!("{{{}}}", vals.join(", "))
-        }
-        Value::Set(set) => {
-            let mut vals: Vec<Value> = set
-                .borrow()
-                .iter()
-                .map(|k| match k {
-                    HashKey::Int(i) => Value::Int(*i),
-                    HashKey::FloatOrdered(b) => Value::Float(f64::from_bits(*b as u64)),
-                    HashKey::Bool(b) => Value::Bool(*b),
-                    HashKey::Str(s) => Value::Str(s.clone()),
                 })
                 .collect();
-            vals.sort_by(compare_for_sort);
-            let parts: Vec<String> = vals.iter().map(|v| value_to_string(v)).collect();
-            format!("{{{}}}", parts.join(", "))
+            vals.sort();
+            format!("{{{}}}", vals.join(", "))
         }
         Value::Function(f) => format!("<fn {}>", f.name.clone().unwrap_or_else(|| "?".into())),
         Value::Class(c) => format!("<class {}>", c.name),
@@ -1106,46 +1115,13 @@ pub fn value_to_string(v: &Value) -> String {
     }
 }
 
-struct Env {
-    scopes: Vec<HashMap<String, Value>>,
-}
-
-impl Env {
-    fn new() -> Self {
-        Env {
-            scopes: vec![HashMap::new()],
-        }
-    }
-
-    fn child(&self) -> Self {
-        let mut scopes = self.scopes.clone();
-        scopes.push(HashMap::new());
-        Env { scopes }
-    }
-
-    fn get(&self, name: &str) -> Option<Value> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(v) = scope.get(name) {
-                return Some(v.clone());
-            }
-        }
-        None
-    }
-
-    fn set(&mut self, name: &str, value: Value) {
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), value);
-        }
-    }
-}
-
 fn insert_builtins(globals: &mut HashMap<String, Value>) {
     globals.insert(
         "int".into(),
         Value::Function(FunctionValue {
             name: Some("int".into()),
             arity: 1,
-            impls: FunctionImpl::Native(Rc::new(|args| match &args[0] {
+            impls: FunctionImpl::Native(Rc::new(|args, _env, _globals| match &args[0] {
                 Value::Int(i) => Ok(Value::Int(*i)),
                 Value::Float(f) => Ok(Value::Int(*f as i64)),
                 Value::Bool(b) => Ok(Value::Int(if *b { 1 } else { 0 })),
@@ -1162,7 +1138,7 @@ fn insert_builtins(globals: &mut HashMap<String, Value>) {
         Value::Function(FunctionValue {
             name: Some("float".into()),
             arity: 1,
-            impls: FunctionImpl::Native(Rc::new(|args| match &args[0] {
+            impls: FunctionImpl::Native(Rc::new(|args, _env, _globals| match &args[0] {
                 Value::Int(i) => Ok(Value::Float(*i as f64)),
                 Value::Float(f) => Ok(Value::Float(*f)),
                 Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
@@ -1179,7 +1155,9 @@ fn insert_builtins(globals: &mut HashMap<String, Value>) {
         Value::Function(FunctionValue {
             name: Some("str".into()),
             arity: 1,
-            impls: FunctionImpl::Native(Rc::new(|args| Ok(Value::Str(value_to_string(&args[0]))))),
+            impls: FunctionImpl::Native(Rc::new(|args, _env, _globals| {
+                Ok(Value::Str(value_to_string(&args[0])))
+            })),
         }),
     );
     globals.insert(
@@ -1187,7 +1165,7 @@ fn insert_builtins(globals: &mut HashMap<String, Value>) {
         Value::Function(FunctionValue {
             name: Some("range".into()),
             arity: 3, // we will allow 1-3 by inspecting args len
-            impls: FunctionImpl::Native(Rc::new(|args| {
+            impls: FunctionImpl::Native(Rc::new(|args, _env, _globals| {
                 let len = args.len();
                 let (start, end, step) = match len {
                     1 => (0, as_int(&args[0])?, 1),
@@ -1220,7 +1198,7 @@ fn insert_builtins(globals: &mut HashMap<String, Value>) {
         Value::Function(FunctionValue {
             name: Some("enumerate".into()),
             arity: 2, // allow 1-2
-            impls: FunctionImpl::Native(Rc::new(|args| {
+            impls: FunctionImpl::Native(Rc::new(|args, _env, _globals| {
                 let start = if args.len() == 2 {
                     as_int(&args[1])?
                 } else {
@@ -1244,7 +1222,7 @@ fn insert_builtins(globals: &mut HashMap<String, Value>) {
         Value::Function(FunctionValue {
             name: Some("sorted".into()),
             arity: 2, // allow 1-2
-            impls: FunctionImpl::Native(Rc::new(|args| {
+            impls: FunctionImpl::Native(Rc::new(|args, _env, _globals| {
                 let (iterable, key_fn) = match args.len() {
                     1 => (&args[0], None),
                     2 => (&args[0], Some(args[1].clone())),
@@ -1256,14 +1234,22 @@ fn insert_builtins(globals: &mut HashMap<String, Value>) {
                     _ => return Err(RuntimeError::new("sorted expects list/tuple")),
                 };
                 items.sort_by(|a, b| {
-                    let ka = key_fn
-                        .as_ref()
-                        .map(|f| call_simple(f.clone(), vec![a.clone()]))
-                        .unwrap_or(Ok(a.clone()));
-                    let kb = key_fn
-                        .as_ref()
-                        .map(|f| call_simple(f.clone(), vec![b.clone()]))
-                        .unwrap_or(Ok(b.clone()));
+                    let ka = key_fn.as_ref().map(|f| {
+                        call_simple(
+                            f.clone(),
+                            vec![a.clone()],
+                            &mut Env::new(),
+                            &mut HashMap::new(),
+                        )
+                    }).unwrap_or(Ok(a.clone()));
+                    let kb = key_fn.as_ref().map(|f| {
+                        call_simple(
+                            f.clone(),
+                            vec![b.clone()],
+                            &mut Env::new(),
+                            &mut HashMap::new(),
+                        )
+                    }).unwrap_or(Ok(b.clone()));
                     match (ka, kb) {
                         (Ok(va), Ok(vb)) => compare_for_sort(&va, &vb),
                         _ => std::cmp::Ordering::Equal,
@@ -1278,7 +1264,7 @@ fn insert_builtins(globals: &mut HashMap<String, Value>) {
         Value::Function(FunctionValue {
             name: Some("open".into()),
             arity: 2, // allow 1-2
-            impls: FunctionImpl::Native(Rc::new(|args| {
+            impls: FunctionImpl::Native(Rc::new(|args, _env, _globals| {
                 use std::fs::OpenOptions;
                 let path = match &args[0] {
                     Value::Str(s) => s.clone(),
@@ -1325,17 +1311,22 @@ fn as_int(v: &Value) -> Result<i64, RuntimeError> {
     }
 }
 
-fn call_simple(func: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
+fn call_simple(
+    func: Value,
+    args: Vec<Value>,
+    env: &mut Env,
+    globals: &mut HashMap<String, Value>,
+) -> Result<Value, RuntimeError> {
     match func {
         Value::Function(f) => match f.impls {
-            FunctionImpl::Native(n) => n(&args),
+            FunctionImpl::Native(n) => n(&args, env, globals),
             _ => Err(RuntimeError::new("key func must be native here")),
         },
         Value::BoundMethod(b) => call_simple(Value::Function(b.func), {
             let mut a = vec![b.receiver.clone()];
             a.extend(args);
             a
-        }),
+        }, env, globals),
         _ => Err(RuntimeError::new("not callable")),
     }
 }
@@ -1363,4 +1354,10 @@ fn values_equal(a: &Value, b: &Value) -> Result<bool, RuntimeError> {
         (Value::Str(x), Value::Str(y)) => Ok(x == y),
         _ => Ok(false),
     }
+}
+
+pub fn builtins() -> HashMap<String, Value> {
+    let mut globals = HashMap::new();
+    insert_builtins(&mut globals);
+    globals
 }

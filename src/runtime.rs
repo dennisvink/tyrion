@@ -88,7 +88,42 @@ impl fmt::Debug for FunctionImpl {
     }
 }
 
-pub type NativeFunc = Rc<dyn Fn(&[Value]) -> Result<Value, RuntimeError>>;
+pub type NativeFunc =
+    Rc<dyn Fn(&[Value], &mut Env, &mut HashMap<String, Value>) -> Result<Value, RuntimeError>>;
+
+#[derive(Debug, Clone)]
+pub struct Env {
+    pub scopes: Vec<HashMap<String, Value>>,
+}
+
+impl Env {
+    pub fn new() -> Self {
+        Env {
+            scopes: vec![HashMap::new()],
+        }
+    }
+
+    pub fn child(&self) -> Self {
+        let mut scopes = self.scopes.clone();
+        scopes.push(HashMap::new());
+        Env { scopes }
+    }
+
+    pub fn get(&self, name: &str) -> Option<Value> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(v) = scope.get(name) {
+                return Some(v.clone());
+            }
+        }
+        None
+    }
+
+    pub fn set(&mut self, name: &str, value: Value) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), value);
+        }
+    }
+}
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]

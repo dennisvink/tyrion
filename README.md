@@ -1,6 +1,6 @@
 # Tyrion
 
-Tyrion is a tiny, Python-derived scripting language with a hand-rolled parser and interpreter. The `tyrion` binary interprets `.ty` files directly. If you want a standalone binary, `tyrion --build foo.ty --out foo` emits a small Rust runner that embeds your source, then Cargo compiles that runner; the generated binary still executes the Tyrion program via the interpreter runtime.
+Tyrion is a tiny, Python-derived scripting language with a hand-rolled parser and interpreter. The `tyrion` binary interprets `.ty` files directly. If you want a standalone binary, `tyrion --build foo.ty --out foo` uses the experimental ahead-of-time Rust codegen path to emit a native binary.
 
 ## Quick Start
 
@@ -31,7 +31,7 @@ cargo run -- examples/hello.ty
 Build and run a native binary:
 
 ```bash
-tyrion --build examples/hello.ty --out ./hello_bin
+tyrion --build examples/hello.ty --out ./hello_bin               # AOT build
 ./hello_bin
 ```
 
@@ -180,8 +180,6 @@ See `examples/full_feature_test.ty` for a combined script covering all features.
 - No modules yet.
 - No keyword args (except `key=` in `sorted`), no default params, no kwargs/varargs.
 - Exceptions match by name string; there’s no class-based hierarchy.
-- Printing of containers is summarized (`<list len=...>` etc.) rather than full repr.
-- The `--build` path currently generates a Rust runner that embeds your source; Cargo is required at build time.
 
 ## Contributing / Hacking
 

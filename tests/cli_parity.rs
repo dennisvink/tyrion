@@ -70,7 +70,7 @@ fn build_and_interpret_outputs_match() {
 
     assert_eq!(interp_out, built_out);
 
-    let _ = fs::remove_file(out_bin);
+    let _ = fs::remove_file(&out_bin);
 }
 
 #[test]
