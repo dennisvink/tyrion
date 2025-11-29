@@ -633,6 +633,7 @@ pub fn compile_aot(program: &Program, output_path: &Path) -> Result<(), Box<dyn 
 }
 
 fn emit_program(cg: &mut Codegen, program: &Program) -> Result<(), RuntimeError> {
+    cg.line("#![allow(unused_imports, unused_mut, unreachable_code, unused_assignments)]");
     cg.line("use std::collections::HashMap;");
     cg.line("use std::rc::Rc;");
     cg.line("use tyrion::runtime::{Value, HashKey, RuntimeError, FunctionValue, FunctionImpl, ClassValue, InstanceValue, BoundMethodValue, Env};");
