@@ -4,6 +4,15 @@ Tyrion is a tiny, Python-derived scripting language that compiles to native bina
 
 ## Quick Start
 
+### Installing with Homebrew
+
+```
+brew tap dennisvink/tyrion
+brew install tyrion
+```
+
+### Other ways of installing
+
 Prereqs: Rust (cargo) and a C toolchain (`cc` on PATH).
 
 Install globally (recommended):
