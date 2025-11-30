@@ -217,6 +217,7 @@ enum Expr {
         object: Box<Expr>,
         method: String,
         args: Vec<Expr>,
+        kwargs: Vec<(String, Expr)>,
     },
     Attr {
         object: Box<Expr>,
@@ -1477,7 +1478,15 @@ fn parse_print(
         .rfind(')')
         .ok_or_else(|| parse_error(line_no, column_offset + line.len(), "Missing ')'", line_src))?;
     let inside = &line[(open + 1)..close];
-    let args = parse_args(inside, line_no, column_offset + open + 1, line_src)?;
+    let (args, kwargs) = parse_args(inside, line_no, column_offset + open + 1, line_src)?;
+    if !kwargs.is_empty() {
+        return Err(parse_error(
+            line_no,
+            column_offset + open + 1,
+            "print does not accept keyword arguments",
+            line_src,
+        ));
+    }
     let trailing = line[(close + 1)..].trim();
     if !trailing.is_empty() {
         return Err(parse_error(
@@ -1686,8 +1695,10 @@ fn parse_args(
     line_no: usize,
     column_offset: usize,
     line_src: &str,
-) -> Result<Vec<Expr>, ParseError> {
+) -> Result<(Vec<Expr>, Vec<(String, Expr)>), ParseError> {
     let mut args = Vec::new();
+    let mut kwargs = Vec::new();
+    let mut seen_kw = false;
     let bytes = segment.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -1695,9 +1706,40 @@ fn parse_args(
         if i >= bytes.len() {
             break;
         }
-        let (expr, next) = parse_expression(segment, i, line_no, column_offset, line_src)?;
-        args.push(expr);
-        i = skip_ws(bytes, next);
+        let mut handled_kw = false;
+        if is_ident_start(bytes[i]) {
+            let mut j = i + 1;
+            while j < bytes.len() && is_ident_part(bytes[j]) {
+                j += 1;
+            }
+            let after_ident = skip_ws(bytes, j);
+            if after_ident < bytes.len()
+                && bytes[after_ident] == b'='
+                && (after_ident + 1 >= bytes.len() || bytes[after_ident + 1] != b'=')
+            {
+                let name = &segment[i..j];
+                let expr_start = skip_ws(bytes, after_ident + 1);
+                let (expr, next) =
+                    parse_expression(segment, expr_start, line_no, column_offset, line_src)?;
+                kwargs.push((name.to_string(), expr));
+                i = skip_ws(bytes, next);
+                handled_kw = true;
+                seen_kw = true;
+            }
+        }
+        if !handled_kw {
+            if seen_kw {
+                return Err(parse_error(
+                    line_no,
+                    column_offset + i,
+                    "Positional argument after keyword argument",
+                    line_src,
+                ));
+            }
+            let (expr, next) = parse_expression(segment, i, line_no, column_offset, line_src)?;
+            args.push(expr);
+            i = skip_ws(bytes, next);
+        }
         if i < bytes.len() {
             if bytes[i] == b',' {
                 i += 1;
@@ -1711,7 +1753,7 @@ fn parse_args(
             }
         }
     }
-    Ok(args)
+    Ok((args, kwargs))
 }
 
 fn parse_expression(
@@ -2446,12 +2488,13 @@ fn parse_method_call(
             ));
         }
         let inside = &segment[(open + 1)..j];
-        let args = parse_args(inside, line_no, column_offset + open + 1, line_src)?;
+        let (args, kwargs) = parse_args(inside, line_no, column_offset + open + 1, line_src)?;
         return Ok((
             Expr::MethodCall {
                 object: Box::new(object),
                 method: method.to_string(),
                 args,
+                kwargs,
             },
             j + 1,
         ));

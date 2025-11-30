@@ -384,7 +384,7 @@ pub mod rt {
                 "append" => Ok(Value::Function(FunctionValue {
                     name: Some("append".into()),
                     arity: 1,
-                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                    impls: FunctionImpl::Native(Rc::new(move |args, _kwargs, _env, _globals| {
                         let mut vec = list.borrow().clone();
                         vec.push(args[0].clone());
                         Ok(Value::List(Rc::new(RefCell::new(vec))))
@@ -393,7 +393,7 @@ pub mod rt {
                 "remove" => Ok(Value::Function(FunctionValue {
                     name: Some("remove".into()),
                     arity: 1,
-                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                    impls: FunctionImpl::Native(Rc::new(move |args, _kwargs, _env, _globals| {
                         let mut vec = list.borrow().clone();
                         if let Some(pos) = vec
                             .iter()
@@ -410,7 +410,7 @@ pub mod rt {
                 "add" => Ok(Value::Function(FunctionValue {
                     name: Some("add".into()),
                     arity: 1,
-                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                    impls: FunctionImpl::Native(Rc::new(move |args, _kwargs, _env, _globals| {
                         let mut s = set.borrow().clone();
                         let key = HashKey::from_value(&args[0])
                             .ok_or_else(|| RuntimeError::new("unhashable set value"))?;
@@ -424,7 +424,7 @@ pub mod rt {
                 "split" => Ok(Value::Function(FunctionValue {
                     name: Some("split".into()),
                     arity: 1,
-                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                    impls: FunctionImpl::Native(Rc::new(move |args, _kwargs, _env, _globals| {
                         let delim = match args.get(0) {
                             Some(Value::Str(d)) => d.clone(),
                             None => " ".into(),
@@ -438,30 +438,30 @@ pub mod rt {
                 "strip" => Ok(Value::Function(FunctionValue {
                     name: Some("strip".into()),
                     arity: 0,
-                    impls: FunctionImpl::Native(Rc::new(move |_args, _env, _globals| {
+                    impls: FunctionImpl::Native(Rc::new(move |_args, _kwargs, _env, _globals| {
                         Ok(Value::Str(s.trim().to_string()))
                     })),
                 })),
                 "startswith" => Ok(Value::Function(FunctionValue {
                     name: Some("startswith".into()),
                     arity: 1,
-                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                    impls: FunctionImpl::Native(Rc::new(move |args, _kwargs, _env, _globals| {
                         let pref = match args.get(0) {
                             Some(Value::Str(d)) => d,
                             _ => return Err(RuntimeError::new("startswith needs str")),
                         };
-                        Ok(Value::Bool(s.starts_with(pref)))
+                        Ok(Value::Bool(s.starts_with(pref.as_str())))
                     })),
                 })),
                 "endswith" => Ok(Value::Function(FunctionValue {
                     name: Some("endswith".into()),
                     arity: 1,
-                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                    impls: FunctionImpl::Native(Rc::new(move |args, _kwargs, _env, _globals| {
                         let suf = match args.get(0) {
                             Some(Value::Str(d)) => d,
                             _ => return Err(RuntimeError::new("endswith needs str")),
                         };
-                        Ok(Value::Bool(s.ends_with(suf)))
+                        Ok(Value::Bool(s.ends_with(suf.as_str())))
                     })),
                 })),
                 _ => Err(RuntimeError::new("unknown str method")),
@@ -470,7 +470,7 @@ pub mod rt {
                 "keys" => Ok(Value::Function(FunctionValue {
                     name: Some("keys".into()),
                     arity: 0,
-                    impls: FunctionImpl::Native(Rc::new(move |_args, _env, _globals| {
+                    impls: FunctionImpl::Native(Rc::new(move |_args, _kwargs, _env, _globals| {
                         let mut vals: Vec<Value> = map
                             .borrow()
                             .keys()
@@ -488,7 +488,7 @@ pub mod rt {
                 "items" => Ok(Value::Function(FunctionValue {
                     name: Some("items".into()),
                     arity: 0,
-                    impls: FunctionImpl::Native(Rc::new(move |_args, _env, _globals| {
+                    impls: FunctionImpl::Native(Rc::new(move |_args, _kwargs, _env, _globals| {
                         let mut vals = Vec::new();
                         for (k, v) in map.borrow().iter() {
                             let key_val = match k {
@@ -515,7 +515,7 @@ pub mod rt {
                 "read" => Ok(Value::Function(FunctionValue {
                     name: Some("read".into()),
                     arity: 1,
-                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                    impls: FunctionImpl::Native(Rc::new(move |args, _kwargs, _env, _globals| {
                         let mut f = file.file.borrow_mut();
                         let mut buf = String::new();
                         if let Some(Value::Int(n)) = args.get(0) {
@@ -534,7 +534,7 @@ pub mod rt {
                 "write" => Ok(Value::Function(FunctionValue {
                     name: Some("write".into()),
                     arity: 1,
-                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                    impls: FunctionImpl::Native(Rc::new(move |args, _kwargs, _env, _globals| {
                         use std::io::Write;
                         let mut f = file.file.borrow_mut();
                         let s = match &args[0] {
@@ -549,7 +549,7 @@ pub mod rt {
                 "seek" => Ok(Value::Function(FunctionValue {
                     name: Some("seek".into()),
                     arity: 2,
-                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                    impls: FunctionImpl::Native(Rc::new(move |args, _kwargs, _env, _globals| {
                         use std::io::Seek;
                         let offset = match args.get(0) {
                             Some(Value::Int(i)) => *i,
@@ -600,7 +600,7 @@ pub mod rt {
         }
         match callee {
             Value::Function(f) => match f.impls {
-                FunctionImpl::Native(func) => func(&args, env, globals),
+                FunctionImpl::Native(func) => func(&args, &kwargs, env, globals),
                 FunctionImpl::User(_) => Err(RuntimeError::new("user function in AOT should be native")),
             },
             Value::BoundMethod(b) => {
@@ -723,6 +723,7 @@ fn emit_program(cg: &mut Codegen, program: &Program) -> Result<(), RuntimeError>
     cg.line("use std::collections::HashMap;");
     cg.line("use std::rc::Rc;");
     cg.line("use tyrion::runtime::{Value, HashKey, RuntimeError, FunctionValue, FunctionImpl, ClassValue, InstanceValue, BoundMethodValue, Env};");
+    cg.line("use tyrion::runtime::http; // ensure HTTP runtime (requests) is linked for AOT");
     cg.line("use tyrion::aot::rt;");
     cg.line("use tyrion::aot::rt::*;");
     cg.line("use tyrion::interpreter;");
@@ -738,6 +739,8 @@ fn emit_program(cg: &mut Codegen, program: &Program) -> Result<(), RuntimeError>
     cg.line("fn main() -> Result<(), RuntimeError> {");
     cg.indent();
     cg.line("let mut globals: HashMap<String, Value> = interpreter::builtins();");
+    cg.line("// Touch requests module so it is retained in AOT binaries");
+    cg.line("let _ = http::build_requests_module as fn() -> Value;");
     cg.line("let mut env = Env::new();");
     for stmt in &program.stmts {
         emit_stmt(cg, stmt, "globals", "env")?;
@@ -938,7 +941,7 @@ fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<
             let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
             let fn_name = find_fn_name(name, &names, cg)?;
             cg.line(format!(
-                "let func = Value::Function(FunctionValue {{ name: Some(\"{}\".into()), arity: {}, impls: FunctionImpl::Native(Rc::new(|args, env, globals| {}(args, env, globals))) }});",
+                "let func = Value::Function(FunctionValue {{ name: Some(\"{}\".into()), arity: {}, impls: FunctionImpl::Native(Rc::new(|args, kwargs, env, globals| {}(args, env, globals))) }});",
                 name,
                 params.len(),
                 fn_name
@@ -952,7 +955,7 @@ fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<
                 if let Stmt::Function { name: mname, params, .. } = m {
                     let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                     let fn_name = find_fn_name(&format!("{name}_{mname}"), &names, cg)?;
-                    cg.line(format!("method_map.insert(\"{mname}\".into(), FunctionValue {{ name: Some(\"{mname}\".into()), arity: {}, impls: FunctionImpl::Native(Rc::new(|args, env, globals| {}(args, env, globals))) }});", params.len(), fn_name));
+                    cg.line(format!("method_map.insert(\"{mname}\".into(), FunctionValue {{ name: Some(\"{mname}\".into()), arity: {}, impls: FunctionImpl::Native(Rc::new(|args, kwargs, env, globals| {}(args, env, globals))) }});", params.len(), fn_name));
                 }
             }
             cg.line(format!("let cls = Value::Class(ClassValue {{ name: \"{name}\".into(), methods: method_map }});"));
@@ -1141,7 +1144,7 @@ fn emit_expr(cg: &mut Codegen, expr: &Expr, globals: &str, env: &str) -> Result<
             cg.register_fn(def.func_name.clone(), def.rust_name.clone());
             emit_fn(cg, &def)?;
             format!(
-                "Ok(Value::Function(FunctionValue {{ name: None, arity: {}, impls: FunctionImpl::Native(Rc::new(|args, env, globals| {}(args, env, globals))) }}))",
+                "Ok(Value::Function(FunctionValue {{ name: None, arity: {}, impls: FunctionImpl::Native(Rc::new(|args, kwargs, env, globals| {}(args, env, globals))) }}))",
                 params.len(),
                 fname
             )
@@ -1234,15 +1237,21 @@ fn emit_expr(cg: &mut Codegen, expr: &Expr, globals: &str, env: &str) -> Result<
             let e = if let Some(en) = end { emit_expr(cg, en, globals, env)? } else { "Ok(Value::None)".into() };
             format!("rt::slice_value({v}?, {}, {})", match start { Some(_) => format!("Some({s}?)"), None => "None".into() }, match end { Some(_) => format!("Some({e}?)"), None => "None".into() })
         }
-        Expr::MethodCall { object, method, args: arg } => {
+        Expr::MethodCall { object, method, args: arg, kwargs } => {
             let o = emit_expr(cg, object, globals, env)?;
             let callee = format!("rt::attr_get({o}?, \"{method}\")");
             let mut argv = Vec::new();
             for a in arg {
                 argv.push(emit_expr(cg, a, globals, env)?);
             }
+            let mut kwarg_vals = Vec::new();
+            for (k, v) in kwargs {
+                let ev = emit_expr(cg, v, globals, env)?;
+                kwarg_vals.push((k.clone(), ev));
+            }
             let args_list = argv.into_iter().map(|a| format!("{a}?")).collect::<Vec<_>>().join(", ");
-            format!("rt::call_value({callee}?, vec![{args_list}], vec![], &mut {env}, &mut {globals})")
+            let kwargs_list = kwarg_vals.into_iter().map(|(k, v)| format!("(\"{}\".into(), {v}?)", k)).collect::<Vec<_>>().join(", ");
+            format!("rt::call_value({callee}?, vec![{args_list}], vec![{kwargs_list}], &mut {env}, &mut {globals})")
         }
         Expr::Attr { object, attr } => {
             let o = emit_expr(cg, object, globals, env)?;

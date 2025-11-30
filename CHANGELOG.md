@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.5] - 2025-11-30
+- Added a built-in requests module providing a blocking HTTP client with get/post helpers, Sessions with shared defaults, redirect and timeout controls, binary-safe request/response bodies, multipart and form-urlencoded support, improved error messages, and response helpers (json, raise_for_status, iter_content, iter_lines, redirect history).
+- Expanded native function support for keyword arguments to align with requests-style APIs.
+- Enhanced networking and TLS features: configurable default timeout via TYRION_REQUESTS_TIMEOUT; SSL verification toggle, custom CA bundles, and client certificate support; improved proxy handling including HTTP/HTTPS proxies, environment-driven defaults, and robust NO_PROXY matching (CIDRs, host:port, wildcards).
+- Implemented a richer cookie jar with host-only vs domain cookies, secure/httponly flags, expiry tracking, and correct domain/path matching for request filtering.
+- Improved multipart handling with content-type hints and safer binary upload/download behavior.
+- Cleaned up minor build warnings in the requests runtime (removal of unused helper and unnecessary mutability).
+
 ## [0.3.4] - 2025-11-29
 - Added generator/yield execution with keyword and default arguments to support streaming and tailing-style scripts.
 - Added interrupt signaling plus built-in `sleep` and `time` helpers.

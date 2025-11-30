@@ -1,0 +1,18 @@
+print("== simple GET with params ==")
+resp = requests.get("https://httpbin.org/get", params={"q": "tyrion"})
+print("status", resp.status_code, "url", resp.url)
+print("args echoed", resp.json()["args"])
+
+print("== POST form data with headers ==")
+resp = requests.post("https://httpbin.org/post", data={"name": "arya", "house": "stark"}, headers={"X-Demo": "requests"})
+print("form echoed", resp.json()["form"])
+
+print("== session cookies persist across requests ==")
+session = requests.Session()
+session.get("https://httpbin.org/cookies/set?hello=world")
+cookies_resp = session.get("https://httpbin.org/cookies")
+print("cookies", cookies_resp.json()["cookies"])
+
+print("== binary content download ==")
+bin_resp = requests.get("https://httpbin.org/bytes/16")
+print("content length", len(bin_resp.content), "first byte", bin_resp.content[0])

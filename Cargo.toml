@@ -1,6 +1,6 @@
 [package]
 name = "tyrion"
-version = "0.3.4"
+version = "0.3.9"
 edition = "2021"
 
 [lib]
@@ -12,3 +12,6 @@ name = "tyrion"
 path = "src/main.rs"
 
 [dependencies]
+reqwest = { version = "0.11", features = ["blocking", "json", "cookies", "multipart", "native-tls", "rustls-tls"] }
+serde_json = "1.0"
+ipnet = "2.9"
