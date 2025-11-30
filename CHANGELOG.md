@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 ## [0.3.6] - 2025-11-30
 - Fixed session cookie handling by routing requests through a shared cookie jar that persists redirect-set cookies and keeps Session cookies up to date.
-- Response cookies now reflect cookies accumulated during redirects, restoring parity with the Python demo.
+- Response cookies now reflect cookies accumulated during redirects
 
 ## [0.3.5] - 2025-11-30
 - Added a built-in requests module providing a blocking HTTP client with get/post helpers, Sessions with shared defaults, redirect and timeout controls, binary-safe request/response bodies, multipart and form-urlencoded support, improved error messages, and response helpers (json, raise_for_status, iter_content, iter_lines, redirect history).
