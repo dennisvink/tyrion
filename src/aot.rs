@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -678,7 +678,7 @@ impl Codegen {
 }
 
 pub fn compile_aot(program: &Program, output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let crate_root = env::current_dir()?.canonicalize()?;
+    let crate_root = resolve_crate_root()?;
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let runner_dir = crate_root
         .join("target")
@@ -713,6 +713,27 @@ pub fn compile_aot(program: &Program, output_path: &Path) -> Result<(), Box<dyn 
     }
     fs::copy(&built, output_path)?;
     Ok(())
+}
+
+fn resolve_crate_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Ok(root) = env::var("TYRION_CRATE_ROOT") {
+        let path = PathBuf::from(root);
+        if path.join("Cargo.toml").exists() {
+            return Ok(path.canonicalize()?);
+        }
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if manifest_dir.join("Cargo.toml").exists() {
+        return Ok(manifest_dir.canonicalize()?);
+    }
+
+    let cwd = env::current_dir()?;
+    if cwd.join("Cargo.toml").exists() {
+        return Ok(cwd.canonicalize()?);
+    }
+
+    Err("could not locate tyrion crate root; set TYRION_CRATE_ROOT to the repo path".into())
 }
 
 fn emit_program(cg: &mut Codegen, program: &Program) -> Result<(), RuntimeError> {

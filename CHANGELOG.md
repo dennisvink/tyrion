@@ -2,6 +2,9 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.8] - 2025-11-30
+- Hotfix: AOT builds now locate the Tyrion crate root via `CARGO_MANIFEST_DIR` or `TYRION_CRATE_ROOT`, so `tyrion --build` works when invoked outside the repo directory.
+
 ## [0.3.7] - 2025-11-30
 - Fixed AOT call dispatch to forward keyword arguments to native/bound methods and class initializers, restoring the requests demo and other keyword-using code paths in AOT builds.
 - Added `len` as a builtin so list/tuple/dict/set/str lengths work in both interpreted and AOT execution paths.
