@@ -4,6 +4,7 @@ use std::fmt;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+use std::sync::mpsc::Receiver;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -22,6 +23,7 @@ pub enum Value {
     Instance(InstanceValue),
     BoundMethod(Box<BoundMethodValue>),
     File(FileValue),
+    Generator(GeneratorValue),
 }
 
 #[allow(dead_code)]
@@ -37,10 +39,12 @@ impl Value {
             Value::Tuple(items) => !items.is_empty(),
             Value::Dict(map) => !map.borrow().is_empty(),
             Value::Set(set) => !set.borrow().is_empty(),
-            Value::Function(_) | Value::Class(_) | Value::Instance(_) | Value::BoundMethod(_) => {
-                true
-            }
-            Value::File(_) => true,
+            Value::Function(_)
+            | Value::Class(_)
+            | Value::Instance(_)
+            | Value::BoundMethod(_)
+            | Value::File(_)
+            | Value::Generator(_) => true,
         }
     }
 
@@ -60,6 +64,7 @@ impl Value {
             Value::Instance(_) => "instance",
             Value::BoundMethod(_) => "bound_method",
             Value::File(_) => "file",
+            Value::Generator(_) => "generator",
         }
     }
 }
@@ -153,6 +158,17 @@ pub struct FileValue {
     pub mode: String,
     pub file: Rc<RefCell<File>>,
 }
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct GeneratorValue {
+    pub rx: Rc<Receiver<Result<Value, RuntimeError>>>,
+}
+
+// Simple whence constants to mirror std::io::SeekFrom needs.
+pub const SEEK_SET: i64 = 0;
+pub const SEEK_CUR: i64 = 1;
+pub const SEEK_END: i64 = 2;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]

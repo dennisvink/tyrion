@@ -12,6 +12,7 @@ use crate::{AssignOp, AssignTarget, Expr, ForTarget, Program, Stmt, UnOp};
 pub mod rt {
     use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::io::{Read, SeekFrom};
     use std::rc::Rc;
 
     use crate::runtime::{
@@ -83,6 +84,7 @@ pub mod rt {
             Value::Instance(inst) => format!("<instance {}>", inst.class.name),
             Value::BoundMethod(_) => "<bound method>".into(),
             Value::File(f) => format!("<file {}>", f.path),
+            Value::Generator(_) => "<generator>".into(),
         }
     }
 
@@ -243,6 +245,7 @@ pub mod rt {
                 Ok(vals)
             }
             Value::Str(s) => Ok(s.chars().map(|c| Value::Str(c.to_string())).collect()),
+            Value::Generator(_) => Err(RuntimeError::new("generator iteration not supported in AOT")),
             _ => Err(RuntimeError::new("not iterable")),
         }
     }
@@ -417,6 +420,52 @@ pub mod rt {
                 })),
                 _ => Err(RuntimeError::new("unknown set method")),
             },
+            Value::Str(s) => match attr {
+                "split" => Ok(Value::Function(FunctionValue {
+                    name: Some("split".into()),
+                    arity: 1,
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                        let delim = match args.get(0) {
+                            Some(Value::Str(d)) => d.clone(),
+                            None => " ".into(),
+                            _ => return Err(RuntimeError::new("split delim must be str")),
+                        };
+                        let parts: Vec<Value> =
+                            s.split(&delim).map(|p| Value::Str(p.to_string())).collect();
+                        Ok(Value::List(Rc::new(RefCell::new(parts))))
+                    })),
+                })),
+                "strip" => Ok(Value::Function(FunctionValue {
+                    name: Some("strip".into()),
+                    arity: 0,
+                    impls: FunctionImpl::Native(Rc::new(move |_args, _env, _globals| {
+                        Ok(Value::Str(s.trim().to_string()))
+                    })),
+                })),
+                "startswith" => Ok(Value::Function(FunctionValue {
+                    name: Some("startswith".into()),
+                    arity: 1,
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                        let pref = match args.get(0) {
+                            Some(Value::Str(d)) => d,
+                            _ => return Err(RuntimeError::new("startswith needs str")),
+                        };
+                        Ok(Value::Bool(s.starts_with(pref)))
+                    })),
+                })),
+                "endswith" => Ok(Value::Function(FunctionValue {
+                    name: Some("endswith".into()),
+                    arity: 1,
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                        let suf = match args.get(0) {
+                            Some(Value::Str(d)) => d,
+                            _ => return Err(RuntimeError::new("endswith needs str")),
+                        };
+                        Ok(Value::Bool(s.ends_with(suf)))
+                    })),
+                })),
+                _ => Err(RuntimeError::new("unknown str method")),
+            },
             Value::Dict(map) => match attr {
                 "keys" => Ok(Value::Function(FunctionValue {
                     name: Some("keys".into()),
@@ -465,13 +514,20 @@ pub mod rt {
             Value::File(file) => match attr {
                 "read" => Ok(Value::Function(FunctionValue {
                     name: Some("read".into()),
-                    arity: 0,
-                    impls: FunctionImpl::Native(Rc::new(move |_args, _env, _globals| {
-                        use std::io::Read;
+                    arity: 1,
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
                         let mut f = file.file.borrow_mut();
                         let mut buf = String::new();
-                        f.read_to_string(&mut buf)
-                            .map_err(|e| RuntimeError::new(e.to_string()))?;
+                        if let Some(Value::Int(n)) = args.get(0) {
+                            let mut tmp = vec![0u8; *n as usize];
+                            let read_n = f
+                                .read(&mut tmp)
+                                .map_err(|e| RuntimeError::new(e.to_string()))?;
+                            buf.push_str(&String::from_utf8_lossy(&tmp[..read_n]));
+                        } else {
+                            f.read_to_string(&mut buf)
+                                .map_err(|e| RuntimeError::new(e.to_string()))?;
+                        }
                         Ok(Value::Str(buf))
                     })),
                 })),
@@ -486,6 +542,32 @@ pub mod rt {
                             other => value_to_string(other),
                         };
                         f.write_all(s.as_bytes())
+                            .map_err(|e| RuntimeError::new(e.to_string()))?;
+                        Ok(Value::None)
+                    })),
+                })),
+                "seek" => Ok(Value::Function(FunctionValue {
+                    name: Some("seek".into()),
+                    arity: 2,
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                        use std::io::Seek;
+                        let offset = match args.get(0) {
+                            Some(Value::Int(i)) => *i,
+                            _ => return Err(RuntimeError::new("seek offset must be int")),
+                        };
+                        let whence = match args.get(1) {
+                            Some(Value::Int(i)) => *i,
+                            _ => return Err(RuntimeError::new("seek whence must be int")),
+                        };
+                        let seek_from = match whence {
+                            crate::runtime::SEEK_SET => SeekFrom::Start(offset as u64),
+                            crate::runtime::SEEK_CUR => SeekFrom::Current(offset),
+                            crate::runtime::SEEK_END => SeekFrom::End(offset),
+                            _ => return Err(RuntimeError::new("invalid whence")),
+                        };
+                        file.file
+                            .borrow_mut()
+                            .seek(seek_from)
                             .map_err(|e| RuntimeError::new(e.to_string()))?;
                         Ok(Value::None)
                     })),
@@ -509,9 +591,13 @@ pub mod rt {
     pub fn call_value(
         callee: Value,
         mut args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
         env: &mut Env,
         globals: &mut HashMap<String, Value>,
     ) -> Result<Value, RuntimeError> {
+        if !kwargs.is_empty() {
+            return Err(RuntimeError::new("keyword args not supported in AOT"));
+        }
         match callee {
             Value::Function(f) => match f.impls {
                 FunctionImpl::Native(func) => func(&args, env, globals),
@@ -519,7 +605,7 @@ pub mod rt {
             },
             Value::BoundMethod(b) => {
                 args.insert(0, b.receiver.clone());
-                call_value(Value::Function(b.func), args, env, globals)
+                call_value(Value::Function(b.func), args, Vec::new(), env, globals)
             }
             Value::Class(cls) => {
                 let inst = Value::Instance(InstanceValue {
@@ -531,7 +617,7 @@ pub mod rt {
                         receiver: inst.clone(),
                         func: init.clone(),
                     };
-                    call_value(Value::BoundMethod(Box::new(bm)), args, env, globals)?;
+                    call_value(Value::BoundMethod(Box::new(bm)), args, Vec::new(), env, globals)?;
                 }
                 Ok(inst)
             }
@@ -672,26 +758,26 @@ struct FnDef {
 fn collect_functions(program: &Program, out: &mut Vec<FnDef>, cg: &mut Codegen) {
     for stmt in &program.stmts {
         match stmt {
-            Stmt::Function { name, params, body } => {
+            Stmt::Function { name, params, body, .. } => {
                 let rust_name = cg.fresh("fn_user_");
                 cg.register_fn(name.clone(), rust_name.clone());
                 out.push(FnDef {
                     rust_name,
                     func_name: name.clone(),
-                    params: params.clone(),
+                    params: params.iter().map(|p| p.name.clone()).collect(),
                     body: body.clone(),
                 });
             }
             Stmt::Class { name, methods } => {
                 for m in methods {
-                    if let Stmt::Function { name: mname, params, body } = m {
+                    if let Stmt::Function { name: mname, params, body, .. } = m {
                         let func_name = format!("{name}_{}", mname);
                         let rust_name = cg.fresh("fn_method_");
                         cg.register_fn(func_name.clone(), rust_name.clone());
                         out.push(FnDef {
                             rust_name,
                             func_name,
-                            params: params.clone(),
+                            params: params.iter().map(|p| p.name.clone()).collect(),
                             body: body.clone(),
                         });
                     }
@@ -732,6 +818,9 @@ fn emit_fn_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Resu
             } else {
                 cg.line("return Ok(Value::None);");
             }
+        }
+        Stmt::Yield { .. } => {
+            return Err(RuntimeError::new("yield not supported in AOT"));
         }
         _ => emit_stmt(cg, stmt, globals, env)?,
     }
@@ -842,8 +931,12 @@ fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<
                 cg.line("return Ok(Value::None);");
             }
         }
+        Stmt::Yield { .. } => {
+            return Err(RuntimeError::new("yield not supported in AOT"));
+        }
         Stmt::Function { name, params, .. } => {
-            let fn_name = find_fn_name(name, params, cg)?;
+            let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+            let fn_name = find_fn_name(name, &names, cg)?;
             cg.line(format!(
                 "let func = Value::Function(FunctionValue {{ name: Some(\"{}\".into()), arity: {}, impls: FunctionImpl::Native(Rc::new(|args, env, globals| {}(args, env, globals))) }});",
                 name,
@@ -857,7 +950,8 @@ fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<
             cg.line("let mut method_map = HashMap::new();");
             for m in methods {
                 if let Stmt::Function { name: mname, params, .. } = m {
-                    let fn_name = find_fn_name(&format!("{name}_{mname}"), params, cg)?;
+                    let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+                    let fn_name = find_fn_name(&format!("{name}_{mname}"), &names, cg)?;
                     cg.line(format!("method_map.insert(\"{mname}\".into(), FunctionValue {{ name: Some(\"{mname}\".into()), arity: {}, impls: FunctionImpl::Native(Rc::new(|args, env, globals| {}(args, env, globals))) }});", params.len(), fn_name));
                 }
             }
@@ -1069,18 +1163,30 @@ fn emit_expr(cg: &mut Codegen, expr: &Expr, globals: &str, env: &str) -> Result<
             let re = emit_expr(cg, r, globals, env)?;
             format!("rt::compare({le}?, {re}?, tyrion::CmpOp::{:?})", op)
         }
-        Expr::Call { callee, args } => {
+        Expr::Call {
+            callee,
+            args,
+            kwargs,
+        } => {
             let cal = emit_expr(cg, callee, globals, env)?;
             let mut argv = Vec::new();
             for a in args {
                 argv.push(emit_expr(cg, a, globals, env)?);
+            }
+            let mut kw_list = Vec::new();
+            for (k, v) in kwargs {
+                let vexpr = emit_expr(cg, v, globals, env)?;
+                kw_list.push(format!("(\"{}\".to_string(), {vexpr}?)", k));
             }
             let args_list = argv
                 .into_iter()
                 .map(|a| format!("{a}?"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("rt::call_value({cal}?, vec![{args_list}], &mut {env}, &mut {globals})")
+            let kw_joined = kw_list.join(", ");
+            format!(
+                "rt::call_value({cal}?, vec![{args_list}], vec![{kw_joined}], &mut {env}, &mut {globals})"
+            )
         }
         Expr::List(items) => {
             let mut vals = Vec::new();
@@ -1128,15 +1234,15 @@ fn emit_expr(cg: &mut Codegen, expr: &Expr, globals: &str, env: &str) -> Result<
             let e = if let Some(en) = end { emit_expr(cg, en, globals, env)? } else { "Ok(Value::None)".into() };
             format!("rt::slice_value({v}?, {}, {})", match start { Some(_) => format!("Some({s}?)"), None => "None".into() }, match end { Some(_) => format!("Some({e}?)"), None => "None".into() })
         }
-        Expr::MethodCall { object, method, arg } => {
+        Expr::MethodCall { object, method, args: arg } => {
             let o = emit_expr(cg, object, globals, env)?;
             let callee = format!("rt::attr_get({o}?, \"{method}\")");
             let mut argv = Vec::new();
-            if let Some(a) = arg {
+            for a in arg {
                 argv.push(emit_expr(cg, a, globals, env)?);
             }
             let args_list = argv.into_iter().map(|a| format!("{a}?")).collect::<Vec<_>>().join(", ");
-            format!("rt::call_value({callee}?, vec![{args_list}], &mut {env}, &mut {globals})")
+            format!("rt::call_value({callee}?, vec![{args_list}], vec![], &mut {env}, &mut {globals})")
         }
         Expr::Attr { object, attr } => {
             let o = emit_expr(cg, object, globals, env)?;

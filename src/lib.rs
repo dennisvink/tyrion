@@ -78,10 +78,17 @@ pub struct Program {
 }
 
 #[derive(Debug, Clone)]
+pub struct Param {
+    pub(crate) name: String,
+    pub(crate) default: Option<Expr>,
+}
+
+#[derive(Debug, Clone)]
 enum Stmt {
     Function {
         name: String,
-        params: Vec<String>,
+        params: Vec<Param>,
+        is_generator: bool,
         body: Vec<Stmt>,
     },
     Class {
@@ -126,6 +133,9 @@ enum Stmt {
         body: Vec<Stmt>,
     },
     Return {
+        expr: Option<Expr>,
+    },
+    Yield {
         expr: Option<Expr>,
     },
 }
@@ -178,6 +188,7 @@ enum Expr {
     Call {
         callee: Box<Expr>,
         args: Vec<Expr>,
+        kwargs: Vec<(String, Expr)>,
     },
     List(Vec<Expr>),
     Tuple(Vec<Expr>),
@@ -205,7 +216,7 @@ enum Expr {
     MethodCall {
         object: Box<Expr>,
         method: String,
-        arg: Option<Box<Expr>>,
+        args: Vec<Expr>,
     },
     Attr {
         object: Box<Expr>,
@@ -424,6 +435,8 @@ fn parse_statement(
         parse_def(lines, idx, level)
     } else if content.starts_with("return") {
         parse_return(lines, idx)
+    } else if content.starts_with("yield") {
+        parse_yield(lines, idx)
     } else if content.starts_with("class ") {
         parse_class(lines, idx, level)
     } else if content.starts_with("try") {
@@ -567,6 +580,25 @@ fn parse_guard_body(body_src: &str, line: &LineInfo) -> Result<Stmt, ParseError>
             ));
         }
         return Ok(Stmt::Raise { expr });
+    }
+    if body_src.starts_with("yield") {
+        let rest = body_src.strip_prefix("yield").unwrap().trim();
+        if rest.is_empty() {
+            return Ok(Stmt::Yield { expr: None });
+        }
+        let col_offset = line.indent + body_src.find(rest).unwrap_or(0) + 1;
+        let (expr, next) =
+            parse_expression(rest, 0, line.line_no, col_offset, &fake_raw)?;
+        let next = skip_ws(rest.as_bytes(), next);
+        if next != rest.len() {
+            return Err(parse_error(
+                line.line_no,
+                col_offset + next,
+                "Unexpected trailing characters after yield expression",
+                &fake_raw,
+            ));
+        }
+        return Ok(Stmt::Yield { expr: Some(expr) });
     }
     if body_src.starts_with("print") {
         return parse_print(body_src, line.line_no, col_offset, &fake_raw);
@@ -856,7 +888,7 @@ fn parse_def(lines: &[LineInfo], idx: usize, level: usize) -> Result<(Stmt, usiz
     if !params_src.trim().is_empty() {
         for p in params_src.split(',') {
             let p = p.trim();
-            if !is_valid_ident(p) {
+            if p.is_empty() {
                 return Err(parse_error(
                     line.line_no,
                     line.indent + 1,
@@ -864,7 +896,34 @@ fn parse_def(lines: &[LineInfo], idx: usize, level: usize) -> Result<(Stmt, usiz
                     &line.raw,
                 ));
             }
-            params.push(p.to_string());
+            let mut parts = p.splitn(2, '=');
+            let name_part = parts.next().unwrap().trim();
+            if !is_valid_ident(name_part) {
+                return Err(parse_error(
+                    line.line_no,
+                    line.indent + 1,
+                    "Invalid parameter",
+                    &line.raw,
+                ));
+            }
+            let default_expr = if let Some(def_src) = parts.next() {
+                let def_src = def_src.trim();
+                let col_offset = line.indent
+                    + line
+                        .content
+                        .find(def_src)
+                        .unwrap_or_else(|| line.content.find(name_part).unwrap_or(0))
+                    + 1;
+                let (def_expr, _) =
+                    parse_expression(def_src, 0, line.line_no, col_offset, &line.raw)?;
+                Some(def_expr)
+            } else {
+                None
+            };
+            params.push(Param {
+                name: name_part.to_string(),
+                default: default_expr,
+            });
         }
     }
     if idx + 1 >= lines.len() || lines[idx + 1].level <= level {
@@ -877,10 +936,12 @@ fn parse_def(lines: &[LineInfo], idx: usize, level: usize) -> Result<(Stmt, usiz
     }
     let body_level = lines[idx + 1].level;
     let (body, next_idx) = parse_block(lines, idx + 1, body_level)?;
+    let is_generator = contains_yield(&body);
     Ok((
         Stmt::Function {
             name: name.to_string(),
             params,
+            is_generator,
             body,
         },
         next_idx,
@@ -947,6 +1008,55 @@ fn parse_class(lines: &[LineInfo], idx: usize, level: usize) -> Result<(Stmt, us
     ))
 }
 
+fn contains_yield(stmts: &[Stmt]) -> bool {
+    for s in stmts {
+        match s {
+            Stmt::Yield { .. } => return true,
+            Stmt::If {
+                branches,
+                else_branch,
+            } => {
+                for (_, b) in branches {
+                    if contains_yield(b) {
+                        return true;
+                    }
+                }
+                if let Some(b) = else_branch {
+                    if contains_yield(b) {
+                        return true;
+                    }
+                }
+            }
+            Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::With { body, .. } => {
+                if contains_yield(body) {
+                    return true;
+                }
+            }
+            Stmt::Try {
+                body,
+                handlers,
+                finally_body,
+            } => {
+                if contains_yield(body) {
+                    return true;
+                }
+                for h in handlers {
+                    if contains_yield(&h.body) {
+                        return true;
+                    }
+                }
+                if let Some(f) = finally_body {
+                    if contains_yield(f) {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn parse_return(lines: &[LineInfo], idx: usize) -> Result<(Stmt, usize), ParseError> {
     let line = &lines[idx];
     let content = line.content.as_str();
@@ -966,6 +1076,27 @@ fn parse_return(lines: &[LineInfo], idx: usize) -> Result<(Stmt, usize), ParseEr
         ));
     }
     Ok((Stmt::Return { expr: Some(expr) }, idx + 1))
+}
+
+fn parse_yield(lines: &[LineInfo], idx: usize) -> Result<(Stmt, usize), ParseError> {
+    let line = &lines[idx];
+    let content = line.content.as_str();
+    let rest = content.strip_prefix("yield").unwrap().trim();
+    if rest.is_empty() {
+        return Ok((Stmt::Yield { expr: None }, idx + 1));
+    }
+    let col_offset = line.indent + line.content.find(rest).unwrap_or(0) + 1;
+    let (expr, next) = parse_expression(rest, 0, line.line_no, col_offset, &line.raw)?;
+    let next = skip_ws(rest.as_bytes(), next);
+    if next != rest.len() {
+        return Err(parse_error(
+            line.line_no,
+            col_offset + next,
+            "Unexpected trailing characters after yield expression",
+            &line.raw,
+        ));
+    }
+    Ok((Stmt::Yield { expr: Some(expr) }, idx + 1))
 }
 
 fn parse_raise(lines: &[LineInfo], idx: usize) -> Result<(Stmt, usize), ParseError> {
@@ -2276,46 +2407,53 @@ fn parse_method_call(
     let method = &segment[ident_start..i];
     i = skip_ws(bytes, i);
     if i < bytes.len() && bytes[i] == b'(' {
-        // method call
-        i += 1;
-        i = skip_ws(bytes, i);
-        if i >= bytes.len() {
-            return Err(parse_error(
-                line_no,
-                column_offset + i + 1,
-                "Missing ')'",
-                line_src,
-            ));
-        }
-        let mut arg = None;
-        if bytes[i] != b')' {
-            let (expr, next) = parse_expression(segment, i, line_no, column_offset, line_src)?;
-            arg = Some(Box::new(expr));
-            i = skip_ws(bytes, next);
-            if i < bytes.len() && bytes[i] == b',' {
-                return Err(parse_error(
-                    line_no,
-                    column_offset + i + 1,
-                    "Only one argument supported in method calls",
-                    line_src,
-                ));
+        // method call with possibly multiple args
+        let open = i;
+        let mut depth = 0;
+        let mut j = open + 1;
+        while j < bytes.len() {
+            match bytes[j] {
+                b'(' => depth += 1,
+                b')' => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                b'"' => {
+                    j += 1;
+                    while j < bytes.len() {
+                        if bytes[j] == b'\\' {
+                            j += 2;
+                            continue;
+                        }
+                        if bytes[j] == b'"' {
+                            break;
+                        }
+                        j += 1;
+                    }
+                }
+                _ => {}
             }
+            j += 1;
         }
-        if i >= bytes.len() || bytes[i] != b')' {
+        if j >= bytes.len() || bytes[j] != b')' {
             return Err(parse_error(
                 line_no,
-                column_offset + i + 1,
+                column_offset + j + 1,
                 "Missing ')' after method call",
                 line_src,
             ));
         }
+        let inside = &segment[(open + 1)..j];
+        let args = parse_args(inside, line_no, column_offset + open + 1, line_src)?;
         return Ok((
             Expr::MethodCall {
                 object: Box::new(object),
                 method: method.to_string(),
-                arg,
+                args,
             },
-            i + 1,
+            j + 1,
         ));
     }
     Ok((
@@ -2338,6 +2476,8 @@ fn parse_call(
     let bytes = segment.as_bytes();
     let mut i = open_idx + 1;
     let mut args = Vec::new();
+    let mut kwargs = Vec::new();
+    let mut seen_kw = false;
     loop {
         i = skip_ws(bytes, i);
         if i >= bytes.len() {
@@ -2353,44 +2493,46 @@ fn parse_call(
                 Expr::Call {
                     callee: Box::new(callee),
                     args,
+                    kwargs,
                 },
                 i + 1,
             ));
         }
-        if segment[i..].starts_with("key") {
-            let mut k = i + 3;
-            k = skip_ws(bytes, k);
-            if k < bytes.len() && bytes[k] == b'=' {
-                k += 1;
-                k = skip_ws(bytes, k);
-                let (arg, next) = parse_expression(segment, k, line_no, column_offset, line_src)?;
-                args.push(arg);
+        // keyword arg detection: <ident> = expr
+        let mut kw_handled = false;
+        if is_ident_start(bytes[i]) {
+            let mut j = i + 1;
+            while j < bytes.len() && is_ident_part(bytes[j]) {
+                j += 1;
+            }
+            let after_ident = skip_ws(bytes, j);
+            if after_ident < bytes.len()
+                && bytes[after_ident] == b'='
+                && (after_ident + 1 >= bytes.len() || bytes[after_ident + 1] != b'=')
+            {
+                let name = &segment[i..j];
+                let expr_start = skip_ws(bytes, after_ident + 1);
+                let (expr, next) =
+                    parse_expression(segment, expr_start, line_no, column_offset, line_src)?;
+                kwargs.push((name.to_string(), expr));
                 i = skip_ws(bytes, next);
-                if i < bytes.len() && bytes[i] == b',' {
-                    i += 1;
-                    continue;
-                } else if i < bytes.len() && bytes[i] == b')' {
-                    return Ok((
-                        Expr::Call {
-                            callee: Box::new(callee),
-                            args,
-                        },
-                        i + 1,
-                    ));
-                } else if i >= bytes.len() {
-                    return Err(parse_error(
-                        line_no,
-                        column_offset + i + 1,
-                        "Missing ')'",
-                        line_src,
-                    ));
-                }
-                continue;
+                kw_handled = true;
+                seen_kw = true;
             }
         }
-        let (arg, next) = parse_expression(segment, i, line_no, column_offset, line_src)?;
-        args.push(arg);
-        i = skip_ws(bytes, next);
+        if !kw_handled {
+            if seen_kw {
+                return Err(parse_error(
+                    line_no,
+                    column_offset + i + 1,
+                    "Positional argument after keyword argument",
+                    line_src,
+                ));
+            }
+            let (arg, next) = parse_expression(segment, i, line_no, column_offset, line_src)?;
+            args.push(arg);
+            i = skip_ws(bytes, next);
+        }
         if i < bytes.len() && bytes[i] == b',' {
             i += 1;
             continue;
@@ -2399,6 +2541,7 @@ fn parse_call(
                 Expr::Call {
                     callee: Box::new(callee),
                     args,
+                    kwargs,
                 },
                 i + 1,
             ));

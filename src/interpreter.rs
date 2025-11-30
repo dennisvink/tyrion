@@ -1,17 +1,19 @@
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
+use std::io::{Read, SeekFrom, Write};
 use std::rc::Rc;
+use std::sync::mpsc;
 
 use crate::runtime::{
     BoundMethodValue, ClassValue, Env, FunctionImpl, FunctionValue, HashKey, InstanceValue,
     RuntimeError, Value,
 };
-use crate::{AssignOp, AssignTarget, BinOp, CmpOp, Expr, ForTarget, Program, Stmt, UnOp};
+use crate::{AssignOp, AssignTarget, BinOp, CmpOp, Expr, ForTarget, Param, Program, Stmt, UnOp};
 
 enum Flow {
     Continue,
     Return(Value),
     Raise(Value),
+    Yield(Value),
 }
 
 pub struct Interpreter {
@@ -21,7 +23,8 @@ pub struct Interpreter {
 
 #[derive(Clone)]
 struct UserFunc {
-    params: Vec<String>,
+    params: Vec<Param>,
+    is_generator: bool,
     body: Vec<Stmt>,
 }
 
@@ -37,25 +40,46 @@ impl Interpreter {
 
     pub fn run(&mut self, program: &Program) -> Result<(), RuntimeError> {
         let mut env = Env::new();
-        self.exec_block(&program.stmts, &mut env)?;
+        self.exec_block(&program.stmts, &mut env, None)?;
         Ok(())
     }
 
-    fn exec_block(&mut self, stmts: &[Stmt], env: &mut Env) -> Result<Flow, RuntimeError> {
+    fn exec_block(
+        &mut self,
+        stmts: &[Stmt],
+        env: &mut Env,
+        yield_sender: Option<&mpsc::Sender<Result<Value, RuntimeError>>>,
+    ) -> Result<Flow, RuntimeError> {
         for stmt in stmts {
-            let flow = match self.exec_stmt(stmt, env) {
+            let flow = match self.exec_stmt(stmt, env, yield_sender) {
                 Ok(f) => f,
                 Err(e) => return Ok(Flow::Raise(Value::Str(e.message))),
             };
             match flow {
                 Flow::Continue => {}
+                Flow::Yield(v) => {
+                    if let Some(tx) = yield_sender {
+                        if tx.send(Ok(v)).is_err() {
+                            return Ok(Flow::Return(Value::None));
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        return Ok(Flow::Yield(v));
+                    }
+                }
                 _ => return Ok(flow),
             }
         }
         Ok(Flow::Continue)
     }
 
-    fn exec_stmt(&mut self, stmt: &Stmt, env: &mut Env) -> Result<Flow, RuntimeError> {
+    fn exec_stmt(
+        &mut self,
+        stmt: &Stmt,
+        env: &mut Env,
+        yield_sender: Option<&mpsc::Sender<Result<Value, RuntimeError>>>,
+    ) -> Result<Flow, RuntimeError> {
         match stmt {
             Stmt::Assign { target, expr, op } => {
                 let mut value = self.eval_expr(expr, env)?;
@@ -85,35 +109,38 @@ impl Interpreter {
             } => {
                 for (cond, body) in branches {
                     if self.eval_expr(cond, env)?.truthy() {
-                        return self.exec_block(body, env);
+                        return self.exec_block(body, env, yield_sender);
                     }
                 }
                 if let Some(body) = else_branch {
-                    return self.exec_block(body, env);
+                    return self.exec_block(body, env, yield_sender);
                 }
                 Ok(Flow::Continue)
             }
             Stmt::While { cond, body } => {
                 while self.eval_expr(cond, env)?.truthy() {
-                    let flow = self.exec_block(body, env)?;
+                    let flow = self.exec_block(body, env, yield_sender)?;
                     match flow {
                         Flow::Continue => {}
                         Flow::Return(v) => return Ok(Flow::Return(v)),
                         Flow::Raise(v) => return Ok(Flow::Raise(v)),
+                        Flow::Yield(v) => return Ok(Flow::Yield(v)),
                     }
                 }
                 Ok(Flow::Continue)
             }
             Stmt::For { target, iter, body } => {
                 let iterable = self.eval_expr(iter, env)?;
-                let items = self.iterate_value(iterable)?;
-                for item in items {
+                let mut items = self.iterate_value(iterable)?;
+                while let Some(item) = items.next() {
+                    let item = item?;
                     self.bind_for_target(target, item, env)?;
-                    let flow = self.exec_block(body, env)?;
+                    let flow = self.exec_block(body, env, yield_sender)?;
                     match flow {
                         Flow::Continue => {}
                         Flow::Return(v) => return Ok(Flow::Return(v)),
                         Flow::Raise(v) => return Ok(Flow::Raise(v)),
+                        Flow::Yield(v) => return Ok(Flow::Yield(v)),
                     }
                 }
                 Ok(Flow::Continue)
@@ -121,7 +148,7 @@ impl Interpreter {
             Stmt::With { target, expr, body } => {
                 let val = self.eval_expr(expr, env)?;
                 self.store_target(&AssignTarget::Name(target.clone()), val.clone(), env)?;
-                let res = self.exec_block(body, env)?;
+                let res = self.exec_block(body, env, yield_sender)?;
                 if let Value::File(fv) = val {
                     let _ = fv.file.borrow_mut().flush();
                 }
@@ -135,10 +162,16 @@ impl Interpreter {
                 };
                 Ok(Flow::Return(v))
             }
-            Stmt::Function { name, params, body } => {
+            Stmt::Function {
+                name,
+                params,
+                is_generator,
+                body,
+            } => {
                 let id = self.user_funcs.len();
                 self.user_funcs.push(UserFunc {
                     params: params.clone(),
+                    is_generator: *is_generator,
                     body: body.clone(),
                 });
                 let func = Value::Function(FunctionValue {
@@ -155,12 +188,14 @@ impl Interpreter {
                     if let Stmt::Function {
                         name: mname,
                         params,
+                        is_generator,
                         body,
                     } = m
                     {
                         let id = self.user_funcs.len();
                         self.user_funcs.push(UserFunc {
                             params: params.clone(),
+                            is_generator: *is_generator,
                             body: body.clone(),
                         });
                         let func = FunctionValue {
@@ -183,7 +218,7 @@ impl Interpreter {
                 handlers,
                 finally_body,
             } => {
-                let mut result = self.exec_block(body, env)?;
+                let mut result = self.exec_block(body, env, yield_sender)?;
                 if let Flow::Raise(ref val) = result {
                     let raised = val.clone();
                     let mut handled = false;
@@ -194,7 +229,8 @@ impl Interpreter {
                                 if let Some(bind) = &h.bind {
                                     new_env.set(bind, raised.clone());
                                 }
-                                result = self.exec_block(&h.body, &mut new_env)?;
+                                result =
+                                    self.exec_block(&h.body, &mut new_env, yield_sender)?;
                                 handled = true;
                                 break;
                             }
@@ -203,7 +239,7 @@ impl Interpreter {
                             if let Some(bind) = &h.bind {
                                 new_env.set(bind, raised.clone());
                             }
-                            result = self.exec_block(&h.body, &mut new_env)?;
+                            result = self.exec_block(&h.body, &mut new_env, yield_sender)?;
                             handled = true;
                             break;
                         }
@@ -213,7 +249,7 @@ impl Interpreter {
                     }
                 }
                 if let Some(fbody) = finally_body {
-                    let flow = self.exec_block(fbody, env)?;
+                    let flow = self.exec_block(fbody, env, yield_sender)?;
                     match flow {
                         Flow::Continue => {}
                         _ => return Ok(flow),
@@ -224,6 +260,14 @@ impl Interpreter {
             Stmt::Raise { expr } => {
                 let v = self.eval_expr(expr, env)?;
                 Ok(Flow::Raise(v))
+            }
+            Stmt::Yield { expr } => {
+                let v = if let Some(e) = expr {
+                    self.eval_expr(e, env)?
+                } else {
+                    Value::None
+                };
+                Ok(Flow::Yield(v))
             }
         }
     }
@@ -352,8 +396,16 @@ impl Interpreter {
                 .ok_or_else(|| RuntimeError::new(format!("Name not found: {name}"))),
             Expr::Lambda { params, body } => {
                 let id = self.user_funcs.len();
+                let param_defs: Vec<Param> = params
+                    .iter()
+                    .map(|p| Param {
+                        name: p.clone(),
+                        default: None,
+                    })
+                    .collect();
                 self.user_funcs.push(UserFunc {
-                    params: params.clone(),
+                    params: param_defs,
+                    is_generator: false,
                     body: vec![Stmt::Return {
                         expr: Some((**body).clone()),
                     }],
@@ -381,13 +433,21 @@ impl Interpreter {
                 let rv = self.eval_expr(r, env)?;
                 self.compare(lv, rv, *op)
             }
-            Expr::Call { callee, args } => {
+            Expr::Call {
+                callee,
+                args,
+                kwargs,
+            } => {
                 let cal = self.eval_expr(callee, env)?;
                 let mut argv = Vec::new();
                 for a in args {
                     argv.push(self.eval_expr(a, env)?);
                 }
-                self.call_value(cal, argv, env)
+                let mut kw_vals = Vec::new();
+                for (k, v) in kwargs {
+                    kw_vals.push((k.clone(), self.eval_expr(v, env)?));
+                }
+                self.call_value(cal, argv, kw_vals, env)
             }
             Expr::List(items) => {
                 let mut vals = Vec::new();
@@ -446,15 +506,15 @@ impl Interpreter {
             Expr::MethodCall {
                 object,
                 method,
-                arg,
+                args,
             } => {
                 let obj = self.eval_expr(object, env)?;
                 let callee = self.attr_get(obj, method)?;
                 let mut args_vals = Vec::new();
-                if let Some(a) = arg {
+                for a in args {
                     args_vals.push(self.eval_expr(a, env)?);
                 }
-                self.call_value(callee, args_vals, env)
+                self.call_value(callee, args_vals, Vec::new(), env)
             }
             Expr::Attr { object, attr } => {
                 let obj = self.eval_expr(object, env)?;
@@ -467,9 +527,10 @@ impl Interpreter {
                 cond,
             } => {
                 let iterable = self.eval_expr(iter, env)?;
-                let items = self.iterate_value(iterable)?;
+                let mut items = self.iterate_value(iterable)?;
                 let mut result = Vec::new();
-                for item in items {
+                while let Some(item) = items.next() {
+                    let item = item?;
                     let mut child = env.child();
                     self.bind_for_target(target, item, &mut child)?;
                     if let Some(c) = cond {
@@ -489,9 +550,10 @@ impl Interpreter {
                 cond,
             } => {
                 let iterable = self.eval_expr(iter, env)?;
-                let items = self.iterate_value(iterable)?;
+                let mut items = self.iterate_value(iterable)?;
                 let mut map = HashMap::new();
-                for item in items {
+                while let Some(item) = items.next() {
+                    let item = item?;
                     let mut child = env.child();
                     self.bind_for_target(target, item, &mut child)?;
                     if let Some(c) = cond {
@@ -649,11 +711,15 @@ impl Interpreter {
         &mut self,
         callee: Value,
         mut args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
         env: &mut Env,
     ) -> Result<Value, RuntimeError> {
         match callee {
             Value::Function(f) => match f.impls {
                 FunctionImpl::Native(func) => {
+                    if !kwargs.is_empty() {
+                        return Err(RuntimeError::new("keyword args not supported here"));
+                    }
                     if f.name.as_deref() == Some("sorted") {
                         return self.builtin_sorted(args, env);
                     }
@@ -665,23 +731,34 @@ impl Interpreter {
                         .get(id)
                         .cloned()
                         .ok_or_else(|| RuntimeError::new("unknown function"))?;
-                    if def.params.len() != args.len() {
-                        return Err(RuntimeError::new("wrong number of args"));
+                    if args.len() > def.params.len() {
+                        return Err(RuntimeError::new("too many args"));
                     }
-                    let mut child = env.child();
-                    for (name, val) in def.params.iter().zip(args.into_iter()) {
-                        child.set(name, val);
+                    let mut child = self.bind_user_call(&def, args, kwargs, env)?;
+                    if def.is_generator {
+                        let mut outputs = Vec::new();
+                        loop {
+                            match self.exec_block(&def.body, &mut child, None)? {
+                                Flow::Yield(v) => outputs.push(v),
+                                Flow::Return(_) | Flow::Continue => break,
+                                Flow::Raise(v) => {
+                                    return Err(RuntimeError::new(self.value_to_string(&v)))
+                                }
+                            }
+                        }
+                        return Ok(Value::List(Rc::new(std::cell::RefCell::new(outputs))));
                     }
-                    match self.exec_block(&def.body, &mut child)? {
+                    match self.exec_block(&def.body, &mut child, None)? {
                         Flow::Return(v) => Ok(v),
                         Flow::Raise(v) => Err(RuntimeError::new(self.value_to_string(&v))),
                         Flow::Continue => Ok(Value::None),
+                        Flow::Yield(_) => Err(RuntimeError::new("yield outside generator call")),
                     }
                 }
             },
             Value::BoundMethod(b) => {
                 args.insert(0, b.receiver.clone());
-                self.call_value(Value::Function(b.func), args, env)
+                self.call_value(Value::Function(b.func), args, kwargs, env)
             }
             Value::Class(cls) => {
                 let inst = Value::Instance(InstanceValue {
@@ -693,7 +770,7 @@ impl Interpreter {
                         receiver: inst.clone(),
                         func: init.clone(),
                     };
-                    self.call_value(Value::BoundMethod(Box::new(bm)), args, env)?;
+                    self.call_value(Value::BoundMethod(Box::new(bm)), args, kwargs, env)?;
                 }
                 Ok(inst)
             }
@@ -701,10 +778,46 @@ impl Interpreter {
         }
     }
 
-    fn iterate_value(&self, v: Value) -> Result<Vec<Value>, RuntimeError> {
+    fn bind_user_call(
+        &mut self,
+        def: &UserFunc,
+        args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+        env: &mut Env,
+    ) -> Result<Env, RuntimeError> {
+        let mut kw_map = HashMap::new();
+        for (k, v) in kwargs.into_iter() {
+            if kw_map.insert(k.clone(), v).is_some() {
+                return Err(RuntimeError::new("duplicate keyword arg"));
+            }
+        }
+        let mut child = env.child();
+        for (idx, param) in def.params.iter().enumerate() {
+            if let Some(v) = args.get(idx) {
+                child.set(&param.name, v.clone());
+                continue;
+            }
+            if let Some(v) = kw_map.remove(&param.name) {
+                child.set(&param.name, v);
+                continue;
+            }
+            if let Some(def_expr) = &param.default {
+                let v = self.eval_expr(def_expr, env)?;
+                child.set(&param.name, v);
+                continue;
+            }
+            return Err(RuntimeError::new(format!("missing argument {}", param.name)));
+        }
+        if !kw_map.is_empty() {
+            return Err(RuntimeError::new("unexpected keyword arguments"));
+        }
+        Ok(child)
+    }
+
+    fn iterate_value(&self, v: Value) -> Result<ValueIterator, RuntimeError> {
         match v {
-            Value::List(items) => Ok(items.borrow().clone()),
-            Value::Tuple(items) => Ok(items),
+            Value::List(items) => Ok(ValueIterator::from_vec(items.borrow().clone())),
+            Value::Tuple(items) => Ok(ValueIterator::from_vec(items)),
             Value::Set(set) => {
                 let mut res = Vec::new();
                 for k in set.borrow().iter() {
@@ -716,7 +829,7 @@ impl Interpreter {
                     });
                 }
                 res.sort_by(compare_for_sort);
-                Ok(res)
+                Ok(ValueIterator::from_vec(res))
             }
             Value::Dict(map) => {
                 let mut vals: Vec<Value> = map
@@ -730,9 +843,12 @@ impl Interpreter {
                     })
                     .collect();
                 vals.sort_by(compare_for_sort);
-                Ok(vals)
+                Ok(ValueIterator::from_vec(vals))
             }
-            Value::Str(s) => Ok(s.chars().map(|c| Value::Str(c.to_string())).collect()),
+            Value::Str(s) => Ok(ValueIterator::from_vec(
+                s.chars().map(|c| Value::Str(c.to_string())).collect(),
+            )),
+            Value::Generator(g) => Ok(ValueIterator::from_generator(g.rx.clone())),
             _ => Err(RuntimeError::new("not iterable")),
         }
     }
@@ -895,6 +1011,52 @@ impl Interpreter {
                 })),
                 _ => Err(RuntimeError::new("unknown set method")),
             },
+            Value::Str(s) => match attr {
+                "split" => Ok(Value::Function(FunctionValue {
+                    name: Some("split".into()),
+                    arity: 1,
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                        let delim = match args.get(0) {
+                            Some(Value::Str(d)) => d.clone(),
+                            None => " ".into(),
+                            _ => return Err(RuntimeError::new("split delim must be str")),
+                        };
+                        let parts: Vec<Value> =
+                            s.split(&delim).map(|p| Value::Str(p.to_string())).collect();
+                        Ok(Value::List(Rc::new(std::cell::RefCell::new(parts))))
+                    })),
+                })),
+                "strip" => Ok(Value::Function(FunctionValue {
+                    name: Some("strip".into()),
+                    arity: 0,
+                    impls: FunctionImpl::Native(Rc::new(move |_args, _env, _globals| {
+                        Ok(Value::Str(s.trim().to_string()))
+                    })),
+                })),
+                "startswith" => Ok(Value::Function(FunctionValue {
+                    name: Some("startswith".into()),
+                    arity: 1,
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                        let pref = match args.get(0) {
+                            Some(Value::Str(d)) => d,
+                            _ => return Err(RuntimeError::new("startswith needs str")),
+                        };
+                        Ok(Value::Bool(s.starts_with(pref)))
+                    })),
+                })),
+                "endswith" => Ok(Value::Function(FunctionValue {
+                    name: Some("endswith".into()),
+                    arity: 1,
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                        let suf = match args.get(0) {
+                            Some(Value::Str(d)) => d,
+                            _ => return Err(RuntimeError::new("endswith needs str")),
+                        };
+                        Ok(Value::Bool(s.ends_with(suf)))
+                    })),
+                })),
+                _ => Err(RuntimeError::new("unknown str method")),
+            },
             Value::Dict(map) => match attr {
                 "keys" => Ok(Value::Function(FunctionValue {
                     name: Some("keys".into()),
@@ -943,13 +1105,20 @@ impl Interpreter {
             Value::File(file) => match attr {
                 "read" => Ok(Value::Function(FunctionValue {
                     name: Some("read".into()),
-                    arity: 0,
-                    impls: FunctionImpl::Native(Rc::new(move |_args, _env, _globals| {
-                        use std::io::Read;
+                    arity: 1,
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
                         let mut f = file.file.borrow_mut();
                         let mut buf = String::new();
-                        f.read_to_string(&mut buf)
-                            .map_err(|e| RuntimeError::new(e.to_string()))?;
+                        if let Some(Value::Int(n)) = args.get(0) {
+                            let mut tmp = vec![0u8; *n as usize];
+                            let read_n = f
+                                .read(&mut tmp)
+                                .map_err(|e| RuntimeError::new(e.to_string()))?;
+                            buf.push_str(&String::from_utf8_lossy(&tmp[..read_n]));
+                        } else {
+                            f.read_to_string(&mut buf)
+                                .map_err(|e| RuntimeError::new(e.to_string()))?;
+                        }
                         Ok(Value::Str(buf))
                     })),
                 })),
@@ -957,13 +1126,38 @@ impl Interpreter {
                     name: Some("write".into()),
                     arity: 1,
                     impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
-                        use std::io::Write;
                         let mut f = file.file.borrow_mut();
                         let s = match &args[0] {
                             Value::Str(s) => s.clone(),
                             other => value_to_string(other),
                         };
                         f.write_all(s.as_bytes())
+                            .map_err(|e| RuntimeError::new(e.to_string()))?;
+                        Ok(Value::None)
+                    })),
+                })),
+                "seek" => Ok(Value::Function(FunctionValue {
+                    name: Some("seek".into()),
+                    arity: 2,
+                    impls: FunctionImpl::Native(Rc::new(move |args, _env, _globals| {
+                        use std::io::Seek;
+                        let offset = match args.get(0) {
+                            Some(Value::Int(i)) => *i,
+                            _ => return Err(RuntimeError::new("seek offset must be int")),
+                        };
+                        let whence = match args.get(1) {
+                            Some(Value::Int(i)) => *i,
+                            _ => return Err(RuntimeError::new("seek whence must be int")),
+                        };
+                        let seek_from = match whence {
+                            crate::runtime::SEEK_SET => SeekFrom::Start(offset as u64),
+                            crate::runtime::SEEK_CUR => SeekFrom::Current(offset),
+                            crate::runtime::SEEK_END => SeekFrom::End(offset),
+                            _ => return Err(RuntimeError::new("invalid whence")),
+                        };
+                        file.file
+                            .borrow_mut()
+                            .seek(seek_from)
                             .map_err(|e| RuntimeError::new(e.to_string()))?;
                         Ok(Value::None)
                     })),
@@ -1040,11 +1234,11 @@ impl Interpreter {
         items.sort_by(|a, b| {
             let ka = key_fn
                 .as_ref()
-                .map(|f| self.call_value(f.clone(), vec![a.clone()], env))
+                .map(|f| self.call_value(f.clone(), vec![a.clone()], Vec::new(), env))
                 .unwrap_or(Ok(a.clone()));
             let kb = key_fn
                 .as_ref()
-                .map(|f| self.call_value(f.clone(), vec![b.clone()], env))
+                .map(|f| self.call_value(f.clone(), vec![b.clone()], Vec::new(), env))
                 .unwrap_or(Ok(b.clone()));
             match (ka, kb) {
                 (Ok(va), Ok(vb)) => compare_for_sort(&va, &vb),
@@ -1112,6 +1306,37 @@ pub fn value_to_string(v: &Value) -> String {
         Value::Instance(inst) => format!("<instance {}>", inst.class.name),
         Value::BoundMethod(_) => "<bound method>".into(),
         Value::File(f) => format!("<file {}>", f.path),
+        Value::Generator(_) => "<generator>".into(),
+    }
+}
+
+struct ValueIterator {
+    kind: ValueIterKind,
+}
+
+enum ValueIterKind {
+    Vec(std::vec::IntoIter<Value>),
+    Generator(Rc<mpsc::Receiver<Result<Value, RuntimeError>>>),
+}
+
+impl ValueIterator {
+    fn from_vec(v: Vec<Value>) -> Self {
+        ValueIterator {
+            kind: ValueIterKind::Vec(v.into_iter()),
+        }
+    }
+
+    fn from_generator(rx: Rc<mpsc::Receiver<Result<Value, RuntimeError>>>) -> Self {
+        ValueIterator {
+            kind: ValueIterKind::Generator(rx),
+        }
+    }
+
+    fn next(&mut self) -> Option<Result<Value, RuntimeError>> {
+        match &mut self.kind {
+            ValueIterKind::Vec(iter) => iter.next().map(Ok),
+            ValueIterKind::Generator(rx) => rx.recv().ok(),
+        }
     }
 }
 
@@ -1130,6 +1355,48 @@ fn insert_builtins(globals: &mut HashMap<String, Value>) {
                     .map(Value::Int)
                     .map_err(|e| RuntimeError::new(e.to_string())),
                 _ => Err(RuntimeError::new("cannot convert to int")),
+            })),
+        }),
+    );
+    globals.insert(
+        "sleep".into(),
+        Value::Function(FunctionValue {
+            name: Some("sleep".into()),
+            arity: 1,
+            impls: FunctionImpl::Native(Rc::new(|args, _env, _globals| {
+                let secs = match &args[0] {
+                    Value::Int(i) => *i as f64,
+                    Value::Float(f) => *f,
+                    _ => return Err(RuntimeError::new("sleep expects int/float seconds")),
+                };
+                if secs > 0.0 {
+                    let dur = std::time::Duration::from_secs_f64(secs);
+                    std::thread::sleep(dur);
+                }
+                Ok(Value::None)
+            })),
+        }),
+    );
+    globals.insert(
+        "time".into(),
+        Value::Function(FunctionValue {
+            name: Some("time".into()),
+            arity: 0,
+            impls: FunctionImpl::Native(Rc::new(|_args, _env, _globals| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|e| RuntimeError::new(e.to_string()))?;
+                Ok(Value::Float(now.as_secs_f64()))
+            })),
+        }),
+    );
+    globals.insert(
+        "interrupt".into(),
+        Value::Function(FunctionValue {
+            name: Some("interrupt".into()),
+            arity: 0,
+            impls: FunctionImpl::Native(Rc::new(|_args, _env, _globals| {
+                Err(RuntimeError::new("KeyboardInterrupt"))
             })),
         }),
     );
@@ -1301,6 +1568,13 @@ fn insert_builtins(globals: &mut HashMap<String, Value>) {
                 }))
             })),
         }),
+    );
+    globals.insert("SEEK_SET".into(), Value::Int(crate::runtime::SEEK_SET));
+    globals.insert("SEEK_CUR".into(), Value::Int(crate::runtime::SEEK_CUR));
+    globals.insert("SEEK_END".into(), Value::Int(crate::runtime::SEEK_END));
+    globals.insert(
+        "KeyboardInterrupt".into(),
+        Value::Str("KeyboardInterrupt".into()),
     );
 }
 
