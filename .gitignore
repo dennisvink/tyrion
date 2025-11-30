@@ -9,4 +9,6 @@ target/
 *.swp
 *.swo
 *.log
-P*N.md
+/*.md
+!/README.md
+!/CHANGELOG.md
