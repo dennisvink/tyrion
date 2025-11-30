@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/dennisvink/tyrion/8739ae27b5763e3d8e6dd353dd074e1b461468b2/assets/img/tyrion.jpg" width="300" alt="Tyrion the Tiny programming language" />
+</p>
+
 # Tyrion
 
 Tyrion is a tiny, Python-derived scripting language with a hand-rolled parser and interpreter. The `tyrion` binary interprets `.ty` files directly. If you want a standalone binary, `tyrion --build foo.ty --out foo` uses the experimental ahead-of-time Rust codegen path to emit a native binary.
