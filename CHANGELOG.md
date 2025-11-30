@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.7] - 2025-11-30
+- Fixed AOT call dispatch to forward keyword arguments to native/bound methods and class initializers, restoring the requests demo and other keyword-using code paths in AOT builds.
+- Added `len` as a builtin so list/tuple/dict/set/str lengths work in both interpreted and AOT execution paths.
+
 ## [0.3.6] - 2025-11-30
 - Fixed session cookie handling by routing requests through a shared cookie jar that persists redirect-set cookies and keeps Session cookies up to date.
 - Response cookies now reflect cookies accumulated during redirects, restoring parity with the Python demo.
