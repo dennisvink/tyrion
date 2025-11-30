@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/dennisvink/tyrion/8739ae27b5763e3d8e6dd353dd074e1b461468b2/assets/img/tyrion.jpg" width="300" alt="Tyrion the Tiny programming language" />
+  <img src="https://raw.githubusercontent.com/dennisvink/tyrion/8739ae27b5763e3d8e6dd353dd074e1b461468b2/assets/img/tyrion.jpg" width="800" alt="Tyrion the Tiny programming language" />
 </p>
 
 # Tyrion
