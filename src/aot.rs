@@ -595,9 +595,6 @@ pub mod rt {
         env: &mut Env,
         globals: &mut HashMap<String, Value>,
     ) -> Result<Value, RuntimeError> {
-        if !kwargs.is_empty() {
-            return Err(RuntimeError::new("keyword args not supported in AOT"));
-        }
         match callee {
             Value::Function(f) => match f.impls {
                 FunctionImpl::Native(func) => func(&args, &kwargs, env, globals),
@@ -605,7 +602,7 @@ pub mod rt {
             },
             Value::BoundMethod(b) => {
                 args.insert(0, b.receiver.clone());
-                call_value(Value::Function(b.func), args, Vec::new(), env, globals)
+                call_value(Value::Function(b.func), args, kwargs, env, globals)
             }
             Value::Class(cls) => {
                 let inst = Value::Instance(InstanceValue {
@@ -617,7 +614,7 @@ pub mod rt {
                         receiver: inst.clone(),
                         func: init.clone(),
                     };
-                    call_value(Value::BoundMethod(Box::new(bm)), args, Vec::new(), env, globals)?;
+                    call_value(Value::BoundMethod(Box::new(bm)), args, kwargs, env, globals)?;
                 }
                 Ok(inst)
             }

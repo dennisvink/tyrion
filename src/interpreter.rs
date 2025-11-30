@@ -1361,6 +1361,25 @@ fn insert_builtins(globals: &mut HashMap<String, Value>) {
         }),
     );
     globals.insert(
+        "len".into(),
+        Value::Function(FunctionValue {
+            name: Some("len".into()),
+            arity: 1,
+            impls: FunctionImpl::Native(Rc::new(|args, _kwargs, _env, _globals| {
+                let v = &args[0];
+                let len = match v {
+                    Value::List(items) => items.borrow().len(),
+                    Value::Tuple(items) => items.len(),
+                    Value::Dict(map) => map.borrow().len(),
+                    Value::Set(set) => set.borrow().len(),
+                    Value::Str(s) => s.chars().count(),
+                    _ => return Err(RuntimeError::new("len expects list/tuple/dict/set/str")),
+                };
+                Ok(Value::Int(len as i64))
+            })),
+        }),
+    );
+    globals.insert(
         "sleep".into(),
         Value::Function(FunctionValue {
             name: Some("sleep".into()),
