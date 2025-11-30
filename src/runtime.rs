@@ -246,8 +246,12 @@ pub mod http {
     use super::{
         ClassValue, FunctionImpl, FunctionValue, HashKey, InstanceValue, RuntimeError, Value,
     };
+    use cookie::Cookie as RawCookie;
+    use cookie::SameSite;
+    use cookie_store::{Cookie as StoreCookie, CookieDomain, CookieStore as Store};
     use crate::interpreter::value_to_string;
     use reqwest::blocking::{multipart, Client};
+    use reqwest::cookie::CookieStore as ReqwestCookieStore;
     use reqwest::redirect;
     use reqwest::{header::HeaderName, header::HeaderValue, Method, Url};
     use std::sync::{Arc, Mutex};
@@ -258,7 +262,8 @@ pub mod http {
     use std::fs;
     use std::net::IpAddr;
     use std::rc::Rc;
-    use std::time::{Duration, Instant, SystemTime};
+    use std::time::{Duration, Instant};
+    use time::OffsetDateTime;
     use ipnet::IpNet;
 
     const DEFAULT_REDIRECTS: usize = 10;
@@ -277,6 +282,155 @@ pub mod http {
         host: Option<String>,
         host_only: bool,
         persistent: bool,
+    }
+
+    #[derive(Clone)]
+    struct SharedCookieStore {
+        store: Arc<Mutex<Store>>,
+    }
+
+    impl Default for SharedCookieStore {
+        fn default() -> Self {
+            SharedCookieStore {
+                store: Arc::new(Mutex::new(Store::default())),
+            }
+        }
+    }
+
+    impl SharedCookieStore {
+        fn insert_request_cookies(
+            &self,
+            cookies: &[CookieEntry],
+            url: &Url,
+        ) -> Result<(), RuntimeError> {
+            let mut store = self
+                .store
+                .lock()
+                .map_err(|_| RuntimeError::new("cookie store poisoned"))?;
+            for c in cookies {
+                let mut builder = RawCookie::build(c.name.clone(), c.value.clone());
+                if let Some(path) = &c.path {
+                    builder = builder.path(path.clone());
+                }
+                if let Some(domain) = &c.domain {
+                    if !c.host_only {
+                        builder = builder.domain(domain.clone());
+                    }
+                }
+                if c.secure {
+                    builder = builder.secure(true);
+                }
+                if c.httponly {
+                    builder = builder.http_only(true);
+                }
+                if let Some(exp) = c.expires_at {
+                    if let Ok(dt) = OffsetDateTime::from_unix_timestamp(exp as i64) {
+                        builder = builder.expires(dt);
+                    }
+                }
+                if let Some(ss) = c.same_site.as_deref().and_then(map_same_site) {
+                    builder = builder.same_site(ss);
+                }
+                let raw = builder.finish();
+                store
+                    .insert_raw(&raw, url)
+                    .map_err(|e| RuntimeError::new(format!("cookie insert error: {e}")))?;
+            }
+            Ok(())
+        }
+
+        fn entries_for_url(&self, url: &Url) -> Result<Vec<CookieEntry>, RuntimeError> {
+            let store = self
+                .store
+                .lock()
+                .map_err(|_| RuntimeError::new("cookie store poisoned"))?;
+            Ok(store
+                .matches(url)
+                .into_iter()
+                .map(|c| cookie_entry_from_store(c, Some(url)))
+                .collect())
+        }
+
+        fn all_entries(&self) -> Result<Vec<CookieEntry>, RuntimeError> {
+            let store = self
+                .store
+                .lock()
+                .map_err(|_| RuntimeError::new("cookie store poisoned"))?;
+            Ok(store
+                .iter_unexpired()
+                .map(|c| cookie_entry_from_store(c, None))
+                .collect())
+        }
+    }
+
+    impl ReqwestCookieStore for SharedCookieStore {
+        fn set_cookies(&self, cookie_headers: &mut dyn Iterator<Item = &HeaderValue>, url: &Url) {
+            if let Ok(mut store) = self.store.lock() {
+                let parsed = cookie_headers
+                    .filter_map(|val| std::str::from_utf8(val.as_bytes()).ok())
+                    .filter_map(|val| StoreCookie::parse(val, url).ok())
+                    .map(|c| RawCookie::from(c.into_owned()));
+                store.store_response_cookies(parsed, url);
+            }
+        }
+
+        fn cookies(&self, url: &Url) -> Option<HeaderValue> {
+            let store = self.store.lock().ok()?;
+            let parts = store
+                .get_request_values(url)
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            if parts.is_empty() {
+                None
+            } else {
+                HeaderValue::from_str(&parts).ok()
+            }
+        }
+    }
+
+    fn map_same_site(val: &str) -> Option<SameSite> {
+        match val.to_ascii_lowercase().as_str() {
+            "strict" => Some(SameSite::Strict),
+            "lax" => Some(SameSite::Lax),
+            "none" => Some(SameSite::None),
+            _ => None,
+        }
+    }
+
+    fn cookie_entry_from_store(cookie: &StoreCookie, url: Option<&Url>) -> CookieEntry {
+        let domain = match &cookie.domain {
+            CookieDomain::Suffix(d) | CookieDomain::HostOnly(d) => Some(d.clone()),
+            CookieDomain::NotPresent | CookieDomain::Empty => None,
+        };
+        let host_only = matches!(cookie.domain, CookieDomain::HostOnly(_));
+        let host = if host_only {
+            domain.clone()
+        } else {
+            url.and_then(|u| u.host_str().map(|h| h.to_string()))
+        };
+        let expires_at = match cookie.expires {
+            cookie_store::CookieExpiration::AtUtc(dt) => Some(dt.unix_timestamp() as f64),
+            cookie_store::CookieExpiration::SessionEnd => None,
+        };
+        let same_site = cookie.same_site().map(|ss| match ss {
+            SameSite::Strict => "strict".to_string(),
+            SameSite::Lax => "lax".to_string(),
+            SameSite::None => "none".to_string(),
+        });
+        CookieEntry {
+            name: cookie.name().to_string(),
+            value: cookie.value().to_string(),
+            domain,
+            path: cookie.path().map(|p| p.to_string()),
+            secure: cookie.secure().unwrap_or(false),
+            httponly: cookie.http_only().unwrap_or(false),
+            expires_at,
+            same_site,
+            host,
+            host_only,
+            persistent: cookie.is_persistent(),
+        }
     }
 
     pub fn build_requests_module() -> Value {
@@ -607,6 +761,8 @@ pub mod http {
             proxies.clear();
         }
 
+        let cookie_store = Arc::new(SharedCookieStore::default());
+        cookie_store.insert_request_cookies(&cookies, &parsed_url)?;
         let client = build_client(
             allow_redirects,
             timeout,
@@ -615,6 +771,7 @@ pub mod http {
             ca_bundle.as_deref(),
             cert,
             history.clone(),
+            Some(cookie_store.clone()),
         )?;
         let method = Method::from_bytes(method.as_bytes())
             .map_err(|_| RuntimeError::new("invalid HTTP method"))?;
@@ -643,10 +800,6 @@ pub mod http {
         if let Some((user, pass)) = auth {
             request = request.basic_auth(user, Some(pass));
         }
-        let cookie_header = cookie_header_for_url(&cookies, parsed_url.clone());
-        if let Some(header) = cookie_header {
-            request = request.header(reqwest::header::COOKIE, header);
-        }
 
         let start = Instant::now();
         let resp = request
@@ -657,11 +810,13 @@ pub mod http {
         let reason = status.canonical_reason().unwrap_or("").to_string();
         let final_url = resp.url().to_string();
         let headers = resp.headers().clone();
-        let resp_cookies = cookies_value(&resp, resp.url());
+        let resp_cookie_entries = cookie_store.entries_for_url(resp.url())?;
+        let resp_cookies = cookie_entries_to_value(&resp_cookie_entries);
 
         if let Some(sess) = session.as_ref() {
             if let Some(Value::Dict(d)) = sess.fields.borrow_mut().get_mut("cookies") {
-                merge_cookie_entries(d, &resp_cookies, resp.url())?;
+                let all_cookies = cookie_store.all_entries()?;
+                merge_cookie_entries_from_entries(d, &all_cookies)?;
             }
         }
 
@@ -836,6 +991,7 @@ pub mod http {
         ca_bundle: Option<&str>,
         cert: Option<(String, Option<String>)>,
         history: Arc<Mutex<Vec<String>>>,
+        cookie_store: Option<Arc<SharedCookieStore>>,
     ) -> Result<Client, RuntimeError> {
         let mut builder = Client::builder();
         if allow_redirects {
@@ -887,6 +1043,9 @@ pub mod http {
         }
         if let Some(t) = timeout {
             builder = builder.timeout(t);
+        }
+        if let Some(store) = cookie_store {
+            builder = builder.cookie_provider(store);
         }
         builder
             .build()
@@ -1366,24 +1525,6 @@ pub mod http {
         domain_ok && path_ok
     }
 
-    fn cookie_header_for_url(cookies: &[CookieEntry], url: Url) -> Option<String> {
-        let host = url.host_str()?;
-        let path = url.path();
-        let now = current_timestamp();
-        let parts: Vec<String> = cookies
-            .iter()
-            .filter(|c| {
-                cookie_matches(host, path, c, now) && (!c.secure || url.scheme() == "https")
-            })
-            .map(|c| format!("{}={}", c.name, c.value))
-            .collect();
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join("; "))
-        }
-    }
-
     fn current_timestamp() -> f64 {
         use std::time::{SystemTime, UNIX_EPOCH};
         SystemTime::now()
@@ -1553,76 +1694,53 @@ pub mod http {
         Some(Duration::from_secs_f64(DEFAULT_TIMEOUT_SECS))
     }
 
-    fn cookies_value(resp: &reqwest::blocking::Response, url: &Url) -> Value {
+    fn cookie_entries_to_value(entries: &[CookieEntry]) -> Value {
         let mut map = HashMap::new();
-        let now = current_timestamp();
-        for c in resp.cookies() {
+        for c in entries {
             let mut entry = HashMap::new();
-            entry.insert(HashKey::Str("value".into()), Value::Str(c.value().to_string()));
-            if let Some(domain) = c.domain() {
-                entry.insert(HashKey::Str("domain".into()), Value::Str(domain.to_string()));
+            entry.insert(HashKey::Str("value".into()), Value::Str(c.value.clone()));
+            if let Some(d) = &c.domain {
+                entry.insert(HashKey::Str("domain".into()), Value::Str(d.clone()));
             }
-            if let Some(path) = c.path() {
-                entry.insert(HashKey::Str("path".into()), Value::Str(path.to_string()));
+            if let Some(p) = &c.path {
+                entry.insert(HashKey::Str("path".into()), Value::Str(p.clone()));
             }
-            entry.insert(
-                HashKey::Str("host".into()),
-                Value::Str(url.host_str().unwrap_or_default().to_string()),
-            );
-            entry.insert(
-                HashKey::Str("host_only".into()),
-                Value::Bool(c.domain().is_none()),
-            );
-            if c.http_only() {
-                entry.insert(HashKey::Str("httponly".into()), Value::Bool(true));
+            if let Some(h) = &c.host {
+                entry.insert(HashKey::Str("host".into()), Value::Str(h.clone()));
             }
-            if c.secure() {
+            if c.host_only {
+                entry.insert(HashKey::Str("host_only".into()), Value::Bool(true));
+            }
+            if c.secure {
                 entry.insert(HashKey::Str("secure".into()), Value::Bool(true));
             }
-            if let Some(exp) = c.expires() {
-                if let Ok(dur) = exp.duration_since(SystemTime::UNIX_EPOCH) {
-                    entry.insert(
-                        HashKey::Str("expires".into()),
-                        Value::Float(dur.as_secs_f64()),
-                    );
-                    entry.insert(HashKey::Str("persistent".into()), Value::Bool(true));
-                }
+            if c.httponly {
+                entry.insert(HashKey::Str("httponly".into()), Value::Bool(true));
             }
-            if let Some(max_age) = c.max_age() {
-                entry.insert(
-                    HashKey::Str("expires".into()),
-                    Value::Float(now + max_age.as_secs_f64()),
-                );
-                entry.insert(HashKey::Str("max_age".into()), Value::Float(max_age.as_secs_f64()));
+            if let Some(exp) = c.expires_at {
+                entry.insert(HashKey::Str("expires".into()), Value::Float(exp));
+            }
+            if let Some(ss) = &c.same_site {
+                entry.insert(HashKey::Str("same_site".into()), Value::Str(ss.clone()));
+            }
+            if c.persistent {
                 entry.insert(HashKey::Str("persistent".into()), Value::Bool(true));
             }
-            let same_site = if c.same_site_strict() {
-                Some("strict")
-            } else if c.same_site_lax() {
-                Some("lax")
-            } else {
-                None
-            };
-            if let Some(ss) = same_site {
-                entry.insert(HashKey::Str("same_site".into()), Value::Str(ss.into()));
-            }
             map.insert(
-                HashKey::Str(c.name().to_string()),
+                HashKey::Str(c.name.clone()),
                 Value::Dict(Rc::new(RefCell::new(entry))),
             );
         }
         Value::Dict(Rc::new(RefCell::new(map)))
     }
 
-    fn merge_cookie_entries(
+    fn merge_cookie_entries_from_entries(
         target: &Rc<RefCell<HashMap<HashKey, Value>>>,
-        cookies: &Value,
-        url: &Url,
+        entries: &[CookieEntry],
     ) -> Result<(), RuntimeError> {
-        let entries = extract_cookies_from_value(Some(cookies), Some(url))?;
         for c in entries {
             let mut entry = HashMap::new();
-            entry.insert(HashKey::Str("value".into()), Value::Str(c.value));
+            entry.insert(HashKey::Str("value".into()), Value::Str(c.value.clone()));
             if let Some(d) = c.domain.clone() {
                 entry.insert(HashKey::Str("domain".into()), Value::Str(d));
             }
@@ -1650,9 +1768,10 @@ pub mod http {
             if c.host_only {
                 entry.insert(HashKey::Str("host_only".into()), Value::Bool(true));
             }
-            target
-                .borrow_mut()
-                .insert(HashKey::Str(c.name), Value::Dict(Rc::new(RefCell::new(entry))));
+            target.borrow_mut().insert(
+                HashKey::Str(c.name.clone()),
+                Value::Dict(Rc::new(RefCell::new(entry))),
+            );
         }
         Ok(())
     }
