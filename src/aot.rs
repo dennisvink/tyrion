@@ -680,14 +680,21 @@ impl Codegen {
 pub fn compile_aot(program: &Program, output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let crate_root = resolve_crate_root()?;
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let runner_dir = crate_root
+    let base_dir = crate_root
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir());
+    let runner_dir = base_dir
         .join("target")
         .join(format!("tyrion_aot_{stamp}"));
     fs::create_dir_all(runner_dir.join("src"))?;
 
+    let crate_dep = match crate_root {
+        Some(root) => format!("tyrion = {{ path = \"{}\" }}", root.display()),
+        None => format!("tyrion = \"={}\"", env!("CARGO_PKG_VERSION")),
+    };
+
     let runner_cargo = format!(
-        "[package]\nname = \"tyrion_aot_runner\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ntyrion = {{ path = \"{}\" }}\n",
-        crate_root.display()
+        "[package]\nname = \"tyrion_aot_runner\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{crate_dep}\n",
     );
     fs::write(runner_dir.join("Cargo.toml"), runner_cargo)?;
 
@@ -715,25 +722,45 @@ pub fn compile_aot(program: &Program, output_path: &Path) -> Result<(), Box<dyn 
     Ok(())
 }
 
-fn resolve_crate_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn resolve_crate_root() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     if let Ok(root) = env::var("TYRION_CRATE_ROOT") {
         let path = PathBuf::from(root);
         if path.join("Cargo.toml").exists() {
-            return Ok(path.canonicalize()?);
+            return Ok(Some(path.canonicalize()?));
         }
+    }
+
+    if let Some(path) = bundled_crate_root()? {
+        return Ok(Some(path));
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     if manifest_dir.join("Cargo.toml").exists() {
-        return Ok(manifest_dir.canonicalize()?);
+        return Ok(Some(manifest_dir.canonicalize()?));
     }
 
     let cwd = env::current_dir()?;
     if cwd.join("Cargo.toml").exists() {
-        return Ok(cwd.canonicalize()?);
+        return Ok(Some(cwd.canonicalize()?));
     }
 
-    Err("could not locate tyrion crate root; set TYRION_CRATE_ROOT to the repo path".into())
+    Ok(None)
+}
+
+fn bundled_crate_root() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    if let Ok(exe) = env::current_exe() {
+        if let Some(prefix) = exe.parent().and_then(|p| p.parent()) {
+            for candidate in [
+                prefix.join("share").join("tyrion_src"),
+                prefix.join("share").join("tyrion").join("tyrion_src"),
+            ] {
+                if candidate.join("Cargo.toml").exists() {
+                    return Ok(Some(candidate.canonicalize()?));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn emit_program(cg: &mut Codegen, program: &Program) -> Result<(), RuntimeError> {

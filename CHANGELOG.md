@@ -2,6 +2,9 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.9] - 2025-12-01
+- Hotfix: AOT builds now use a bundled crate copy if installed (e.g., Homebrew `share/tyrion_src`), fall back to `CARGO_MANIFEST_DIR`/`TYRION_CRATE_ROOT`, and otherwise pull the published crate by version, so `tyrion --build` works outside the repo (including Homebrew installs).
+
 ## [0.3.8] - 2025-11-30
 - Hotfix: AOT builds now locate the Tyrion crate root via `CARGO_MANIFEST_DIR` or `TYRION_CRATE_ROOT`, so `tyrion --build` works when invoked outside the repo directory.
 
