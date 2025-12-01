@@ -17,7 +17,7 @@ brew install tyrion
 
 ### Other ways of installing
 
-Prereqs: Rust (cargo). No C toolchain needed anymore.
+Prereqs: Rust (cargo).
 
 Install globally (recommended):
 ```bash
