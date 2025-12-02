@@ -2,6 +2,9 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.10] - 2025-12-02
+- Fixed AOT code generation to reborrow environments/globals correctly, eliminating mutable borrow errors in generated runner functions (e.g., when building scripts that call builtins like `range`).
+
 ## [0.3.9] - 2025-12-01
 - Hotfix: AOT builds now use a bundled crate copy if installed (e.g., Homebrew `share/tyrion_src`), fall back to `CARGO_MANIFEST_DIR`/`TYRION_CRATE_ROOT`, and otherwise pull the published crate by version, so `tyrion --build` works outside the repo (including Homebrew installs).
 

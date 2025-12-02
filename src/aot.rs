@@ -677,6 +677,55 @@ impl Codegen {
     }
 }
 
+#[derive(Clone)]
+struct Scope {
+    env: String,
+    globals: String,
+    env_is_ref: bool,
+    globals_is_ref: bool,
+}
+
+impl Scope {
+    fn new(
+        env: impl Into<String>,
+        env_is_ref: bool,
+        globals: impl Into<String>,
+        globals_is_ref: bool,
+    ) -> Self {
+        Scope {
+            env: env.into(),
+            globals: globals.into(),
+            env_is_ref,
+            globals_is_ref,
+        }
+    }
+
+    fn env_arg(&self) -> String {
+        if self.env_is_ref {
+            self.env.clone()
+        } else {
+            format!("&mut {}", self.env)
+        }
+    }
+
+    fn globals_arg(&self) -> String {
+        if self.globals_is_ref {
+            self.globals.clone()
+        } else {
+            format!("&mut {}", self.globals)
+        }
+    }
+
+    fn with_env(&self, env: impl Into<String>, env_is_ref: bool) -> Self {
+        Scope {
+            env: env.into(),
+            globals: self.globals.clone(),
+            env_is_ref,
+            globals_is_ref: self.globals_is_ref,
+        }
+    }
+}
+
 pub fn compile_aot(program: &Program, output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let crate_root = resolve_crate_root()?;
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
@@ -787,8 +836,9 @@ fn emit_program(cg: &mut Codegen, program: &Program) -> Result<(), RuntimeError>
     cg.line("// Touch requests module so it is retained in AOT binaries");
     cg.line("let _ = http::build_requests_module as fn() -> Value;");
     cg.line("let mut env = Env::new();");
+    let scope = Scope::new("env", false, "globals", false);
     for stmt in &program.stmts {
-        emit_stmt(cg, stmt, "globals", "env")?;
+        emit_stmt(cg, stmt, &scope)?;
     }
     cg.line("Ok(())");
     cg.line("}");
@@ -847,8 +897,9 @@ fn emit_fn(cg: &mut Codegen, def: &FnDef) -> Result<(), RuntimeError> {
         cg.line(format!("let arg_{idx} = args.get({idx}).cloned().ok_or_else(|| RuntimeError::new(\"missing arg\"))?;"));
         cg.line(format!("local.set(\"{}\", arg_{});", p, idx));
     }
+    let fn_scope = Scope::new("local", false, "globals", true);
     for stmt in &def.body {
-        emit_fn_stmt(cg, stmt, "globals", "local")?;
+        emit_fn_stmt(cg, stmt, &fn_scope)?;
     }
     cg.line("Ok(Value::None)");
     cg.dedent();
@@ -857,11 +908,11 @@ fn emit_fn(cg: &mut Codegen, def: &FnDef) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-fn emit_fn_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<(), RuntimeError> {
+fn emit_fn_stmt(cg: &mut Codegen, stmt: &Stmt, scope: &Scope) -> Result<(), RuntimeError> {
     match stmt {
         Stmt::Return { expr } => {
             if let Some(e) = expr {
-                let ex = emit_expr(cg, e, globals, env)?;
+                let ex = emit_expr(cg, e, scope)?;
                 cg.line(format!("return {};", ex));
             } else {
                 cg.line("return Ok(Value::None);");
@@ -870,19 +921,19 @@ fn emit_fn_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Resu
         Stmt::Yield { .. } => {
             return Err(RuntimeError::new("yield not supported in AOT"));
         }
-        _ => emit_stmt(cg, stmt, globals, env)?,
+        _ => emit_stmt(cg, stmt, scope)?,
     }
     Ok(())
 }
 
-fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<(), RuntimeError> {
+fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, scope: &Scope) -> Result<(), RuntimeError> {
     match stmt {
         Stmt::Assign { target, expr, op } => {
-            let val_expr = emit_expr(cg, expr, globals, env)?;
+            let val_expr = emit_expr(cg, expr, scope)?;
             match op {
-                AssignOp::Assign => emit_store_target(cg, target, &val_expr, globals, env)?,
+                AssignOp::Assign => emit_store_target(cg, target, &val_expr, scope)?,
                 _ => {
-                    let current = emit_load_target(cg, target, globals, env)?;
+                    let current = emit_load_target(cg, target, scope)?;
                     let res_tmp = cg.fresh("tmp");
                     let op_expr = match op {
                         AssignOp::Add => format!("rt::binary({current}?, {val_expr}?, tyrion::BinOp::Add)"),
@@ -892,14 +943,14 @@ fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<
                         AssignOp::Assign => unreachable!(),
                     };
                     cg.line(format!("let {res_tmp} = {op_expr}?;"));
-                    emit_store_target(cg, target, &format!("Ok({res_tmp}.clone())"), globals, env)?;
+                    emit_store_target(cg, target, &format!("Ok({res_tmp}.clone())"), scope)?;
                 }
             }
         }
         Stmt::Print { args } => {
             let mut parts = Vec::new();
             for a in args {
-                parts.push(emit_expr(cg, a, globals, env)?);
+                parts.push(emit_expr(cg, a, scope)?);
             }
             let joined = parts
                 .into_iter()
@@ -909,13 +960,13 @@ fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<
             cg.line(format!("println!(\"{{}}\", vec![{joined}].join(\" \"));"));
         }
         Stmt::ExprStmt { expr } => {
-            let ex = emit_expr(cg, expr, globals, env)?;
+            let ex = emit_expr(cg, expr, scope)?;
             cg.line(format!("let _ = {ex}?;"));
         }
         Stmt::If { branches, else_branch } => {
             let mut first = true;
             for (cond, body) in branches {
-                let cex = emit_expr(cg, cond, globals, env)?;
+                let cex = emit_expr(cg, cond, scope)?;
                 if first {
                     cg.line(format!("if ({cex}?).truthy() {{"));
                     first = false;
@@ -924,7 +975,7 @@ fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<
                 }
                 cg.indent();
                 for s in body {
-                    emit_stmt(cg, s, globals, env)?;
+                    emit_stmt(cg, s, scope)?;
                 }
                 cg.dedent();
             }
@@ -932,48 +983,48 @@ fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<
                 cg.line("} else {");
                 cg.indent();
                 for s in body {
-                    emit_stmt(cg, s, globals, env)?;
+                    emit_stmt(cg, s, scope)?;
                 }
                 cg.dedent();
             }
             cg.line("}");
         }
         Stmt::While { cond, body } => {
-            let cex = emit_expr(cg, cond, globals, env)?;
+            let cex = emit_expr(cg, cond, scope)?;
             cg.line("loop {");
             cg.indent();
             cg.line(format!("if !({}?).truthy() {{ break; }}", cex));
             for s in body {
-                emit_stmt(cg, s, globals, env)?;
+                emit_stmt(cg, s, scope)?;
             }
             cg.dedent();
             cg.line("}");
         }
         Stmt::For { target, iter, body } => {
-            let iter_expr = emit_expr(cg, iter, globals, env)?;
+            let iter_expr = emit_expr(cg, iter, scope)?;
             let items_tmp = cg.fresh("items");
             cg.line(format!("let {items_tmp} = rt::iterate_value({iter_expr}?)?;"));
             cg.line(format!("for item in {items_tmp} {{"));
             cg.indent();
-            emit_bind_for_target(cg, target, "item", env)?;
+            emit_bind_for_target(cg, target, "item", &scope.env)?;
             for s in body {
-                emit_stmt(cg, s, globals, env)?;
+                emit_stmt(cg, s, scope)?;
             }
             cg.dedent();
             cg.line("}");
         }
         Stmt::With { target, expr, body } => {
-            let ex = emit_expr(cg, expr, globals, env)?;
+            let ex = emit_expr(cg, expr, scope)?;
             let tmp = cg.fresh("withv");
             cg.line(format!("let {tmp} = {ex}?;"));
-            cg.line(format!("{env}.set(\"{target}\", {tmp}.clone());"));
+            cg.line(format!("{}.set(\"{target}\", {tmp}.clone());", scope.env));
             for s in body {
-                emit_stmt(cg, s, globals, env)?;
+                emit_stmt(cg, s, scope)?;
             }
         }
         Stmt::Return { expr } => {
             if let Some(e) = expr {
-                let ex = emit_expr(cg, e, globals, env)?;
+                let ex = emit_expr(cg, e, scope)?;
                 cg.line(format!("return {ex};"));
             } else {
                 cg.line("return Ok(Value::None);");
@@ -991,8 +1042,8 @@ fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<
                 params.len(),
                 fn_name
             ));
-            cg.line(format!("{env}.set(\"{name}\", func.clone());"));
-            cg.line(format!("{globals}.insert(\"{name}\".into(), func);"));
+            cg.line(format!("{}.set(\"{name}\", func.clone());", scope.env));
+            cg.line(format!("{}.insert(\"{name}\".into(), func);", scope.globals));
         }
         Stmt::Class { name, methods } => {
             cg.line("let mut method_map = HashMap::new();");
@@ -1004,17 +1055,18 @@ fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<
                 }
             }
             cg.line(format!("let cls = Value::Class(ClassValue {{ name: \"{name}\".into(), methods: method_map }});"));
-            cg.line(format!("{env}.set(\"{name}\", cls.clone());"));
-            cg.line(format!("{globals}.insert(\"{name}\".into(), cls);"));
+            cg.line(format!("{}.set(\"{name}\", cls.clone());", scope.env));
+            cg.line(format!("{}.insert(\"{name}\".into(), cls);", scope.globals));
         }
         Stmt::Try { body, handlers, finally_body } => {
             cg.line("{");
             cg.indent();
-            cg.line("let mut tmp_env = env.child();");
+            cg.line(format!("let mut tmp_env = {}.child();", scope.env));
             cg.line("let body_res: Result<(), RuntimeError> = (|| {");
             cg.indent();
+            let body_scope = scope.with_env("tmp_env", false);
             for s in body {
-                emit_stmt(cg, s, globals, "tmp_env")?;
+                emit_stmt(cg, s, &body_scope)?;
             }
             cg.line("Ok(())");
             cg.dedent();
@@ -1036,7 +1088,7 @@ fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<
                     cg.line(format!("tmp_env.set(\"{bind}\", err.clone());"));
                 }
                 for s in &h.body {
-                    emit_stmt(cg, s, globals, "tmp_env")?;
+                    emit_stmt(cg, s, &body_scope)?;
                 }
                 cg.dedent();
                 cg.line("}");
@@ -1045,30 +1097,30 @@ fn emit_stmt(cg: &mut Codegen, stmt: &Stmt, globals: &str, env: &str) -> Result<
             cg.line("}");
             if let Some(fin) = finally_body {
                 for s in fin {
-                    emit_stmt(cg, s, globals, env)?;
+                    emit_stmt(cg, s, scope)?;
                 }
             }
             cg.dedent();
             cg.line("}");
         }
         Stmt::Raise { expr } => {
-            let ex = emit_expr(cg, expr, globals, env)?;
+            let ex = emit_expr(cg, expr, scope)?;
             cg.line(format!("return Err(RuntimeError::new(rt::value_to_string(&({ex}?))));"));
         }
     }
     Ok(())
 }
 
-fn emit_load_target(cg: &mut Codegen, target: &AssignTarget, globals: &str, env: &str) -> Result<String, RuntimeError> {
+fn emit_load_target(cg: &mut Codegen, target: &AssignTarget, scope: &Scope) -> Result<String, RuntimeError> {
     match target {
-        AssignTarget::Name(n) => Ok(format!("{{ {}.get(\"{}\").or_else(|| {}.get(\"{}\").cloned()).ok_or_else(|| RuntimeError::new(\"Name not found: {}\")) }}", env, n, globals, n, n)),
+        AssignTarget::Name(n) => Ok(format!("{{ {}.get(\"{}\").or_else(|| {}.get(\"{}\").cloned()).ok_or_else(|| RuntimeError::new(\"Name not found: {}\")) }}", scope.env, n, scope.globals, n, n)),
         AssignTarget::Subscript { object, index } => {
-            let o = emit_expr(cg, object, globals, env)?;
-            let i = emit_expr(cg, index, globals, env)?;
+            let o = emit_expr(cg, object, scope)?;
+            let i = emit_expr(cg, index, scope)?;
             Ok(format!("rt::subscript_get({o}?, {i}?)"))
         }
         AssignTarget::Attr { object, attr } => {
-            let o = emit_expr(cg, object, globals, env)?;
+            let o = emit_expr(cg, object, scope)?;
             Ok(format!("rt::attr_get({o}?, \"{attr}\")"))
         }
         AssignTarget::Tuple { .. } | AssignTarget::Starred(_) => {
@@ -1077,20 +1129,20 @@ fn emit_load_target(cg: &mut Codegen, target: &AssignTarget, globals: &str, env:
     }
 }
 
-fn emit_store_target(cg: &mut Codegen, target: &AssignTarget, value_expr: &str, globals: &str, env: &str) -> Result<(), RuntimeError> {
+fn emit_store_target(cg: &mut Codegen, target: &AssignTarget, value_expr: &str, scope: &Scope) -> Result<(), RuntimeError> {
     match target {
         AssignTarget::Name(n) => {
             let tmp = cg.fresh("val");
             cg.line(format!("let {tmp} = ({value_expr})?;"));
-            cg.line(format!("{env}.set(\"{n}\", {tmp});"));
+            cg.line(format!("{}.set(\"{n}\", {tmp});", scope.env));
         }
         AssignTarget::Subscript { object, index } => {
-            let o = emit_expr(cg, object, globals, env)?;
-            let i = emit_expr(cg, index, globals, env)?;
+            let o = emit_expr(cg, object, scope)?;
+            let i = emit_expr(cg, index, scope)?;
             cg.line(format!("rt::subscript_set({o}?, {i}?, ({value_expr})?)?;"));
         }
         AssignTarget::Attr { object, attr } => {
-            let o = emit_expr(cg, object, globals, env)?;
+            let o = emit_expr(cg, object, scope)?;
             cg.line(format!("rt::attr_set({o}?, \"{attr}\", ({value_expr})?)?;"));
         }
         AssignTarget::Tuple { items } => {
@@ -1108,7 +1160,7 @@ fn emit_store_target(cg: &mut Codegen, target: &AssignTarget, value_expr: &str, 
                 // leading elements
                 for (idx, t) in items.iter().enumerate().take(before) {
                     let val_ref = format!("Ok({vals}[{idx}].clone())");
-                    emit_store_target(cg, t, &val_ref, globals, env)?;
+                    emit_store_target(cg, t, &val_ref, scope)?;
                 }
                 // starred capture
                 if let AssignTarget::Starred(name) = &items[star_idx] {
@@ -1123,13 +1175,13 @@ fn emit_store_target(cg: &mut Codegen, target: &AssignTarget, value_expr: &str, 
                     ));
                     let star_val =
                         format!("Ok(Value::List(Rc::new(std::cell::RefCell::new({star_tmp})) ))");
-                    emit_store_target(cg, &AssignTarget::Starred(name.clone()), &star_val, globals, env)?;
+                    emit_store_target(cg, &AssignTarget::Starred(name.clone()), &star_val, scope)?;
                 }
                 // trailing elements
                 for (offset, t) in items.iter().skip(star_idx + 1).enumerate() {
                     let idx_expr = format!("{vals}.len() - {after} + {offset}");
                     let val_ref = format!("Ok({vals}[{idx_expr}].clone())");
-                    emit_store_target(cg, t, &val_ref, globals, env)?;
+                    emit_store_target(cg, t, &val_ref, scope)?;
                 }
             } else {
                 cg.line(format!(
@@ -1138,12 +1190,12 @@ fn emit_store_target(cg: &mut Codegen, target: &AssignTarget, value_expr: &str, 
                 ));
                 for (idx, t) in items.iter().enumerate() {
                     let val_ref = format!("Ok({vals}[{idx}].clone())");
-                    emit_store_target(cg, t, &val_ref, globals, env)?;
+                    emit_store_target(cg, t, &val_ref, scope)?;
                 }
             }
         }
         AssignTarget::Starred(name) => {
-            cg.line(format!("{env}.set(\"{name}\", ({value_expr})?);"));
+            cg.line(format!("{}.set(\"{name}\", ({value_expr})?);", scope.env));
         }
     }
     Ok(())
@@ -1168,7 +1220,7 @@ fn emit_bind_for_target(cg: &mut Codegen, target: &ForTarget, value_expr: &str, 
     Ok(())
 }
 
-fn emit_expr(cg: &mut Codegen, expr: &Expr, globals: &str, env: &str) -> Result<String, RuntimeError> {
+fn emit_expr(cg: &mut Codegen, expr: &Expr, scope: &Scope) -> Result<String, RuntimeError> {
     let out = match expr {
         Expr::Int(i) => format!("Ok(Value::Int({}))", i),
         Expr::Float(f) => format!("Ok(Value::Float({}f64))", f),
@@ -1176,7 +1228,7 @@ fn emit_expr(cg: &mut Codegen, expr: &Expr, globals: &str, env: &str) -> Result<
         Expr::Bool(b) => format!("Ok(Value::Bool({}))", b),
         Expr::Var(name) => format!(
             "{{ {}.get(\"{}\").or_else(|| {}.get(\"{}\").cloned()).ok_or_else(|| RuntimeError::new(\"Name not found: {}\")) }}",
-            env, name, globals, name, name
+            scope.env, name, scope.globals, name, name
         ),
         Expr::Lambda { params, body } => {
             let fname = cg.fresh("lambda_fn_");
@@ -1195,20 +1247,20 @@ fn emit_expr(cg: &mut Codegen, expr: &Expr, globals: &str, env: &str) -> Result<
             )
         }
         Expr::Unary(op, e) => {
-            let ex = emit_expr(cg, e, globals, env)?;
+            let ex = emit_expr(cg, e, scope)?;
             match op {
                 UnOp::Neg => format!("rt::negate({ex}?)"),
                 UnOp::Not => format!("Ok(Value::Bool(!({ex}?).truthy()))"),
             }
         }
         Expr::Binary(l, op, r) => {
-            let le = emit_expr(cg, l, globals, env)?;
-            let re = emit_expr(cg, r, globals, env)?;
+            let le = emit_expr(cg, l, scope)?;
+            let re = emit_expr(cg, r, scope)?;
             format!("rt::binary({le}?, {re}?, tyrion::BinOp::{:?})", op)
         }
         Expr::Compare(l, op, r) => {
-            let le = emit_expr(cg, l, globals, env)?;
-            let re = emit_expr(cg, r, globals, env)?;
+            let le = emit_expr(cg, l, scope)?;
+            let re = emit_expr(cg, r, scope)?;
             format!("rt::compare({le}?, {re}?, tyrion::CmpOp::{:?})", op)
         }
         Expr::Call {
@@ -1216,14 +1268,14 @@ fn emit_expr(cg: &mut Codegen, expr: &Expr, globals: &str, env: &str) -> Result<
             args,
             kwargs,
         } => {
-            let cal = emit_expr(cg, callee, globals, env)?;
+            let cal = emit_expr(cg, callee, scope)?;
             let mut argv = Vec::new();
             for a in args {
-                argv.push(emit_expr(cg, a, globals, env)?);
+                argv.push(emit_expr(cg, a, scope)?);
             }
             let mut kw_list = Vec::new();
             for (k, v) in kwargs {
-                let vexpr = emit_expr(cg, v, globals, env)?;
+                let vexpr = emit_expr(cg, v, scope)?;
                 kw_list.push(format!("(\"{}\".to_string(), {vexpr}?)", k));
             }
             let args_list = argv
@@ -1232,14 +1284,16 @@ fn emit_expr(cg: &mut Codegen, expr: &Expr, globals: &str, env: &str) -> Result<
                 .collect::<Vec<_>>()
                 .join(", ");
             let kw_joined = kw_list.join(", ");
+            let env_arg = scope.env_arg();
+            let globals_arg = scope.globals_arg();
             format!(
-                "rt::call_value({cal}?, vec![{args_list}], vec![{kw_joined}], &mut {env}, &mut {globals})"
+                "rt::call_value({cal}?, vec![{args_list}], vec![{kw_joined}], {env_arg}, {globals_arg})"
             )
         }
         Expr::List(items) => {
             let mut vals = Vec::new();
             for i in items {
-                vals.push(emit_expr(cg, i, globals, env)?);
+                vals.push(emit_expr(cg, i, scope)?);
             }
             let joined = vals.into_iter().map(|v| format!("{v}?")).collect::<Vec<_>>().join(", ");
             format!("Ok(Value::List(Rc::new(std::cell::RefCell::new(vec![{joined}]))))")
@@ -1247,7 +1301,7 @@ fn emit_expr(cg: &mut Codegen, expr: &Expr, globals: &str, env: &str) -> Result<
         Expr::Tuple(items) => {
             let mut vals = Vec::new();
             for i in items {
-                vals.push(emit_expr(cg, i, globals, env)?);
+                vals.push(emit_expr(cg, i, scope)?);
             }
             let joined = vals.into_iter().map(|v| format!("{v}?")).collect::<Vec<_>>().join(", ");
             format!("Ok(Value::Tuple(vec![{joined}]))")
@@ -1255,8 +1309,8 @@ fn emit_expr(cg: &mut Codegen, expr: &Expr, globals: &str, env: &str) -> Result<
         Expr::Dict(entries) => {
             let mut parts = Vec::new();
             for (k, v) in entries {
-                let kk = emit_expr(cg, k, globals, env)?;
-                let vv = emit_expr(cg, v, globals, env)?;
+                let kk = emit_expr(cg, k, scope)?;
+                let vv = emit_expr(cg, v, scope)?;
                 parts.push(format!("(HashKey::from_value(&({kk}?)).ok_or_else(|| RuntimeError::new(\"unhashable dict key\"))?, {vv}?)"));
             }
             let inner = parts.join(", ");
@@ -1265,73 +1319,75 @@ fn emit_expr(cg: &mut Codegen, expr: &Expr, globals: &str, env: &str) -> Result<
         Expr::Set(items) => {
             let mut parts = Vec::new();
             for i in items {
-                let vv = emit_expr(cg, i, globals, env)?;
+                let vv = emit_expr(cg, i, scope)?;
                 parts.push(format!("HashKey::from_value(&({vv}?)).ok_or_else(|| RuntimeError::new(\"unhashable set value\"))?"));
             }
             let inner = parts.join(", ");
             format!("Ok(Value::Set(Rc::new(std::cell::RefCell::new(std::collections::HashSet::from([{inner}])))))")
         }
         Expr::Index(obj, idx) => {
-            let o = emit_expr(cg, obj, globals, env)?;
-            let i = emit_expr(cg, idx, globals, env)?;
+            let o = emit_expr(cg, obj, scope)?;
+            let i = emit_expr(cg, idx, scope)?;
             format!("rt::subscript_get({o}?, {i}?)")
         }
         Expr::Slice { value, start, end } => {
-            let v = emit_expr(cg, value, globals, env)?;
-            let s = if let Some(se) = start { emit_expr(cg, se, globals, env)? } else { "Ok(Value::None)".into() };
-            let e = if let Some(en) = end { emit_expr(cg, en, globals, env)? } else { "Ok(Value::None)".into() };
+            let v = emit_expr(cg, value, scope)?;
+            let s = if let Some(se) = start { emit_expr(cg, se, scope)? } else { "Ok(Value::None)".into() };
+            let e = if let Some(en) = end { emit_expr(cg, en, scope)? } else { "Ok(Value::None)".into() };
             format!("rt::slice_value({v}?, {}, {})", match start { Some(_) => format!("Some({s}?)"), None => "None".into() }, match end { Some(_) => format!("Some({e}?)"), None => "None".into() })
         }
         Expr::MethodCall { object, method, args: arg, kwargs } => {
-            let o = emit_expr(cg, object, globals, env)?;
+            let o = emit_expr(cg, object, scope)?;
             let callee = format!("rt::attr_get({o}?, \"{method}\")");
             let mut argv = Vec::new();
             for a in arg {
-                argv.push(emit_expr(cg, a, globals, env)?);
+                argv.push(emit_expr(cg, a, scope)?);
             }
             let mut kwarg_vals = Vec::new();
             for (k, v) in kwargs {
-                let ev = emit_expr(cg, v, globals, env)?;
+                let ev = emit_expr(cg, v, scope)?;
                 kwarg_vals.push((k.clone(), ev));
             }
             let args_list = argv.into_iter().map(|a| format!("{a}?")).collect::<Vec<_>>().join(", ");
             let kwargs_list = kwarg_vals.into_iter().map(|(k, v)| format!("(\"{}\".into(), {v}?)", k)).collect::<Vec<_>>().join(", ");
-            format!("rt::call_value({callee}?, vec![{args_list}], vec![{kwargs_list}], &mut {env}, &mut {globals})")
+            let env_arg = scope.env_arg();
+            let globals_arg = scope.globals_arg();
+            format!("rt::call_value({callee}?, vec![{args_list}], vec![{kwargs_list}], {env_arg}, {globals_arg})")
         }
         Expr::Attr { object, attr } => {
-            let o = emit_expr(cg, object, globals, env)?;
+            let o = emit_expr(cg, object, scope)?;
             format!("rt::attr_get({o}?, \"{attr}\")")
         }
         Expr::ListComp { target, iter, expr, cond } => {
-            let iter_expr = emit_expr(cg, iter, globals, env)?;
+            let iter_expr = emit_expr(cg, iter, scope)?;
             let tmp_items = cg.fresh("iter");
             let tmp_out = cg.fresh("out");
-            let bind_code = bind_for_target_inline(target, "item", env)?;
+            let bind_code = bind_for_target_inline(target, "item", &scope.env)?;
             let cond_code = if let Some(c) = cond {
-                let ce = emit_expr(cg, c, globals, env)?;
+                let ce = emit_expr(cg, c, scope)?;
                 format!("if !({ce}?).truthy() {{ continue; }}")
             } else {
                 String::new()
             };
-            let inner_expr = emit_expr(cg, expr, globals, env)?;
+            let inner_expr = emit_expr(cg, expr, scope)?;
             let block = format!(
                 "{{ let mut {tmp_out} = Vec::new(); let {tmp_items} = rt::iterate_value({iter_expr}?)?; for item in {tmp_items} {{ {bind_code} {cond_code} let v = {inner_expr}?; {tmp_out}.push(v); }} Value::List(Rc::new(std::cell::RefCell::new({tmp_out}))) }}",
             );
             format!("Ok({block})")
         }
         Expr::DictComp { target, iter, key, value, cond } => {
-            let iter_expr = emit_expr(cg, iter, globals, env)?;
+            let iter_expr = emit_expr(cg, iter, scope)?;
             let tmp_items = cg.fresh("iter");
             let tmp_out = cg.fresh("out");
-            let bind_code = bind_for_target_inline(target, "item", env)?;
+            let bind_code = bind_for_target_inline(target, "item", &scope.env)?;
             let cond_code = if let Some(c) = cond {
-                let ce = emit_expr(cg, c, globals, env)?;
+                let ce = emit_expr(cg, c, scope)?;
                 format!("if !({ce}?).truthy() {{ continue; }}")
             } else {
                 String::new()
             };
-            let key_expr = emit_expr(cg, key, globals, env)?;
-            let val_expr = emit_expr(cg, value, globals, env)?;
+            let key_expr = emit_expr(cg, key, scope)?;
+            let val_expr = emit_expr(cg, value, scope)?;
             let block = format!(
                 "{{ let mut {tmp_out} = std::collections::HashMap::new(); let {tmp_items} = rt::iterate_value({iter_expr}?)?; for item in {tmp_items} {{ {bind_code} {cond_code} let k = HashKey::from_value(&({key_expr}?)).ok_or_else(|| RuntimeError::new(\"unhashable dict key\"))?; let v = {val_expr}?; {tmp_out}.insert(k, v); }} Value::Dict(Rc::new(std::cell::RefCell::new({tmp_out}))) }}",
             );
