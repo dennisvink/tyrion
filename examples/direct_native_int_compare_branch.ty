@@ -1,0 +1,6 @@
+a = 4
+b = 7
+if a + 3 < b:
+    print("int-compare-ok")
+else:
+    print("int-compare-fail")

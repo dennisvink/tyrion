@@ -1,0 +1,26 @@
+def require(condition, message):
+    if not condition:
+        raise message
+
+
+# Keep the name non-literal at the host-load call. This proves the application
+# does not need to know its dynamic extension registry at compile time.
+name = "f" + "oo"
+first = __tyrion_native_host_load(name)
+alias = first
+independent = __tyrion_native_host_load(name)
+operation = "foo." + "echo"
+payload = "dyn" + "amic"
+
+require(__tyrion_native_host_call(first, operation, payload) == "dynamic", "first dynamic call failed")
+require(__tyrion_native_host_call(alias, "foo.ping", "ignored") == "pong", "aliased dynamic call failed")
+require(__tyrion_native_host_call(first, "foo.unknown", "ignored") == none, "unknown operation did not return none")
+
+require(__tyrion_native_host_unload(first), "first unload failed")
+require(__tyrion_native_host_call(alias, "foo.ping", "ignored") == none, "unload did not invalidate an alias")
+require(not __tyrion_native_host_unload(alias), "repeated alias unload was not idempotent")
+
+require(__tyrion_native_host_call(independent, "foo.ping", "ignored") == "pong", "independent handle was invalidated")
+require(__tyrion_native_host_unload(independent), "independent unload failed")
+
+print("dynamic-extension-conformance-ok")

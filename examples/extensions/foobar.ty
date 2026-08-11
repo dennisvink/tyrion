@@ -1,0 +1,5 @@
+import foobar_wrapper
+
+print(foobar("barfoo"))
+print(foobar("somestring"))
+

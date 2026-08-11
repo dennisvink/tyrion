@@ -1,0 +1,344 @@
+# Tyrion HTTP/1.1 client module.
+# Plain HTTP uses native TCP; HTTPS uses the built-in TLS transport.
+
+import tls
+
+
+def http_ascii_bytes(text):
+    printable = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    result = []
+    for ch in text:
+        if ch == "\r":
+            result.append(13)
+        elif ch == "\n":
+            result.append(10)
+        elif ch == "\t":
+            result.append(9)
+        else:
+            idx = 0
+            found = -1
+            while idx < len(printable):
+                if printable[idx] == ch:
+                    found = idx + 32
+                idx = idx + 1
+            if found < 0:
+                raise "UnicodeError: HTTP module currently accepts ASCII text"
+            result.append(found)
+    return result
+
+
+def http_ascii_text(data):
+    result = __tyrion_native_ascii_text(data)
+    if result == None:
+        raise "UnicodeError: HTTP response is not ASCII text"
+    return result
+
+
+def http_lower_ascii(text):
+    upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    lower = "abcdefghijklmnopqrstuvwxyz"
+    result = ""
+    for ch in text:
+        idx = 0
+        replacement = ch
+        while idx < len(upper):
+            if ch == upper[idx]:
+                replacement = lower[idx]
+            idx = idx + 1
+        result = result + replacement
+    return result
+
+
+def http_text_contains(text, expected):
+    if expected == "":
+        return True
+    if len(expected) > len(text):
+        return False
+    idx = 0
+    while idx + len(expected) <= len(text):
+        if text[idx:idx + len(expected)] == expected:
+            return True
+        idx = idx + 1
+    return False
+
+
+def http_parse_url(url):
+    prefix = "http://"
+    scheme = "http"
+    default_port = 80
+    if len(url) >= 8 and url[0:8] == "https://":
+        prefix = "https://"
+        scheme = "https"
+        default_port = 443
+    elif len(url) < len(prefix) or url[0:len(prefix)] != prefix:
+        raise "ValueError: HTTP URL must start with http:// or https://"
+    rest = url[len(prefix):]
+    slash = -1
+    idx = 0
+    while idx < len(rest):
+        if rest[idx] == "/" and slash < 0:
+            slash = idx
+        idx = idx + 1
+    if slash < 0:
+        authority = rest
+        path = "/"
+    else:
+        authority = rest[0:slash]
+        path = rest[slash:]
+    if authority == "":
+        raise "ValueError: HTTP URL has no host"
+    colon = -1
+    idx = 0
+    while idx < len(authority):
+        if authority[idx] == ":":
+            if colon >= 0:
+                raise "ValueError: IPv6 HTTP URLs are not supported yet"
+            colon = idx
+        idx = idx + 1
+    host = authority
+    port = default_port
+    if colon >= 0:
+        host = authority[0:colon]
+        port_text = authority[colon + 1:]
+        if host == "" or port_text == "":
+            raise "ValueError: invalid HTTP host or port"
+        port = int(port_text)
+        if port < 1 or port > 65535:
+            raise "ValueError: HTTP port is outside 1..65535"
+    return {"scheme": scheme, "host": host, "port": port, "path": path, "authority": authority}
+
+
+def http_header_present(headers, expected):
+    expected_lower = http_lower_ascii(expected)
+    for name in headers:
+        if http_lower_ascii(name) == expected_lower:
+            return True
+    return False
+
+
+def http_validate_request_text(label, text):
+    if http_text_contains(text, "\r") or http_text_contains(text, "\n"):
+        raise "ValueError: HTTP " + label + " contains a newline"
+
+
+def http_request_bytes(method, target, headers, body):
+    http_validate_request_text("method", method)
+    http_validate_request_text("target", target["path"])
+    request = method + " " + target["path"] + " HTTP/1.1\r\n"
+    if not http_header_present(headers, "host"):
+        request = request + "Host: " + target["authority"] + "\r\n"
+    if not http_header_present(headers, "connection"):
+        request = request + "Connection: close\r\n"
+    if len(body) > 0 and not http_header_present(headers, "content-length"):
+        request = request + "Content-Length: " + str(len(body)) + "\r\n"
+    for name in headers:
+        value = headers[name]
+        http_validate_request_text("header name", name)
+        http_validate_request_text("header value", value)
+        request = request + name + ": " + value + "\r\n"
+    result = http_ascii_bytes(request + "\r\n")
+    for byte in body:
+        if byte < 0 or byte > 255:
+            raise "ValueError: HTTP body byte is outside 0..255"
+        result.append(byte)
+    return result
+
+
+def http_write_all(handle, data, timeout_ms):
+    offset = 0
+    while offset < len(data):
+        written = __tyrion_native_tcp_write(handle, data[offset:], timeout_ms)
+        if written <= 0:
+            raise "ConnectionError: HTTP socket write failed"
+        offset = offset + written
+    return offset
+
+
+def http_read_all(handle, timeout_ms):
+    result = []
+    while True:
+        chunk = __tyrion_native_tcp_read(handle, 4096, timeout_ms)
+        if chunk == None or len(chunk) == 0:
+            return result
+        if len(result) == 0:
+            result = chunk
+        else:
+            result = result + chunk
+
+
+def http_find_header_end(data):
+    idx = 0
+    while idx + 3 < len(data):
+        if data[idx] == 13 and data[idx + 1] == 10 and data[idx + 2] == 13 and data[idx + 3] == 10:
+            return {"header_end": idx, "body_start": idx + 4, "separator": "\r\n"}
+        idx = idx + 1
+    idx = 0
+    while idx + 1 < len(data):
+        if data[idx] == 10 and data[idx + 1] == 10:
+            return {"header_end": idx, "body_start": idx + 2, "separator": "\n"}
+        idx = idx + 1
+    raise "ValueError: malformed HTTP response headers"
+
+
+def http_parse_status_line(line):
+    parts = line.split(" ")
+    if len(parts) < 2 or len(parts[0]) < 5 or parts[0][0:5] != "HTTP/":
+        raise "ValueError: malformed HTTP status line"
+    status = int(parts[1])
+    reason = ""
+    idx = 2
+    while idx < len(parts):
+        if reason != "":
+            reason = reason + " "
+        reason = reason + parts[idx]
+        idx = idx + 1
+    return {"status": status, "reason": reason}
+
+
+def http_parse_headers(lines):
+    headers = {}
+    idx = 1
+    while idx < len(lines):
+        line = lines[idx]
+        if line != "":
+            colon = -1
+            cursor = 0
+            while cursor < len(line):
+                if line[cursor] == ":" and colon < 0:
+                    colon = cursor
+                cursor = cursor + 1
+            if colon <= 0:
+                raise "ValueError: malformed HTTP response header"
+            name = http_lower_ascii(line[0:colon].strip())
+            value = line[colon + 1:].strip()
+            if name in headers:
+                headers[name] = headers[name] + ", " + value
+            else:
+                headers[name] = value
+        idx = idx + 1
+    return headers
+
+
+def http_hex_value(byte):
+    if byte >= 48 and byte <= 57:
+        return byte - 48
+    if byte >= 65 and byte <= 70:
+        return byte - 55
+    if byte >= 97 and byte <= 102:
+        return byte - 87
+    return -1
+
+
+def http_join_byte_chunks(chunks):
+    if len(chunks) == 0:
+        return []
+    while len(chunks) > 1:
+        merged = []
+        idx = 0
+        while idx < len(chunks):
+            if idx + 1 < len(chunks):
+                merged.append(chunks[idx] + chunks[idx + 1])
+            else:
+                merged.append(chunks[idx])
+            idx = idx + 2
+        chunks = merged
+    return chunks[0]
+
+
+def http_decode_chunked(data):
+    chunks = []
+    cursor = 0
+    while True:
+        line_end = -1
+        idx = cursor
+        while idx + 1 < len(data) and line_end < 0:
+            if data[idx] == 13 and data[idx + 1] == 10:
+                line_end = idx
+            idx = idx + 1
+        if line_end < 0:
+            raise "ValueError: incomplete HTTP chunk size"
+        size = 0
+        digits = 0
+        idx = cursor
+        while idx < line_end and data[idx] != 59:
+            value = http_hex_value(data[idx])
+            if value < 0:
+                raise "ValueError: invalid HTTP chunk size"
+            size = size * 16 + value
+            digits = digits + 1
+            idx = idx + 1
+        if digits == 0:
+            raise "ValueError: empty HTTP chunk size"
+        cursor = line_end + 2
+        if size == 0:
+            return http_join_byte_chunks(chunks)
+        if cursor + size + 2 > len(data):
+            raise "ValueError: incomplete HTTP chunk body"
+        stop = cursor + size
+        chunks.append(data[cursor:stop])
+        cursor = stop
+        if data[cursor] != 13 or data[cursor + 1] != 10:
+            raise "ValueError: malformed HTTP chunk terminator"
+        cursor = cursor + 2
+
+
+def http_parse_response(data):
+    boundary = http_find_header_end(data)
+    header_text = http_ascii_text(data[0:boundary["header_end"]])
+    lines = header_text.split(boundary["separator"])
+    status = http_parse_status_line(lines[0])
+    headers = http_parse_headers(lines)
+    body = data[boundary["body_start"]:]
+    if "transfer-encoding" in headers and http_text_contains(http_lower_ascii(headers["transfer-encoding"]), "chunked"):
+        body = http_decode_chunked(body)
+    elif "content-length" in headers:
+        expected = int(headers["content-length"])
+        if len(body) < expected:
+            raise "ValueError: incomplete HTTP response body"
+        body = body[0:expected]
+    return {"status": status["status"], "reason": status["reason"], "headers": headers, "body": body, "ok": status["status"] >= 200 and status["status"] < 400}
+
+
+def http_request(method, url, headers, body, timeout_ms):
+    target = http_parse_url(url)
+    request = http_request_bytes(method, target, headers, body)
+    if target["scheme"] == "https":
+        handle = tls_connect(target["host"], target["port"], timeout_ms)
+        try:
+            offset = 0
+            while offset < len(request):
+                written = tls_write(handle, request[offset:], timeout_ms)
+                if written <= 0:
+                    raise "ConnectionError: HTTPS socket write failed"
+                offset = offset + written
+            response = []
+            while True:
+                chunk = tls_read(handle, 4096, timeout_ms)
+                if chunk == None or len(chunk) == 0:
+                    break
+                if len(response) == 0:
+                    response = chunk
+                else:
+                    response = response + chunk
+        finally:
+            tls_close(handle)
+    else:
+        handle = __tyrion_native_tcp_connect(target["host"], target["port"], timeout_ms)
+        try:
+            http_write_all(handle, request, timeout_ms)
+            response = http_read_all(handle, timeout_ms)
+        finally:
+            __tyrion_native_tcp_close(handle)
+    return http_parse_response(response)
+
+
+def http_get_timeout(url, timeout_ms):
+    return http_request("GET", url, {}, [], timeout_ms)
+
+
+def http_get(url):
+    return http_get_timeout(url, 30000)
+
+
+def http_body_text(response):
+    return http_ascii_text(response["body"])

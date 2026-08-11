@@ -1,0 +1,1595 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# Canonical AST construction, token access, parsing, and frontend inventories.
+
+def ast_record(kind):
+    # The C seed recognizes this constructor as a type-distinct AST record.
+    # Descendants lower the same semantic record into the generated AST arena.
+    return {"kind": kind, "items": []}
+
+
+def ast_node(kind):
+    return ast_record(kind)
+
+
+def ast_value(kind, value):
+    node = ast_record(kind)
+    node["value"] = value
+    return node
+
+
+def ast_binary(op, left, right):
+    node = ast_record("binary")
+    node["op"] = op
+    node["left"] = left
+    node["right"] = right
+    return node
+
+
+def ast_unary(op, value):
+    node = ast_record("unary")
+    node["op"] = op
+    node["value"] = value
+    return node
+
+
+def string_token_value(text):
+    if len(text) < 2:
+        fail("invalid string token")
+    quote = text[0]
+    if (quote != "\"" and quote != "'") or text[len(text) - 1] != quote:
+        fail("invalid string token")
+    out = ""
+    idx = 1
+    end = len(text) - 1
+    while idx < end:
+        ch = text[idx]
+        if ch == "\\":
+            idx = idx + 1
+            if idx >= end:
+                fail("invalid string escape")
+            escaped = text[idx]
+            if escaped == "n":
+                out = out + "\n"
+            elif escaped == "r":
+                out = out + "\r"
+            elif escaped == "t":
+                out = out + "\t"
+            elif escaped == "\\":
+                out = out + "\\"
+            elif escaped == "\"":
+                out = out + "\""
+            elif escaped == "'":
+                out = out + "'"
+            else:
+                out = out + escaped
+        else:
+            out = out + ch
+        idx = idx + 1
+    return out
+
+
+def ast_collection(kind, items):
+    node = ast_record(kind)
+    node["items"] = items
+    return node
+
+
+def ast_dict(entries):
+    node = ast_record("dict")
+    node["entries"] = entries
+    return node
+
+
+def ast_dict_entry(key, value):
+    node = ast_record("dict_entry")
+    node["key"] = key
+    node["value"] = value
+    return node
+
+
+def ast_branch(condition, body):
+    node = ast_record("branch")
+    node["condition"] = condition
+    node["body"] = body
+    return node
+
+
+def ast_unpack_entry(name, star):
+    node = ast_record("unpack_target")
+    node["name"] = name
+    node["star"] = star
+    return node
+
+
+def ast_call(callee, args):
+    node = ast_record("call")
+    node["callee"] = callee
+    node["args"] = args
+    return node
+
+
+def ast_method_call(receiver, name, args):
+    node = ast_record("method_call")
+    node["receiver"] = receiver
+    node["name"] = name
+    node["args"] = args
+    return node
+
+
+def ast_attr(receiver, name):
+    node = ast_record("attr")
+    node["receiver"] = receiver
+    node["name"] = name
+    return node
+
+
+def ast_index(receiver, index):
+    node = ast_record("index")
+    node["receiver"] = receiver
+    node["index"] = index
+    return node
+
+
+def ast_slice(receiver, start, stop):
+    node = ast_record("slice")
+    node["receiver"] = receiver
+    node["start"] = start
+    node["stop"] = stop
+    return node
+
+
+def ast_kwarg(name, value):
+    node = ast_record("kwarg")
+    node["name"] = name
+    node["value"] = value
+    return node
+
+
+def ast_lambda(params, body):
+    node = ast_record("lambda")
+    node["params"] = params
+    node["body"] = body
+    return node
+
+
+def ast_comprehension(out_kind, expr, key, value, target, iterable, condition):
+    node = ast_record("comprehension")
+    node["out_kind"] = out_kind
+    node["expr"] = expr
+    node["key"] = key
+    node["value"] = value
+    node["target"] = target
+    node["iterable"] = iterable
+    node["condition"] = condition
+    return node
+
+
+def token_field_at(tokens, pos, field):
+    return __tyrion_native_token_builder_field(tokens, pos, field)
+
+
+def token_count(tokens):
+    return __tyrion_native_token_builder_count(tokens)
+
+
+def token_kind_at(tokens, pos):
+    return token_field_at(tokens, pos, "kind")
+
+
+def token_text_at(tokens, pos):
+    return token_field_at(tokens, pos, "text")
+
+
+def token_value_at(tokens, pos):
+    return token_text_at(tokens, pos)
+
+
+def token_line_at(tokens, pos):
+    return str(token_field_at(tokens, pos, "line"))
+
+
+def token_column_at(tokens, pos):
+    return str(token_field_at(tokens, pos, "column"))
+
+
+def token_roundtrip_probe(kind, text, line, column):
+    tokens = __tyrion_native_ast_builder_create()
+    __tyrion_native_token_builder_append(tokens, kind, text, line, column)
+    return token_kind_at(tokens, 0) + ":" + token_text_at(tokens, 0) + ":" + token_line_at(tokens, 0) + ":" + token_column_at(tokens, 0)
+
+
+def token_clone_probe(kind, text, line, column):
+    original = __tyrion_native_ast_builder_create()
+    __tyrion_native_token_builder_append(original, kind, text, line, column)
+    cloned = original
+    return token_kind_at(cloned, 0) + ":" + token_text_at(cloned, 0) + ":" + token_line_at(cloned, 0) + ":" + token_column_at(cloned, 0)
+
+
+def malformed_token_record_probe():
+    return parse_program([{"kind": "EOF", "text": "", "line": 1, "column": 1}])
+
+
+def ast_record_clone_probe(source):
+    program = parse_program(lex(source))
+    cloned = program
+    return cloned["kind"] + ":" + cloned["items"][0]["kind"]
+
+
+def malformed_ast_record_probe():
+    return program_has_function({"kind": "program", "items": []}, "missing")
+
+
+def malformed_nested_ast_record_probe():
+    program = ast_record("program")
+    program["items"] = [{"kind": "function", "name": "fake", "items": []}]
+    return program_has_function(program, "fake")
+
+
+def parser_list_create():
+    return __tyrion_native_ast_builder_create()
+
+
+def parser_list_append(builder, value):
+    __tyrion_native_ast_builder_append(builder, 0, value)
+    return builder
+
+
+def parser_list_single(value):
+    builder = parser_list_create()
+    return parser_list_append(builder, value)
+
+
+def parser_list_finish(builder):
+    return __tyrion_native_ast_builder_finish(builder)[0]
+
+
+def malformed_ast_kind_probe():
+    return ast_record("not_a_real_ast_kind")
+
+
+def malformed_ast_field_probe():
+    node = ast_record("var")
+    node["not_a_var_field"] = 1
+    return node
+
+
+def function_signature_record_probe(source, name):
+    program = parse_program(lex(source))
+    fn = program_find_function(program, name)
+    out = ""
+    idx = 0
+    while idx < len(fn["params"]):
+        if idx > 0:
+            out = out + ","
+        param = fn["params"][idx]
+        out = out + param_name(param) + ":" + str(param_has_default(param))
+        idx = idx + 1
+    return out
+
+
+def compiler_cli_parse_path_probe(path):
+    program = parse_program(lex(read_text_file(path)))
+    return len(program["items"])
+
+
+def compiler_cli_plan_path_probe(path):
+    program = parse_program(lex(read_text_file(path)))
+    spec = collect_cli_spec(program)
+    return len(spec["lowered_functions"])
+
+
+def compiler_cli_build_plan_path_probe(path):
+    program = parse_program(lex(read_text_file(path)))
+    plan = collect_build_native_plan(program)
+    return plan["shape_ok"]
+
+
+def compiler_cli_lowered_table_path_probe(path):
+    program = parse_program(lex(read_text_file(path)))
+    plan = collect_build_native_plan(program)
+    functions = collect_lowered_function_table_plan(program, plan)
+    return len(functions)
+
+
+def token_kind_next(tokens, pos):
+    next_pos = pos + 1
+    return token_kind_at(tokens, next_pos)
+
+
+def token_text_next(tokens, pos):
+    next_pos = pos + 1
+    return token_text_at(tokens, next_pos)
+
+
+def ast_assign(name, value):
+    return ast_assign_target(ast_value("var", name), value)
+
+
+def ast_assign_target(target, value):
+    name = ""
+    if target["kind"] == "var":
+        name = target["value"]
+    node = ast_record("assign")
+    node["target"] = target
+    node["name"] = name
+    node["value"] = value
+    return node
+
+
+def ast_unpack_target(targets):
+    node = ast_record("unpack")
+    node["targets"] = targets
+    return node
+
+
+def ast_return(value):
+    return ast_value("return", value)
+
+
+def ast_if(condition, body, elifs, else_body):
+    node = ast_record("if")
+    node["condition"] = condition
+    node["body"] = body
+    node["elifs"] = elifs
+    node["else_body"] = else_body
+    return node
+
+
+def ast_while(condition, body):
+    node = ast_record("while")
+    node["condition"] = condition
+    node["body"] = body
+    return node
+
+
+def ast_for(targets, iterable, body):
+    node = ast_record("for")
+    node["targets"] = targets
+    node["iterable"] = iterable
+    node["body"] = body
+    return node
+
+
+def ast_with(resource, name, body):
+    node = ast_record("with")
+    node["resource"] = resource
+    node["name"] = name
+    node["body"] = body
+    return node
+
+
+def ast_try(body, except_name, except_binding, except_body, finally_body):
+    node = ast_record("try")
+    node["body"] = body
+    node["except_name"] = except_name
+    node["except_binding"] = except_binding
+    node["except_body"] = except_body
+    node["finally_body"] = finally_body
+    return node
+
+
+def ast_raise(value):
+    return ast_value("raise", value)
+
+
+def ast_yield(value):
+    return ast_value("yield", value)
+
+
+def ast_expr(value):
+    return ast_value("expr", value)
+
+
+def ast_class(name, body):
+    node = ast_record("class")
+    node["name"] = name
+    node["body"] = body
+    return node
+
+
+def ast_meta(kind, name):
+    node = ast_record(kind)
+    node["name"] = name
+    return node
+
+
+def ast_function(name, params, body):
+    node = ast_record("function")
+    node["name"] = name
+    node["params"] = params
+    node["body"] = body
+    return node
+
+
+def ast_parameter(name, has_default, default_value):
+    node = ast_record("parameter")
+    node["name"] = name
+    node["has_default"] = has_default
+    node["default"] = default_value
+    return node
+
+
+def parser_skip_newlines(tokens, pos):
+    scanning = True
+    while scanning:
+        kind = token_kind_at(tokens, pos)
+        if kind == "EOF":
+            scanning = False
+        else:
+            if kind == "NEWLINE":
+                pos = pos + 1
+            else:
+                scanning = False
+    return pos
+
+
+def parser_reject_token(tokens, pos):
+    actual = token_kind_at(tokens, pos)
+    fail("parser rejected code=syntax-error;line=" + token_line_at(tokens, pos) + ";column=" + token_column_at(tokens, pos) + ";detail=" + actual)
+
+
+def parser_expect(tokens, pos, kind):
+    if token_kind_at(tokens, pos) != kind:
+        parser_reject_token(tokens, pos)
+    return pos + 1
+
+
+def numeric_text(text):
+    out = ""
+    idx = 0
+    while idx < len(text):
+        if text[idx] != "_":
+            out = out + text[idx]
+        idx = idx + 1
+    return out
+
+
+
+def is_compare_token(kind):
+    return kind == "EQEQ" or kind == "NE" or kind == "LT" or kind == "LE" or kind == "GT" or kind == "GE" or kind == "KW_IN"
+
+
+def pratt_infix_binding_power(kind):
+    if kind == "KW_OR":
+        return 10
+    if kind == "KW_AND":
+        return 20
+    if is_compare_token(kind):
+        return 30
+    if kind == "PLUS" or kind == "MINUS":
+        return 40
+    if kind == "STAR" or kind == "SLASH" or kind == "PERCENT":
+        return 50
+    return 0
+
+
+
+def parse_pratt_expr(tokens, pos, min_bp):
+    if token_kind_at(tokens, pos) == "EOF":
+        fail("expected expression")
+    prefix_kind = token_kind_at(tokens, pos)
+    if prefix_kind == "MINUS":
+        inner = parse_pratt_expr(tokens, pos + 1, 60)
+        zero = ast_value("int", 0)
+        parsed = {"node": ast_binary("-", zero, inner["node"]), "pos": inner["pos"]}
+    elif prefix_kind == "KW_NOT":
+        inner = parse_pratt_expr(tokens, pos + 1, 60)
+        parsed = {"node": ast_unary("not", inner["node"]), "pos": inner["pos"]}
+    else:
+        atom_kind = token_kind_at(tokens, pos)
+        atom_text = token_text_at(tokens, pos)
+        if atom_kind == "INT":
+            atom = {"node": ast_value("int", int(numeric_text(atom_text))), "pos": pos + 1}
+        elif atom_kind == "FLOAT":
+            atom = {"node": ast_value("float", float(numeric_text(atom_text))), "pos": pos + 1}
+        elif atom_kind == "STRING":
+            atom = {"node": ast_value("string", string_token_value(atom_text)), "pos": pos + 1}
+        elif atom_kind == "KW_TRUE":
+            atom = {"node": ast_value("bool", True), "pos": pos + 1}
+        elif atom_kind == "KW_FALSE":
+            atom = {"node": ast_value("bool", False), "pos": pos + 1}
+        elif atom_kind == "KW_NONE":
+            atom = {"node": ast_value("none", none), "pos": pos + 1}
+        elif atom_kind == "IDENTIFIER":
+            atom = {"node": ast_value("var", atom_text), "pos": pos + 1}
+        elif atom_kind == "KW_LAMBDA":
+            lambda_pos = pos + 1
+            params = parser_list_create()
+            if lambda_pos < token_count(tokens) and token_kind_at(tokens, lambda_pos) != "COLON":
+                reading_params = True
+                while reading_params:
+                    if token_kind_at(tokens, lambda_pos) != "IDENTIFIER":
+                        fail("expected lambda parameter name")
+                    params = parser_list_append(params, token_text_at(tokens, lambda_pos))
+                    lambda_pos = lambda_pos + 1
+                    if lambda_pos < token_count(tokens) and token_kind_at(tokens, lambda_pos) == "COMMA":
+                        lambda_pos = lambda_pos + 1
+                    else:
+                        reading_params = False
+            lambda_pos = parser_expect(tokens, lambda_pos, "COLON")
+            body = parse_expression(tokens, lambda_pos)
+            atom = {"node": ast_lambda(parser_list_finish(params), body["node"]), "pos": body["pos"]}
+        elif atom_kind == "LBRACKET":
+            list_pos = pos + 1
+            items = parser_list_create()
+            if list_pos < token_count(tokens) and token_kind_at(tokens, list_pos) != "RBRACKET":
+                first = parse_expression(tokens, list_pos)
+                if first["pos"] < token_count(tokens) and token_kind_at(tokens, first["pos"]) == "KW_FOR":
+                    if token_kind_at(tokens, first["pos"] + 1) != "IDENTIFIER":
+                        fail("expected comprehension target")
+                    target = token_text_at(tokens, first["pos"] + 1)
+                    comp_pos = parser_expect(tokens, first["pos"] + 2, "KW_IN")
+                    iterable = parse_expression(tokens, comp_pos)
+                    comp_pos = iterable["pos"]
+                    condition = ast_value("bool", True)
+                    if comp_pos < token_count(tokens) and token_kind_at(tokens, comp_pos) == "KW_IF":
+                        parsed_condition = parse_expression(tokens, comp_pos + 1)
+                        condition = parsed_condition["node"]
+                        comp_pos = parsed_condition["pos"]
+                    list_pos = parser_expect(tokens, comp_pos, "RBRACKET")
+                    atom = {"node": ast_comprehension("list", first["node"], ast_value("none", none), ast_value("none", none), target, iterable["node"], condition), "pos": list_pos}
+                else:
+                    items = parser_list_append(items, first["node"])
+                    list_pos = first["pos"]
+                    while list_pos < token_count(tokens) and token_kind_at(tokens, list_pos) == "COMMA":
+                        list_pos = list_pos + 1
+                        if list_pos < token_count(tokens) and token_kind_at(tokens, list_pos) == "RBRACKET":
+                            break
+                        item = parse_expression(tokens, list_pos)
+                        items = parser_list_append(items, item["node"])
+                        list_pos = item["pos"]
+                    list_pos = parser_expect(tokens, list_pos, "RBRACKET")
+                    atom = {"node": ast_collection("list", parser_list_finish(items)), "pos": list_pos}
+            else:
+                list_pos = parser_expect(tokens, list_pos, "RBRACKET")
+                atom = {"node": ast_collection("list", parser_list_finish(items)), "pos": list_pos}
+        elif atom_kind == "LBRACE":
+            brace_pos = pos + 1
+            entries = parser_list_create()
+            atom_set_done = False
+            if brace_pos < token_count(tokens) and token_kind_at(tokens, brace_pos) != "RBRACE":
+                first = parse_expression(tokens, brace_pos)
+                if first["pos"] < token_count(tokens) and token_kind_at(tokens, first["pos"]) == "COLON":
+                    value = parse_expression(tokens, first["pos"] + 1)
+                    if value["pos"] < token_count(tokens) and token_kind_at(tokens, value["pos"]) == "KW_FOR":
+                        if token_kind_at(tokens, value["pos"] + 1) != "IDENTIFIER":
+                            fail("expected dict comprehension target")
+                        target = token_text_at(tokens, value["pos"] + 1)
+                        comp_pos = parser_expect(tokens, value["pos"] + 2, "KW_IN")
+                        iterable = parse_expression(tokens, comp_pos)
+                        comp_pos = iterable["pos"]
+                        condition = ast_value("bool", True)
+                        if comp_pos < token_count(tokens) and token_kind_at(tokens, comp_pos) == "KW_IF":
+                            parsed_condition = parse_expression(tokens, comp_pos + 1)
+                            condition = parsed_condition["node"]
+                            comp_pos = parsed_condition["pos"]
+                        brace_pos = parser_expect(tokens, comp_pos, "RBRACE")
+                        atom = {"node": ast_comprehension("dict", ast_value("none", none), first["node"], value["node"], target, iterable["node"], condition), "pos": brace_pos}
+                        atom_set_done = True
+                    if not atom_set_done:
+                        entries = parser_list_append(entries, ast_dict_entry(first["node"], value["node"]))
+                        brace_pos = value["pos"]
+                        while brace_pos < token_count(tokens) and token_kind_at(tokens, brace_pos) == "COMMA":
+                            brace_pos = brace_pos + 1
+                            if brace_pos < token_count(tokens) and token_kind_at(tokens, brace_pos) == "RBRACE":
+                                break
+                            key = parse_expression(tokens, brace_pos)
+                            brace_pos = parser_expect(tokens, key["pos"], "COLON")
+                            value = parse_expression(tokens, brace_pos)
+                            entries = parser_list_append(entries, ast_dict_entry(key["node"], value["node"]))
+                            brace_pos = value["pos"]
+                        brace_pos = parser_expect(tokens, brace_pos, "RBRACE")
+                        atom = {"node": ast_dict(parser_list_finish(entries)), "pos": brace_pos}
+                else:
+                    items = parser_list_single(first["node"])
+                    brace_pos = first["pos"]
+                    while brace_pos < token_count(tokens) and token_kind_at(tokens, brace_pos) == "COMMA":
+                        brace_pos = brace_pos + 1
+                        if brace_pos < token_count(tokens) and token_kind_at(tokens, brace_pos) == "RBRACE":
+                            break
+                        item = parse_expression(tokens, brace_pos)
+                        items = parser_list_append(items, item["node"])
+                        brace_pos = item["pos"]
+                    brace_pos = parser_expect(tokens, brace_pos, "RBRACE")
+                    atom = {"node": ast_collection("set", parser_list_finish(items)), "pos": brace_pos}
+            else:
+                brace_pos = parser_expect(tokens, brace_pos, "RBRACE")
+                atom = {"node": ast_dict(parser_list_finish(entries)), "pos": brace_pos}
+        elif atom_kind == "LPAREN":
+            paren_pos = pos + 1
+            if paren_pos < token_count(tokens) and token_kind_at(tokens, paren_pos) == "RPAREN":
+                atom = {"node": ast_collection("tuple", []), "pos": paren_pos + 1}
+            else:
+                first = parse_expression(tokens, paren_pos)
+                paren_pos = first["pos"]
+                if paren_pos < token_count(tokens) and token_kind_at(tokens, paren_pos) == "COMMA":
+                    items = parser_list_single(first["node"])
+                    while paren_pos < token_count(tokens) and token_kind_at(tokens, paren_pos) == "COMMA":
+                        paren_pos = paren_pos + 1
+                        if paren_pos < token_count(tokens) and token_kind_at(tokens, paren_pos) == "RPAREN":
+                            break
+                        item = parse_expression(tokens, paren_pos)
+                        items = parser_list_append(items, item["node"])
+                        paren_pos = item["pos"]
+                    paren_pos = parser_expect(tokens, paren_pos, "RPAREN")
+                    atom = {"node": ast_collection("tuple", parser_list_finish(items)), "pos": paren_pos}
+                else:
+                    next_pos = parser_expect(tokens, paren_pos, "RPAREN")
+                    atom = {"node": first["node"], "pos": next_pos}
+        else:
+            parser_reject_token(tokens, pos)
+        postfix_node = atom["node"]
+        postfix_pos = atom["pos"]
+        postfix_active = True
+        while postfix_active:
+            postfix_kind = token_kind_at(tokens, postfix_pos)
+            if postfix_kind == "EOF":
+                postfix_kind = ""
+            postfix_handled = False
+            if postfix_kind == "LPAREN":
+                postfix_handled = True
+                postfix_pos = postfix_pos + 1
+                args = parser_list_create()
+                arg_kind = token_kind_at(tokens, postfix_pos)
+                if arg_kind != "RPAREN":
+                    reading = True
+                    while reading:
+                        is_kwarg = False
+                        current_kind = token_kind_at(tokens, postfix_pos)
+                        next_kind = token_kind_next(tokens, postfix_pos)
+                        if current_kind == "IDENTIFIER":
+                            if next_kind == "EQ":
+                                is_kwarg = True
+                        if is_kwarg:
+                            arg = parse_expression(tokens, postfix_pos + 2)
+                            args = parser_list_append(args, ast_kwarg(token_text_at(tokens, postfix_pos), arg["node"]))
+                            postfix_pos = arg["pos"]
+                        if not is_kwarg:
+                            arg = parse_expression(tokens, postfix_pos)
+                            args = parser_list_append(args, arg["node"])
+                            postfix_pos = arg["pos"]
+                        comma_kind = token_kind_at(tokens, postfix_pos)
+                        if comma_kind == "COMMA":
+                            postfix_pos = postfix_pos + 1
+                            if token_kind_at(tokens, postfix_pos) == "RPAREN":
+                                reading = False
+                        if comma_kind != "COMMA":
+                            reading = False
+                postfix_pos = parser_expect(tokens, postfix_pos, "RPAREN")
+                postfix_node = ast_call(postfix_node, parser_list_finish(args))
+            if not postfix_handled:
+                if postfix_kind == "DOT":
+                    postfix_handled = True
+                    if token_kind_next(tokens, postfix_pos) != "IDENTIFIER":
+                        fail("expected attribute name")
+                    name = token_text_next(tokens, postfix_pos)
+                    postfix_pos = postfix_pos + 2
+                    method_kind = token_kind_at(tokens, postfix_pos)
+                    if method_kind == "LPAREN":
+                        postfix_pos = postfix_pos + 1
+                        args = parser_list_create()
+                        arg_kind = token_kind_at(tokens, postfix_pos)
+                        if arg_kind != "RPAREN":
+                            reading = True
+                            while reading:
+                                is_kwarg = False
+                                current_kind = token_kind_at(tokens, postfix_pos)
+                                next_kind = token_kind_next(tokens, postfix_pos)
+                                if current_kind == "IDENTIFIER":
+                                    if next_kind == "EQ":
+                                        is_kwarg = True
+                                if is_kwarg:
+                                    arg = parse_expression(tokens, postfix_pos + 2)
+                                    args = parser_list_append(args, ast_kwarg(token_text_at(tokens, postfix_pos), arg["node"]))
+                                    postfix_pos = arg["pos"]
+                                if not is_kwarg:
+                                    arg = parse_expression(tokens, postfix_pos)
+                                    args = parser_list_append(args, arg["node"])
+                                    postfix_pos = arg["pos"]
+                                comma_kind = token_kind_at(tokens, postfix_pos)
+                                if comma_kind == "COMMA":
+                                    postfix_pos = postfix_pos + 1
+                                    if token_kind_at(tokens, postfix_pos) == "RPAREN":
+                                        reading = False
+                                if comma_kind != "COMMA":
+                                    reading = False
+                        postfix_pos = parser_expect(tokens, postfix_pos, "RPAREN")
+                        postfix_node = ast_method_call(postfix_node, name, parser_list_finish(args))
+                    if method_kind != "LPAREN":
+                        postfix_node = ast_attr(postfix_node, name)
+            if not postfix_handled:
+                if postfix_kind == "LBRACKET":
+                    postfix_handled = True
+                    bracket_next = token_kind_next(tokens, postfix_pos)
+                    if bracket_next == "COLON":
+                        start = ast_value("none", none)
+                        stop = parse_expression(tokens, postfix_pos + 2)
+                        postfix_pos = parser_expect(tokens, stop["pos"], "RBRACKET")
+                        postfix_node = ast_slice(postfix_node, start, stop["node"])
+                    if bracket_next != "COLON":
+                        first = parse_expression(tokens, postfix_pos + 1)
+                        first_kind = token_kind_at(tokens, first["pos"])
+                        if first_kind == "COLON":
+                            stop_kind = token_kind_at(tokens, first["pos"] + 1)
+                            if stop_kind == "RBRACKET":
+                                stop_node = ast_value("none", none)
+                                postfix_pos = parser_expect(tokens, first["pos"] + 1, "RBRACKET")
+                            if stop_kind != "RBRACKET":
+                                stop = parse_expression(tokens, first["pos"] + 1)
+                                stop_node = stop["node"]
+                                postfix_pos = parser_expect(tokens, stop["pos"], "RBRACKET")
+                            postfix_node = ast_slice(postfix_node, first["node"], stop_node)
+                        if first_kind != "COLON":
+                            postfix_pos = parser_expect(tokens, first["pos"], "RBRACKET")
+                            postfix_node = ast_index(postfix_node, first["node"])
+            if not postfix_handled:
+                postfix_active = False
+        parsed = {"node": postfix_node, "pos": postfix_pos}
+    node = parsed["node"]
+    pos = parsed["pos"]
+    active = True
+    while active:
+        kind = token_kind_at(tokens, pos)
+        if kind == "EOF":
+            active = False
+        if active:
+            bp = pratt_infix_binding_power(kind)
+            take_infix = True
+            if bp == 0:
+                take_infix = False
+            if take_infix:
+                if bp < min_bp:
+                    take_infix = False
+            if take_infix:
+                op = token_text_at(tokens, pos)
+                if kind == "KW_AND":
+                    op = "and"
+                if kind == "KW_OR":
+                    op = "or"
+                right = parse_pratt_expr(tokens, pos + 1, bp + 1)
+                node = ast_binary(op, node, right["node"])
+                pos = right["pos"]
+            if not take_infix:
+                active = False
+    return {"node": node, "pos": pos}
+
+
+def parse_expression(tokens, pos):
+    return parse_pratt_expr(tokens, pos, 1)
+
+
+
+
+def parse_statement(tokens, pos):
+    pos = parser_skip_newlines(tokens, pos)
+    kind = token_kind_at(tokens, pos)
+    text = token_text_at(tokens, pos)
+    if kind == "IDENTIFIER" and text == "eturn":
+        kind = "KW_RETURN"
+    if kind == "KW_DEF":
+        pos = parser_expect(tokens, pos, "KW_DEF")
+        name = token_text_at(tokens, pos)
+        pos = parser_expect(tokens, pos + 1, "LPAREN")
+        params = parser_list_create()
+        current_kind = token_kind_at(tokens, pos)
+        if current_kind != "RPAREN":
+            reading = True
+            while reading:
+                param_name = token_text_at(tokens, pos)
+                pos = pos + 1
+                has_default = False
+                current_kind = token_kind_at(tokens, pos)
+                if current_kind == "EQ":
+                    parsed_default = parse_expression(tokens, pos + 1)
+                    default_value = parsed_default["node"]
+                    has_default = True
+                    pos = parsed_default["pos"]
+                if not has_default:
+                    default_value = ast_value("none", none)
+                params = parser_list_append(params, ast_parameter(param_name, has_default, default_value))
+                current_kind = token_kind_at(tokens, pos)
+                if current_kind == "COMMA":
+                    pos = pos + 1
+                    if token_kind_at(tokens, pos) == "RPAREN":
+                        reading = False
+                else:
+                    reading = False
+        pos = parser_expect(tokens, pos, "RPAREN")
+        pos = parser_expect(tokens, pos, "COLON")
+        fn_block_body = parser_list_create()
+        if token_kind_at(tokens, pos) == "LBRACE":
+            pos = pos + 1
+            pos = parser_skip_newlines(tokens, pos)
+            fn_block_scanning_block = True
+            while fn_block_scanning_block:
+                fn_block_block_kind = token_kind_at(tokens, pos)
+                if fn_block_block_kind == "RBRACE":
+                    fn_block_scanning_block = False
+                elif fn_block_block_kind == "EOF":
+                    fn_block_scanning_block = False
+                else:
+                    fn_block_stmt = parse_statement(tokens, pos)
+                    fn_block_body = parser_list_append(fn_block_body, fn_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, fn_block_stmt["pos"])
+            pos = parser_expect(tokens, pos, "RBRACE")
+        else:
+            pos = parser_expect(tokens, pos, "NEWLINE")
+            pos = parser_expect(tokens, pos, "INDENT")
+            pos = parser_skip_newlines(tokens, pos)
+            fn_block_scanning_indent_block = True
+            while fn_block_scanning_indent_block:
+                fn_block_block_kind = token_kind_at(tokens, pos)
+                if fn_block_block_kind == "DEDENT":
+                    fn_block_scanning_indent_block = False
+                elif fn_block_block_kind == "EOF":
+                    fn_block_scanning_indent_block = False
+                else:
+                    fn_block_stmt = parse_statement(tokens, pos)
+                    fn_block_body = parser_list_append(fn_block_body, fn_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, fn_block_stmt["pos"])
+            fn_block_end_kind = token_kind_at(tokens, pos)
+            if fn_block_end_kind == "DEDENT":
+                pos = parser_expect(tokens, pos, "DEDENT")
+            elif fn_block_end_kind != "EOF":
+                fail("expected DEDENT or EOF")
+        return {"node": ast_function(name, parser_list_finish(params), parser_list_finish(fn_block_body)), "pos": pos}
+    if kind == "KW_CLASS":
+        pos = parser_expect(tokens, pos, "KW_CLASS")
+        if token_kind_at(tokens, pos) != "IDENTIFIER":
+            fail("expected class name")
+        name = token_text_at(tokens, pos)
+        pos = parser_expect(tokens, pos + 1, "COLON")
+        class_block_body = parser_list_create()
+        if token_kind_at(tokens, pos) == "LBRACE":
+            pos = pos + 1
+            pos = parser_skip_newlines(tokens, pos)
+            class_block_scanning_block = True
+            while class_block_scanning_block:
+                class_block_block_kind = token_kind_at(tokens, pos)
+                if class_block_block_kind == "RBRACE":
+                    class_block_scanning_block = False
+                elif class_block_block_kind == "EOF":
+                    class_block_scanning_block = False
+                else:
+                    class_block_stmt = parse_statement(tokens, pos)
+                    class_block_body = parser_list_append(class_block_body, class_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, class_block_stmt["pos"])
+            pos = parser_expect(tokens, pos, "RBRACE")
+        else:
+            pos = parser_expect(tokens, pos, "NEWLINE")
+            pos = parser_expect(tokens, pos, "INDENT")
+            pos = parser_skip_newlines(tokens, pos)
+            class_block_scanning_indent_block = True
+            while class_block_scanning_indent_block:
+                class_block_block_kind = token_kind_at(tokens, pos)
+                if class_block_block_kind == "DEDENT":
+                    class_block_scanning_indent_block = False
+                elif class_block_block_kind == "EOF":
+                    class_block_scanning_indent_block = False
+                else:
+                    class_block_stmt = parse_statement(tokens, pos)
+                    class_block_body = parser_list_append(class_block_body, class_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, class_block_stmt["pos"])
+            class_block_end_kind = token_kind_at(tokens, pos)
+            if class_block_end_kind == "DEDENT":
+                pos = parser_expect(tokens, pos, "DEDENT")
+            elif class_block_end_kind != "EOF":
+                fail("expected DEDENT or EOF")
+        return {"node": ast_class(name, parser_list_finish(class_block_body)), "pos": pos}
+    if kind == "IDENTIFIER":
+        # module/export are contextual declaration words. They remain valid
+        # identifiers in expressions and assignments used by the compiler
+        # backend itself.
+        next_kind = token_kind_at(tokens, pos + 1)
+        if text == "module" and next_kind == "IDENTIFIER":
+            name = ""
+            if token_count(tokens) > pos + 1:
+                name = token_text_next(tokens, pos)
+            scan = pos
+            while scan < token_count(tokens) and token_kind_at(tokens, scan) != "NEWLINE" and token_kind_at(tokens, scan) != "EOF":
+                scan = scan + 1
+            return {"node": ast_meta("module", name), "pos": scan}
+        if text == "export" and next_kind == "IDENTIFIER":
+            name = ""
+            if token_count(tokens) > pos + 1:
+                name = token_text_next(tokens, pos)
+            scan = pos
+            while scan < token_count(tokens) and token_kind_at(tokens, scan) != "NEWLINE" and token_kind_at(tokens, scan) != "EOF":
+                scan = scan + 1
+            return {"node": ast_meta("export", name), "pos": scan}
+        if text == "import" or text == "from":
+            name = ""
+            if token_count(tokens) > pos + 1:
+                name = token_text_next(tokens, pos)
+            scan = pos
+            while scan < token_count(tokens) and token_kind_at(tokens, scan) != "NEWLINE" and token_kind_at(tokens, scan) != "EOF":
+                scan = scan + 1
+            return {"node": ast_meta("import", name), "pos": scan}
+    if kind == "KW_IF":
+        pos = parser_expect(tokens, pos, "KW_IF")
+        cond = parse_expression(tokens, pos)
+        pos = parser_expect(tokens, cond["pos"], "COLON")
+        if_block_body = parser_list_create()
+        if token_kind_at(tokens, pos) == "LBRACE":
+            pos = pos + 1
+            pos = parser_skip_newlines(tokens, pos)
+            if_block_scanning_block = True
+            while if_block_scanning_block:
+                if_block_block_kind = token_kind_at(tokens, pos)
+                if if_block_block_kind == "RBRACE":
+                    if_block_scanning_block = False
+                elif if_block_block_kind == "EOF":
+                    if_block_scanning_block = False
+                else:
+                    if_block_stmt = parse_statement(tokens, pos)
+                    if_block_body = parser_list_append(if_block_body, if_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, if_block_stmt["pos"])
+            pos = parser_expect(tokens, pos, "RBRACE")
+        else:
+            pos = parser_expect(tokens, pos, "NEWLINE")
+            pos = parser_expect(tokens, pos, "INDENT")
+            pos = parser_skip_newlines(tokens, pos)
+            if_block_scanning_indent_block = True
+            while if_block_scanning_indent_block:
+                if_block_block_kind = token_kind_at(tokens, pos)
+                if if_block_block_kind == "DEDENT":
+                    if_block_scanning_indent_block = False
+                elif if_block_block_kind == "EOF":
+                    if_block_scanning_indent_block = False
+                else:
+                    if_block_stmt = parse_statement(tokens, pos)
+                    if_block_body = parser_list_append(if_block_body, if_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, if_block_stmt["pos"])
+            if_block_end_kind = token_kind_at(tokens, pos)
+            if if_block_end_kind == "DEDENT":
+                pos = parser_expect(tokens, pos, "DEDENT")
+            elif if_block_end_kind != "EOF":
+                fail("expected DEDENT or EOF")
+        pos = parser_skip_newlines(tokens, pos)
+        elifs = parser_list_create()
+        else_body = []
+        while pos < token_count(tokens) and token_kind_at(tokens, pos) == "KW_ELIF":
+            elif_cond = parse_expression(tokens, pos + 1)
+            elif_pos = parser_expect(tokens, elif_cond["pos"], "COLON")
+            pos = elif_pos
+            elif_block_body = parser_list_create()
+            if token_kind_at(tokens, pos) == "LBRACE":
+                pos = pos + 1
+                pos = parser_skip_newlines(tokens, pos)
+                elif_block_scanning_block = True
+                while elif_block_scanning_block:
+                    elif_block_block_kind = token_kind_at(tokens, pos)
+                    if elif_block_block_kind == "RBRACE":
+                        elif_block_scanning_block = False
+                    elif elif_block_block_kind == "EOF":
+                        elif_block_scanning_block = False
+                    else:
+                        elif_block_stmt = parse_statement(tokens, pos)
+                        elif_block_body = parser_list_append(elif_block_body, elif_block_stmt["node"])
+                        pos = parser_skip_newlines(tokens, elif_block_stmt["pos"])
+                pos = parser_expect(tokens, pos, "RBRACE")
+            else:
+                pos = parser_expect(tokens, pos, "NEWLINE")
+                pos = parser_expect(tokens, pos, "INDENT")
+                pos = parser_skip_newlines(tokens, pos)
+                elif_block_scanning_indent_block = True
+                while elif_block_scanning_indent_block:
+                    elif_block_block_kind = token_kind_at(tokens, pos)
+                    if elif_block_block_kind == "DEDENT":
+                        elif_block_scanning_indent_block = False
+                    elif elif_block_block_kind == "EOF":
+                        elif_block_scanning_indent_block = False
+                    else:
+                        elif_block_stmt = parse_statement(tokens, pos)
+                        elif_block_body = parser_list_append(elif_block_body, elif_block_stmt["node"])
+                        pos = parser_skip_newlines(tokens, elif_block_stmt["pos"])
+                elif_block_end_kind = token_kind_at(tokens, pos)
+                if elif_block_end_kind == "DEDENT":
+                    pos = parser_expect(tokens, pos, "DEDENT")
+                elif elif_block_end_kind != "EOF":
+                    fail("expected DEDENT or EOF")
+            elifs = parser_list_append(elifs, ast_branch(elif_cond["node"], parser_list_finish(elif_block_body)))
+            pos = parser_skip_newlines(tokens, pos)
+        if pos < token_count(tokens) and token_kind_at(tokens, pos) == "KW_ELSE":
+            else_pos = parser_expect(tokens, pos + 1, "COLON")
+            pos = else_pos
+            else_block_body = parser_list_create()
+            if token_kind_at(tokens, pos) == "LBRACE":
+                pos = pos + 1
+                pos = parser_skip_newlines(tokens, pos)
+                else_block_scanning_block = True
+                while else_block_scanning_block:
+                    else_block_block_kind = token_kind_at(tokens, pos)
+                    if else_block_block_kind == "RBRACE":
+                        else_block_scanning_block = False
+                    elif else_block_block_kind == "EOF":
+                        else_block_scanning_block = False
+                    else:
+                        else_block_stmt = parse_statement(tokens, pos)
+                        else_block_body = parser_list_append(else_block_body, else_block_stmt["node"])
+                        pos = parser_skip_newlines(tokens, else_block_stmt["pos"])
+                pos = parser_expect(tokens, pos, "RBRACE")
+            else:
+                pos = parser_expect(tokens, pos, "NEWLINE")
+                pos = parser_expect(tokens, pos, "INDENT")
+                pos = parser_skip_newlines(tokens, pos)
+                else_block_scanning_indent_block = True
+                while else_block_scanning_indent_block:
+                    else_block_block_kind = token_kind_at(tokens, pos)
+                    if else_block_block_kind == "DEDENT":
+                        else_block_scanning_indent_block = False
+                    elif else_block_block_kind == "EOF":
+                        else_block_scanning_indent_block = False
+                    else:
+                        else_block_stmt = parse_statement(tokens, pos)
+                        else_block_body = parser_list_append(else_block_body, else_block_stmt["node"])
+                        pos = parser_skip_newlines(tokens, else_block_stmt["pos"])
+                else_block_end_kind = token_kind_at(tokens, pos)
+                if else_block_end_kind == "DEDENT":
+                    pos = parser_expect(tokens, pos, "DEDENT")
+                elif else_block_end_kind != "EOF":
+                    fail("expected DEDENT or EOF")
+            else_body = parser_list_finish(else_block_body)
+            pos = parser_skip_newlines(tokens, pos)
+        return {"node": ast_if(cond["node"], parser_list_finish(if_block_body), parser_list_finish(elifs), else_body), "pos": pos}
+    if kind == "KW_WHILE":
+        pos = parser_expect(tokens, pos, "KW_WHILE")
+        cond = parse_expression(tokens, pos)
+        pos = parser_expect(tokens, cond["pos"], "COLON")
+        while_block_body = parser_list_create()
+        if token_kind_at(tokens, pos) == "LBRACE":
+            pos = pos + 1
+            pos = parser_skip_newlines(tokens, pos)
+            while_block_scanning_block = True
+            while while_block_scanning_block:
+                while_block_block_kind = token_kind_at(tokens, pos)
+                if while_block_block_kind == "RBRACE":
+                    while_block_scanning_block = False
+                elif while_block_block_kind == "EOF":
+                    while_block_scanning_block = False
+                else:
+                    while_block_stmt = parse_statement(tokens, pos)
+                    while_block_body = parser_list_append(while_block_body, while_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, while_block_stmt["pos"])
+            pos = parser_expect(tokens, pos, "RBRACE")
+        else:
+            pos = parser_expect(tokens, pos, "NEWLINE")
+            pos = parser_expect(tokens, pos, "INDENT")
+            pos = parser_skip_newlines(tokens, pos)
+            while_block_scanning_indent_block = True
+            while while_block_scanning_indent_block:
+                while_block_block_kind = token_kind_at(tokens, pos)
+                if while_block_block_kind == "DEDENT":
+                    while_block_scanning_indent_block = False
+                elif while_block_block_kind == "EOF":
+                    while_block_scanning_indent_block = False
+                else:
+                    while_block_stmt = parse_statement(tokens, pos)
+                    while_block_body = parser_list_append(while_block_body, while_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, while_block_stmt["pos"])
+            while_block_end_kind = token_kind_at(tokens, pos)
+            if while_block_end_kind == "DEDENT":
+                pos = parser_expect(tokens, pos, "DEDENT")
+            elif while_block_end_kind != "EOF":
+                fail("expected DEDENT or EOF")
+        return {"node": ast_while(cond["node"], parser_list_finish(while_block_body)), "pos": pos}
+    if kind == "KW_FOR":
+        pos = parser_expect(tokens, pos, "KW_FOR")
+        targets = parser_list_create()
+        while pos < token_count(tokens) and token_kind_at(tokens, pos) != "KW_IN":
+            if token_kind_at(tokens, pos) != "IDENTIFIER":
+                fail("expected for target got " + token_kind_at(tokens, pos) + " text=" + token_text_at(tokens, pos))
+            targets = parser_list_append(targets, token_text_at(tokens, pos))
+            pos = pos + 1
+            if token_kind_at(tokens, pos) == "COMMA":
+                pos = pos + 1
+            elif token_kind_at(tokens, pos) != "KW_IN":
+                fail("expected comma or in after for target")
+        if __tyrion_native_ast_builder_len(targets, 0) == 0:
+            fail("expected for target after " + token_kind_at(tokens, pos - 1) + " text=" + token_text_at(tokens, pos - 1) + " before " + token_kind_at(tokens, pos) + " text=" + token_text_at(tokens, pos))
+        pos = parser_expect(tokens, pos, "KW_IN")
+        iterable = parse_expression(tokens, pos)
+        pos = parser_expect(tokens, iterable["pos"], "COLON")
+        for_block_body = parser_list_create()
+        if token_kind_at(tokens, pos) == "LBRACE":
+            pos = pos + 1
+            pos = parser_skip_newlines(tokens, pos)
+            for_block_scanning_block = True
+            while for_block_scanning_block:
+                for_block_block_kind = token_kind_at(tokens, pos)
+                if for_block_block_kind == "RBRACE":
+                    for_block_scanning_block = False
+                elif for_block_block_kind == "EOF":
+                    for_block_scanning_block = False
+                else:
+                    for_block_stmt = parse_statement(tokens, pos)
+                    for_block_body = parser_list_append(for_block_body, for_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, for_block_stmt["pos"])
+            pos = parser_expect(tokens, pos, "RBRACE")
+        else:
+            pos = parser_expect(tokens, pos, "NEWLINE")
+            pos = parser_expect(tokens, pos, "INDENT")
+            pos = parser_skip_newlines(tokens, pos)
+            for_block_scanning_indent_block = True
+            while for_block_scanning_indent_block:
+                for_block_block_kind = token_kind_at(tokens, pos)
+                if for_block_block_kind == "DEDENT":
+                    for_block_scanning_indent_block = False
+                elif for_block_block_kind == "EOF":
+                    for_block_scanning_indent_block = False
+                else:
+                    for_block_stmt = parse_statement(tokens, pos)
+                    for_block_body = parser_list_append(for_block_body, for_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, for_block_stmt["pos"])
+            for_block_end_kind = token_kind_at(tokens, pos)
+            if for_block_end_kind == "DEDENT":
+                pos = parser_expect(tokens, pos, "DEDENT")
+            elif for_block_end_kind != "EOF":
+                fail("expected DEDENT or EOF")
+        return {"node": ast_for(parser_list_finish(targets), iterable["node"], parser_list_finish(for_block_body)), "pos": pos}
+    if kind == "KW_WITH":
+        pos = parser_expect(tokens, pos, "KW_WITH")
+        resource = parse_expression(tokens, pos)
+        pos = parser_expect(tokens, resource["pos"], "KW_AS")
+        if token_kind_at(tokens, pos) != "IDENTIFIER":
+            fail("expected with binding name")
+        name = token_text_at(tokens, pos)
+        pos = parser_expect(tokens, pos + 1, "COLON")
+        with_block_body = parser_list_create()
+        if token_kind_at(tokens, pos) == "LBRACE":
+            pos = pos + 1
+            pos = parser_skip_newlines(tokens, pos)
+            with_block_scanning_block = True
+            while with_block_scanning_block:
+                with_block_block_kind = token_kind_at(tokens, pos)
+                if with_block_block_kind == "RBRACE":
+                    with_block_scanning_block = False
+                elif with_block_block_kind == "EOF":
+                    with_block_scanning_block = False
+                else:
+                    with_block_stmt = parse_statement(tokens, pos)
+                    with_block_body = parser_list_append(with_block_body, with_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, with_block_stmt["pos"])
+            pos = parser_expect(tokens, pos, "RBRACE")
+        else:
+            pos = parser_expect(tokens, pos, "NEWLINE")
+            pos = parser_expect(tokens, pos, "INDENT")
+            pos = parser_skip_newlines(tokens, pos)
+            with_block_scanning_indent_block = True
+            while with_block_scanning_indent_block:
+                with_block_block_kind = token_kind_at(tokens, pos)
+                if with_block_block_kind == "DEDENT":
+                    with_block_scanning_indent_block = False
+                elif with_block_block_kind == "EOF":
+                    with_block_scanning_indent_block = False
+                else:
+                    with_block_stmt = parse_statement(tokens, pos)
+                    with_block_body = parser_list_append(with_block_body, with_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, with_block_stmt["pos"])
+            with_block_end_kind = token_kind_at(tokens, pos)
+            if with_block_end_kind == "DEDENT":
+                pos = parser_expect(tokens, pos, "DEDENT")
+            elif with_block_end_kind != "EOF":
+                fail("expected DEDENT or EOF")
+        return {"node": ast_with(resource["node"], name, parser_list_finish(with_block_body)), "pos": pos}
+    if kind == "KW_TRY":
+        pos = parser_expect(tokens, pos, "KW_TRY")
+        pos = parser_expect(tokens, pos, "COLON")
+        try_body_block_body = parser_list_create()
+        if token_kind_at(tokens, pos) == "LBRACE":
+            pos = pos + 1
+            pos = parser_skip_newlines(tokens, pos)
+            try_body_block_scanning_block = True
+            while try_body_block_scanning_block:
+                try_body_block_block_kind = token_kind_at(tokens, pos)
+                if try_body_block_block_kind == "RBRACE":
+                    try_body_block_scanning_block = False
+                elif try_body_block_block_kind == "EOF":
+                    try_body_block_scanning_block = False
+                else:
+                    try_body_block_stmt = parse_statement(tokens, pos)
+                    try_body_block_body = parser_list_append(try_body_block_body, try_body_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, try_body_block_stmt["pos"])
+            pos = parser_expect(tokens, pos, "RBRACE")
+        else:
+            pos = parser_expect(tokens, pos, "NEWLINE")
+            pos = parser_expect(tokens, pos, "INDENT")
+            pos = parser_skip_newlines(tokens, pos)
+            try_body_block_scanning_indent_block = True
+            while try_body_block_scanning_indent_block:
+                try_body_block_block_kind = token_kind_at(tokens, pos)
+                if try_body_block_block_kind == "DEDENT":
+                    try_body_block_scanning_indent_block = False
+                elif try_body_block_block_kind == "EOF":
+                    try_body_block_scanning_indent_block = False
+                else:
+                    try_body_block_stmt = parse_statement(tokens, pos)
+                    try_body_block_body = parser_list_append(try_body_block_body, try_body_block_stmt["node"])
+                    pos = parser_skip_newlines(tokens, try_body_block_stmt["pos"])
+            try_body_block_end_kind = token_kind_at(tokens, pos)
+            if try_body_block_end_kind == "DEDENT":
+                pos = parser_expect(tokens, pos, "DEDENT")
+            elif try_body_block_end_kind != "EOF":
+                fail("expected DEDENT or EOF")
+        pos = parser_skip_newlines(tokens, pos)
+        except_name = ""
+        except_binding = ""
+        except_body = []
+        finally_body = []
+        if pos < token_count(tokens) and token_kind_at(tokens, pos) == "KW_EXCEPT":
+            pos = pos + 1
+            if token_kind_at(tokens, pos) == "IDENTIFIER":
+                except_name = token_text_at(tokens, pos)
+                pos = pos + 1
+            if pos < token_count(tokens) and token_kind_at(tokens, pos) == "KW_AS":
+                if token_kind_next(tokens, pos) != "IDENTIFIER":
+                    fail("expected except binding")
+                except_binding = token_text_next(tokens, pos)
+                pos = pos + 2
+            pos = parser_expect(tokens, pos, "COLON")
+            except_block_body = parser_list_create()
+            if token_kind_at(tokens, pos) == "LBRACE":
+                pos = pos + 1
+                pos = parser_skip_newlines(tokens, pos)
+                except_block_scanning_block = True
+                while except_block_scanning_block:
+                    except_block_block_kind = token_kind_at(tokens, pos)
+                    if except_block_block_kind == "RBRACE":
+                        except_block_scanning_block = False
+                    elif except_block_block_kind == "EOF":
+                        except_block_scanning_block = False
+                    else:
+                        except_block_stmt = parse_statement(tokens, pos)
+                        except_block_body = parser_list_append(except_block_body, except_block_stmt["node"])
+                        pos = parser_skip_newlines(tokens, except_block_stmt["pos"])
+                pos = parser_expect(tokens, pos, "RBRACE")
+            else:
+                pos = parser_expect(tokens, pos, "NEWLINE")
+                pos = parser_expect(tokens, pos, "INDENT")
+                pos = parser_skip_newlines(tokens, pos)
+                except_block_scanning_indent_block = True
+                while except_block_scanning_indent_block:
+                    except_block_block_kind = token_kind_at(tokens, pos)
+                    if except_block_block_kind == "DEDENT":
+                        except_block_scanning_indent_block = False
+                    elif except_block_block_kind == "EOF":
+                        except_block_scanning_indent_block = False
+                    else:
+                        except_block_stmt = parse_statement(tokens, pos)
+                        except_block_body = parser_list_append(except_block_body, except_block_stmt["node"])
+                        pos = parser_skip_newlines(tokens, except_block_stmt["pos"])
+                except_block_end_kind = token_kind_at(tokens, pos)
+                if except_block_end_kind == "DEDENT":
+                    pos = parser_expect(tokens, pos, "DEDENT")
+                elif except_block_end_kind != "EOF":
+                    fail("expected DEDENT or EOF")
+            except_body = parser_list_finish(except_block_body)
+            pos = parser_skip_newlines(tokens, pos)
+        if pos < token_count(tokens) and token_kind_at(tokens, pos) == "KW_FINALLY":
+            pos = parser_expect(tokens, pos + 1, "COLON")
+            finally_block_body = parser_list_create()
+            if token_kind_at(tokens, pos) == "LBRACE":
+                pos = pos + 1
+                pos = parser_skip_newlines(tokens, pos)
+                finally_block_scanning_block = True
+                while finally_block_scanning_block:
+                    finally_block_block_kind = token_kind_at(tokens, pos)
+                    if finally_block_block_kind == "RBRACE":
+                        finally_block_scanning_block = False
+                    elif finally_block_block_kind == "EOF":
+                        finally_block_scanning_block = False
+                    else:
+                        finally_block_stmt = parse_statement(tokens, pos)
+                        finally_block_body = parser_list_append(finally_block_body, finally_block_stmt["node"])
+                        pos = parser_skip_newlines(tokens, finally_block_stmt["pos"])
+                pos = parser_expect(tokens, pos, "RBRACE")
+            else:
+                pos = parser_expect(tokens, pos, "NEWLINE")
+                pos = parser_expect(tokens, pos, "INDENT")
+                pos = parser_skip_newlines(tokens, pos)
+                finally_block_scanning_indent_block = True
+                while finally_block_scanning_indent_block:
+                    finally_block_block_kind = token_kind_at(tokens, pos)
+                    if finally_block_block_kind == "DEDENT":
+                        finally_block_scanning_indent_block = False
+                    elif finally_block_block_kind == "EOF":
+                        finally_block_scanning_indent_block = False
+                    else:
+                        finally_block_stmt = parse_statement(tokens, pos)
+                        finally_block_body = parser_list_append(finally_block_body, finally_block_stmt["node"])
+                        pos = parser_skip_newlines(tokens, finally_block_stmt["pos"])
+                finally_block_end_kind = token_kind_at(tokens, pos)
+                if finally_block_end_kind == "DEDENT":
+                    pos = parser_expect(tokens, pos, "DEDENT")
+                elif finally_block_end_kind != "EOF":
+                    fail("expected DEDENT or EOF")
+            finally_body = parser_list_finish(finally_block_body)
+            pos = parser_skip_newlines(tokens, pos)
+        return {"node": ast_try(parser_list_finish(try_body_block_body), except_name, except_binding, except_body, finally_body), "pos": pos}
+    if kind == "KW_RAISE":
+        value = parse_expression(tokens, pos + 1)
+        return {"node": ast_raise(value["node"]), "pos": value["pos"]}
+    if kind == "KW_YIELD":
+        value = parse_expression(tokens, pos + 1)
+        return {"node": ast_yield(value["node"]), "pos": value["pos"]}
+    if kind == "KW_RETURN":
+        next_kind = token_kind_next(tokens, pos)
+        if next_kind == "NEWLINE":
+            return {"node": ast_return(ast_value("none", none)), "pos": pos + 1}
+        value = parse_expression(tokens, pos + 1)
+        return {"node": ast_return(value["node"]), "pos": value["pos"]}
+    if kind == "KW_CONTINUE":
+        return {"node": ast_node("continue"), "pos": pos + 1}
+    if kind == "KW_BREAK":
+        return {"node": ast_node("break"), "pos": pos + 1}
+    if kind == "STAR":
+        targets = parser_list_create()
+        scan = pos
+        saw_comma = False
+        reading_targets = True
+        while reading_targets:
+            star = False
+            scan_kind = token_kind_at(tokens, scan)
+            if scan_kind == "STAR":
+                star = True
+                scan = scan + 1
+            scan_kind = token_kind_at(tokens, scan)
+            if scan_kind != "IDENTIFIER":
+                fail("expected unpack assignment target")
+            targets = parser_list_append(targets, ast_unpack_entry(token_text_at(tokens, scan), star))
+            scan = scan + 1
+            scan_kind = token_kind_at(tokens, scan)
+            if scan_kind == "COMMA":
+                saw_comma = True
+                scan = scan + 1
+                scan_kind = token_kind_at(tokens, scan)
+                if scan_kind == "EQ":
+                    reading_targets = False
+                else:
+                    reading_targets = True
+            else:
+                reading_targets = False
+        scan_kind = token_kind_at(tokens, scan)
+        if saw_comma:
+            if scan_kind == "EQ":
+                value = parse_expression(tokens, scan + 1)
+                return {"node": ast_assign_target(ast_unpack_target(parser_list_finish(targets)), value["node"]), "pos": value["pos"]}
+        fail("expected unpack assignment after starred target")
+    if kind == "IDENTIFIER":
+        next_kind = token_kind_next(tokens, pos)
+        if next_kind == "COMMA":
+            targets = parser_list_create()
+            scan = pos
+            saw_comma = False
+            reading_targets = True
+            while reading_targets:
+                star = False
+                scan_kind = token_kind_at(tokens, scan)
+                if scan_kind == "STAR":
+                    star = True
+                    scan = scan + 1
+                scan_kind = token_kind_at(tokens, scan)
+                if scan_kind != "IDENTIFIER":
+                    fail("expected unpack assignment target")
+                targets = parser_list_append(targets, ast_unpack_entry(token_text_at(tokens, scan), star))
+                scan = scan + 1
+                scan_kind = token_kind_at(tokens, scan)
+                if scan_kind == "COMMA":
+                    saw_comma = True
+                    scan = scan + 1
+                    scan_kind = token_kind_at(tokens, scan)
+                    if scan_kind == "EQ":
+                        reading_targets = False
+                    else:
+                        reading_targets = True
+                else:
+                    reading_targets = False
+            scan_kind = token_kind_at(tokens, scan)
+            if saw_comma:
+                if scan_kind == "EQ":
+                    value = parse_expression(tokens, scan + 1)
+                    return {"node": ast_assign_target(ast_unpack_target(parser_list_finish(targets)), value["node"]), "pos": value["pos"]}
+        target_node = ast_value("var", token_text_at(tokens, pos))
+        target_pos = pos + 1
+        target_active = True
+        while target_active:
+            target_loop_kind = token_kind_at(tokens, target_pos)
+            target_handled = False
+            if target_loop_kind == "DOT":
+                target_handled = True
+                if token_kind_next(tokens, target_pos) != "IDENTIFIER":
+                    fail("expected attribute name")
+                target_node = ast_attr(target_node, token_text_next(tokens, target_pos))
+                target_pos = target_pos + 2
+            if not target_handled:
+                if target_loop_kind == "LBRACKET":
+                    target_handled = True
+                    bracket_next = token_kind_next(tokens, target_pos)
+                    if bracket_next == "COLON":
+                        start = ast_value("none", none)
+                        stop = parse_expression(tokens, target_pos + 2)
+                        target_pos = parser_expect(tokens, stop["pos"], "RBRACKET")
+                        target_node = ast_slice(target_node, start, stop["node"])
+                    if bracket_next != "COLON":
+                        first = parse_expression(tokens, target_pos + 1)
+                        first_kind = token_kind_at(tokens, first["pos"])
+                        if first_kind == "COLON":
+                            stop_kind = token_kind_at(tokens, first["pos"] + 1)
+                            if stop_kind == "RBRACKET":
+                                stop_node = ast_value("none", none)
+                                target_pos = parser_expect(tokens, first["pos"] + 1, "RBRACKET")
+                            if stop_kind != "RBRACKET":
+                                stop = parse_expression(tokens, first["pos"] + 1)
+                                stop_node = stop["node"]
+                                target_pos = parser_expect(tokens, stop["pos"], "RBRACKET")
+                            target_node = ast_slice(target_node, first["node"], stop_node)
+                        if first_kind != "COLON":
+                            target_pos = parser_expect(tokens, first["pos"], "RBRACKET")
+                            target_node = ast_index(target_node, first["node"])
+            if not target_handled:
+                target_active = False
+        target = {"node": target_node, "pos": target_pos}
+        target_kind = token_kind_at(tokens, target["pos"])
+        if target_kind == "EQ":
+            value = parse_expression(tokens, target["pos"] + 1)
+            name = ""
+            if target["node"]["kind"] == "var":
+                name = target["node"]["value"]
+            return {"node": ast_assign_target(target["node"], value["node"]), "pos": value["pos"]}
+        if target_kind == "PLUSEQ":
+            value = parse_expression(tokens, target["pos"] + 1)
+            name = ""
+            if target["node"]["kind"] == "var":
+                name = target["node"]["value"]
+            return {"node": ast_assign_target(target["node"], ast_binary("+", target["node"], value["node"])), "pos": value["pos"]}
+    expr = parse_expression(tokens, pos)
+    # Parse assignment syntax independently from assignment-target validity.
+    # Semantic analysis owns that validity decision and its canonical
+    # diagnostic; rejecting `1 = 2` here would leak a parser-specific error
+    # from descendant compilers instead.
+    if token_kind_at(tokens, expr["pos"]) == "EQ":
+        value = parse_expression(tokens, expr["pos"] + 1)
+        return {"node": ast_assign_target(expr["node"], value["node"]), "pos": value["pos"]}
+    expr_node = ast_expr(expr["node"])
+    expr_pos = expr["pos"]
+    return {"node": expr_node, "pos": expr_pos}
+
+def parse_program_items(tokens):
+    items = parser_list_create()
+    pos = 0
+    scanning = True
+    while scanning:
+        pos = parser_skip_newlines(tokens, pos)
+        kind = token_kind_at(tokens, pos)
+        if kind == "EOF":
+            scanning = False
+        else:
+            stmt = parse_statement(tokens, pos)
+            stmt_node = stmt["node"]
+            items = parser_list_append(items, stmt_node)
+            pos = stmt["pos"]
+    return parser_list_finish(items)
+
+
+def parse_program(tokens):
+    items = parse_program_items(tokens)
+    return ast_collection("program", items)
+
+
+def ast_inventory_node(node, inv):
+    kind = node["kind"]
+    inv["node_count"] = inv["node_count"] + 1
+    if kind == "function":
+        inv["function_count"] = inv["function_count"] + 1
+        idx = 0
+        while idx < len(node["body"]):
+            inv = ast_inventory_node(node["body"][idx], inv)
+            idx = idx + 1
+    elif kind == "class":
+        idx = 0
+        while idx < len(node["body"]):
+            inv = ast_inventory_node(node["body"][idx], inv)
+            idx = idx + 1
+    elif kind == "assign":
+        inv["assign_count"] = inv["assign_count"] + 1
+        inv = ast_inventory_node(node["value"], inv)
+    elif kind == "return":
+        inv["return_count"] = inv["return_count"] + 1
+        inv = ast_inventory_node(node["value"], inv)
+    elif kind == "if":
+        inv["if_count"] = inv["if_count"] + 1
+        inv = ast_inventory_node(node["condition"], inv)
+        idx = 0
+        while idx < len(node["body"]):
+            inv = ast_inventory_node(node["body"][idx], inv)
+            idx = idx + 1
+        idx = 0
+        while idx < len(node["elifs"]):
+            inv["if_count"] = inv["if_count"] + 1
+            inv = ast_inventory_node(node["elifs"][idx]["condition"], inv)
+            body_idx = 0
+            while body_idx < len(node["elifs"][idx]["body"]):
+                inv = ast_inventory_node(node["elifs"][idx]["body"][body_idx], inv)
+                body_idx = body_idx + 1
+            idx = idx + 1
+        idx = 0
+        while idx < len(node["else_body"]):
+            inv = ast_inventory_node(node["else_body"][idx], inv)
+            idx = idx + 1
+    elif kind == "while":
+        inv["while_count"] = inv["while_count"] + 1
+        inv = ast_inventory_node(node["condition"], inv)
+        idx = 0
+        while idx < len(node["body"]):
+            inv = ast_inventory_node(node["body"][idx], inv)
+            idx = idx + 1
+    elif kind == "for":
+        inv["for_count"] = inv["for_count"] + 1
+        inv = ast_inventory_node(node["iterable"], inv)
+        idx = 0
+        while idx < len(node["body"]):
+            inv = ast_inventory_node(node["body"][idx], inv)
+            idx = idx + 1
+    elif kind == "with":
+        inv = ast_inventory_node(node["resource"], inv)
+        idx = 0
+        while idx < len(node["body"]):
+            inv = ast_inventory_node(node["body"][idx], inv)
+            idx = idx + 1
+    elif kind == "expr":
+        inv["expr_count"] = inv["expr_count"] + 1
+        inv = ast_inventory_node(node["value"], inv)
+    elif kind == "call":
+        inv["call_count"] = inv["call_count"] + 1
+        if node["callee"]["kind"] == "var" and node["callee"]["value"] == "print":
+            inv["print_call_count"] = inv["print_call_count"] + 1
+        inv = ast_inventory_node(node["callee"], inv)
+        idx = 0
+        while idx < len(node["args"]):
+            inv = ast_inventory_node(node["args"][idx], inv)
+            idx = idx + 1
+    elif kind == "method_call":
+        inv["call_count"] = inv["call_count"] + 1
+        inv = ast_inventory_node(node["receiver"], inv)
+        idx = 0
+        while idx < len(node["args"]):
+            inv = ast_inventory_node(node["args"][idx], inv)
+            idx = idx + 1
+    elif kind == "attr":
+        inv = ast_inventory_node(node["receiver"], inv)
+    elif kind == "index":
+        inv = ast_inventory_node(node["receiver"], inv)
+        inv = ast_inventory_node(node["index"], inv)
+    elif kind == "binary":
+        inv["binary_count"] = inv["binary_count"] + 1
+        inv = ast_inventory_node(node["left"], inv)
+        inv = ast_inventory_node(node["right"], inv)
+    elif kind == "unary":
+        inv["unary_count"] = inv["unary_count"] + 1
+        inv = ast_inventory_node(node["value"], inv)
+    elif kind == "list" or kind == "tuple":
+        idx = 0
+        while idx < len(node["items"]):
+            inv = ast_inventory_node(node["items"][idx], inv)
+            idx = idx + 1
+    elif kind == "dict":
+        idx = 0
+        while idx < len(node["entries"]):
+            inv = ast_inventory_node(node["entries"][idx]["key"], inv)
+            inv = ast_inventory_node(node["entries"][idx]["value"], inv)
+            idx = idx + 1
+    elif kind == "program":
+        idx = 0
+        while idx < len(node["items"]):
+            inv = ast_inventory_node(node["items"][idx], inv)
+            idx = idx + 1
+    return inv
+
+
+def ast_inventory(program):
+    inv = {"node_count": 0, "function_count": 0, "assign_count": 0, "return_count": 0, "if_count": 0, "while_count": 0, "for_count": 0, "expr_count": 0, "call_count": 0, "print_call_count": 0, "binary_count": 0, "unary_count": 0}
+    return ast_inventory_node(program, inv)

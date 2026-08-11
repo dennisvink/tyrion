@@ -1,0 +1,176 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# Compiler module graph loading and source provenance.
+
+
+def module_graph_import_name(line):
+    text = trim_spaces(line)
+    parts = text.split(" ")
+    if len(parts) >= 2 and (parts[0] == "import" or parts[0] == "from"):
+        return parts[1]
+    return ""
+
+
+def module_graph_metadata_line(line):
+    text = trim_spaces(line)
+    parts = text.split(" ")
+    if len(parts) < 2:
+        return False
+    if parts[0] != "module" and parts[0] != "export":
+        return False
+    name = parts[1]
+    if name == "":
+        return False
+    first = name[0]
+    return (first >= "a" and first <= "z") or (first >= "A" and first <= "Z") or first == "_"
+
+
+def module_graph_dir(path):
+    idx = len(path)
+    while idx > 0:
+        idx = idx - 1
+        if path[idx] == "/":
+            if idx == 0:
+                return "/"
+            return path[0:idx]
+    return "."
+
+
+def module_graph_resolve(current_path, module_name):
+    builtin_path = builtin_module_path(module_name)
+    if builtin_path != "":
+        return builtin_path
+    out = module_graph_dir(current_path) + "/"
+    idx = 0
+    while idx < len(module_name):
+        if module_name[idx] == ".":
+            out = out + "/"
+        else:
+            out = out + module_name[idx]
+        idx = idx + 1
+    return out + ".ty"
+
+
+def module_graph_top_level_symbol(line):
+    if line == "" or line[0] == " " or line[0] == "\t":
+        return ""
+    idx = 0
+    if len(line) > 4 and line[0:4] == "def ":
+        idx = 4
+    elif len(line) > 6 and line[0:6] == "class ":
+        idx = 6
+    else:
+        return ""
+    out = ""
+    while idx < len(line) and is_ident_continue(line[idx]):
+        out = out + line[idx]
+        idx = idx + 1
+    return out
+
+
+def module_graph_visit(path, root_path, loaded, active, symbol_heads, symbol_entries, fragments, depth):
+    if depth > 64:
+        fail("module-graph rejected code=depth-exceeded;path=" + path)
+    if list_contains_string(active, path):
+        fail("module-graph rejected code=cycle;path=" + path)
+    if list_contains_string(loaded, path):
+        return {"loaded": loaded, "symbol_heads": symbol_heads, "symbol_entries": symbol_entries}
+    next_active = []
+    for active_path in active:
+        next_active.append(active_path)
+    next_active.append(path)
+    source = builtin_module_source_for_path(path)
+    if source == "":
+        source = read_text_file(path)
+    lines = source.split("\n")
+    __tyrion_native_ast_builder_append(fragments, 0, "# module-source: " + path + "\n")
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        text = line.strip()
+        parts = text.split(" ")
+        module_name = ""
+        if len(parts) >= 2 and (parts[0] == "import" or parts[0] == "from"):
+            module_name = parts[1]
+        if module_name != "":
+            module_path = module_graph_resolve(root_path, module_name)
+            child = module_graph_visit(module_path, root_path, loaded, next_active, symbol_heads, symbol_entries, fragments, depth + 1)
+            loaded = child["loaded"]
+            symbol_heads = child["symbol_heads"]
+            symbol_entries = child["symbol_entries"]
+        idx = idx + 1
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        text = line.strip()
+        parts = text.split(" ")
+        module_name = ""
+        if len(parts) >= 2 and (parts[0] == "import" or parts[0] == "from"):
+            module_name = parts[1]
+        metadata_line = False
+        if len(parts) >= 2 and (parts[0] == "module" or parts[0] == "export"):
+            metadata_name = parts[1]
+            if metadata_name != "":
+                metadata_first = metadata_name[0]
+                metadata_line = (metadata_first >= "a" and metadata_first <= "z") or (metadata_first >= "A" and metadata_first <= "Z") or metadata_first == "_"
+        if module_name == "" and not metadata_line:
+            symbol = ""
+            symbol_idx = 0
+            if len(line) > 4 and line[0:4] == "def ":
+                symbol_idx = 4
+            elif len(line) > 6 and line[0:6] == "class ":
+                symbol_idx = 6
+            while symbol_idx > 0 and symbol_idx < len(line) and (((line[symbol_idx] >= "a" and line[symbol_idx] <= "z") or (line[symbol_idx] >= "A" and line[symbol_idx] <= "Z") or line[symbol_idx] == "_") or (line[symbol_idx] >= "0" and line[symbol_idx] <= "9")):
+                symbol = symbol + line[symbol_idx]
+                symbol_idx = symbol_idx + 1
+            if symbol != "":
+                duplicate = False
+                symbol_bucket = application_name_hash(symbol)
+                symbol_cursor = symbol_heads[symbol_bucket]
+                while symbol_cursor > 0:
+                    symbol_entry = __tyrion_native_ast_builder_get(symbol_entries, 0, symbol_cursor - 1)
+                    if symbol_entry["name"] == symbol:
+                        duplicate = True
+                    symbol_cursor = symbol_entry["next"]
+                if duplicate:
+                    fail("module-graph rejected code=duplicate-symbol;detail=" + symbol)
+                __tyrion_native_ast_builder_append(symbol_entries, 0, {"name": symbol, "next": symbol_heads[symbol_bucket]})
+                symbol_heads[symbol_bucket] = __tyrion_native_ast_builder_len(symbol_entries, 0)
+            __tyrion_native_ast_builder_append(fragments, 0, line + "\n")
+        idx = idx + 1
+    loaded.append(path)
+    return {"loaded": loaded, "symbol_heads": symbol_heads, "symbol_entries": symbol_entries}
+
+
+def module_graph_join_fragments(fragments):
+    while len(fragments) > 1:
+        joined = __tyrion_native_ast_builder_create()
+        idx = 0
+        while idx < len(fragments):
+            if idx + 1 < len(fragments):
+                __tyrion_native_ast_builder_append(joined, 0, fragments[idx] + fragments[idx + 1])
+            else:
+                __tyrion_native_ast_builder_append(joined, 0, fragments[idx])
+            idx = idx + 2
+        fragments = __tyrion_native_ast_builder_finish(joined)[0]
+    if len(fragments) == 0:
+        return ""
+    return fragments[0]
+
+
+def read_module_graph(path):
+    loaded = []
+    active = []
+    symbol_heads = range(4096)
+    symbol_head_idx = 0
+    while symbol_head_idx < len(symbol_heads):
+        symbol_heads[symbol_head_idx] = 0
+        symbol_head_idx = symbol_head_idx + 1
+    symbol_entries = __tyrion_native_ast_builder_create()
+    fragments = __tyrion_native_ast_builder_create()
+    module_graph_visit(path, path, loaded, active, symbol_heads, symbol_entries, fragments, 0)
+    __tyrion_native_ast_builder_append(fragments, 0, "# module-graph-hash: generated-source-order\n")
+    return module_graph_join_fragments(__tyrion_native_ast_builder_finish(fragments)[0])

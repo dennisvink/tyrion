@@ -1,0 +1,42 @@
+import http
+
+
+def require(condition, message):
+    if not condition:
+        raise "HTTP test failed: " + message
+
+
+target = http_parse_url("http://example.com:8080/hello/world")
+require(target["host"] == "example.com", "URL host")
+require(target["port"] == 8080, "URL port")
+require(target["path"] == "/hello/world", "URL path")
+require(target["authority"] == "example.com:8080", "URL authority")
+
+request = http_ascii_text(http_request_bytes("POST", target, {"X-Tyrion": "small but capable"}, http_ascii_bytes("wolf")))
+require(http_text_contains(request, "POST /hello/world HTTP/1.1\r\n"), "request line")
+require(http_text_contains(request, "Host: example.com:8080\r\n"), "implicit Host header")
+require(http_text_contains(request, "Connection: close\r\n"), "implicit Connection header")
+require(http_text_contains(request, "Content-Length: 4\r\n"), "implicit Content-Length header")
+require(http_text_contains(request, "X-Tyrion: small but capable\r\n"), "custom header")
+require(request[len(request) - 4:] == "wolf", "request body")
+
+content_length_text = "HTTP/1.1 200 Winter Is Coming\r\n"
+content_length_text = content_length_text + "Content-Length: 5\r\n"
+content_length_text = content_length_text + "X-House: Stark\r\n"
+content_length_text = content_length_text + "\r\nSansaEXTRA"
+content_length = http_parse_response(http_ascii_bytes(content_length_text))
+require(content_length["status"] == 200, "Content-Length status")
+require(content_length["reason"] == "Winter Is Coming", "status reason")
+require(content_length["headers"]["x-house"] == "Stark", "lowercase header lookup")
+require(http_body_text(content_length) == "Sansa", "Content-Length body")
+require(content_length["ok"], "successful response classification")
+
+chunked_text = "HTTP/1.1 201 Forged\r\n"
+chunked_text = chunked_text + "Transfer-Encoding: chunked\r\n\r\n"
+chunked_text = chunked_text + "4;house=stark\r\nArya\r\n"
+chunked_text = chunked_text + "6\r\n Stark\r\n0\r\n\r\n"
+chunked = http_parse_response(http_ascii_bytes(chunked_text))
+require(chunked["status"] == 201, "chunked status")
+require(http_body_text(chunked) == "Arya Stark", "chunked body")
+
+print("HTTP module unit: ok")

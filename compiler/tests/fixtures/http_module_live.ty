@@ -1,0 +1,6 @@
+import http
+
+
+args = argv()
+response = http_get_timeout(args[0], 5000)
+print(response["status"], response["headers"]["x-tyrion"], http_body_text(response))

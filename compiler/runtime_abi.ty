@@ -1,0 +1,30 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# compiler / runtime abi: responsibility-owned canonical compiler module.
+
+def __tyrion_native_tcp_connect(host, port, timeout_ms):
+    fail("__tyrion_native_tcp_connect requires native compiler runtime")
+
+def __tyrion_native_tcp_write(handle, bytes, timeout_ms):
+    fail("__tyrion_native_tcp_write requires native compiler runtime")
+
+def __tyrion_native_tcp_read(handle, count, timeout_ms):
+    fail("__tyrion_native_tcp_read requires native compiler runtime")
+
+def __tyrion_native_tcp_close(handle):
+    fail("__tyrion_native_tcp_close requires native compiler runtime")
+
+def std_io_tcp_connect(host, port, timeout_ms):
+    fail("std_io_tcp_connect requires native compiler runtime")
+
+def std_io_tcp_write(handle, bytes, timeout_ms):
+    fail("std_io_tcp_write requires native compiler runtime")
+
+def std_io_tcp_read(handle, count, timeout_ms):
+    fail("std_io_tcp_read requires native compiler runtime")
+
+def std_io_tcp_close(handle):
+    fail("std_io_tcp_close requires native compiler runtime")

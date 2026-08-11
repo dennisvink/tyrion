@@ -1,0 +1,4 @@
+h = __tyrion_native_host_load("foo")
+print(__tyrion_native_host_call(h, "foo.echo", "hello-static"))
+print(__tyrion_native_host_call(h, "foo.ping", "ignored"))
+__tyrion_native_host_unload(h)

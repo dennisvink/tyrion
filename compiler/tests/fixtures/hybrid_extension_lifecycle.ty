@@ -1,0 +1,15 @@
+def require(condition, message):
+    if not condition:
+        raise message
+
+
+dynamic_name = "dyn" + "foo"
+dynamic_handle = __tyrion_native_host_load(dynamic_name)
+static_handle = __tyrion_native_host_load("foo")
+
+require(__tyrion_native_host_call(static_handle, "foo.ping", "ignored") == "pong", "static-first lookup failed")
+require(__tyrion_native_host_call(dynamic_handle, "foo.echo", "hybrid") == "hybrid", "dynamic fallback failed")
+require(__tyrion_native_host_unload(static_handle), "static unload failed")
+require(__tyrion_native_host_unload(dynamic_handle), "dynamic unload failed")
+
+print("hybrid-extension-conformance-ok")

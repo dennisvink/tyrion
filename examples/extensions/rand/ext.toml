@@ -1,0 +1,5 @@
+name = "rand"
+abi = "tyrion-host-ext/v1"
+call_symbol = "tyext_rand_call_v1"
+sources = ["src/rand.c"]
+host_call_eval_default = "runtime"

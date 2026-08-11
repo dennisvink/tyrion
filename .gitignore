@@ -1,0 +1,3 @@
+/build/
+/extensions/toolchain/build/
+/modules/tls/vendor/mbedtls/**/__pycache__/

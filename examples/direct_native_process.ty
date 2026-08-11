@@ -1,0 +1,56 @@
+def require(condition, message):
+    if not condition:
+        raise message
+
+
+require(run_tool("sh", "-c", "exit 0", ""), "run_tool success returned False")
+require(not run_tool("sh", "-c", "exit 7", ""), "run_tool non-zero exit returned True")
+
+success = __tyrion_run_tool("sh", ["-c", "exit 0"])
+require(success["ok"], "capture success returned False")
+require(success["status"] == 0, "capture success status mismatch")
+require(success["stdout"] == "", "capture success stdout mismatch")
+require(success["stderr"] == "", "capture success stderr mismatch")
+
+nonzero = __tyrion_run_tool("sh", ["-c", "exit 7"])
+require(not nonzero["ok"], "capture non-zero exit returned True")
+require(nonzero["status"] == 7, "capture non-zero status mismatch")
+
+missing = __tyrion_run_tool("tyrion-command-that-does-not-exist", [])
+require(not missing["ok"], "missing executable returned True")
+require(missing["status"] == 127, "missing executable status mismatch")
+
+stdout_only = __tyrion_run_tool("sh", ["-c", "printf stdout-only"])
+require(stdout_only["stdout"] == "stdout-only", "stdout-only capture mismatch")
+require(stdout_only["stderr"] == "", "stdout-only stderr mismatch")
+
+stderr_only = __tyrion_run_tool("sh", ["-c", "printf stderr-only >&2"])
+require(stderr_only["stdout"] == "", "stderr-only stdout mismatch")
+require(stderr_only["stderr"] == "stderr-only", "stderr-only capture mismatch")
+
+both = __tyrion_run_tool("sh", ["-c", "printf stdout-value; printf stderr-value >&2; exit 9"])
+require(not both["ok"], "combined non-zero exit returned True")
+require(both["status"] == 9, "combined status mismatch")
+require(both["stdout"] == "stdout-value", "combined stdout mismatch")
+require(both["stderr"] == "stderr-value", "combined stderr mismatch")
+
+arguments = __tyrion_run_tool("printf", ["<%s>|<%s>", "", "a b"])
+require(arguments["ok"], "empty and spaced arguments failed")
+require(arguments["stdout"] == "<>|<a b>", "empty and spaced arguments changed")
+
+large = __tyrion_run_tool("sh", ["-c", "yes x | head -c 131072"])
+require(large["ok"], "large capture failed")
+require(len(large["stdout"]) == 131072, "large capture was truncated")
+
+signalled = __tyrion_run_tool("sh", ["-c", "kill -TERM $$"])
+require(not signalled["ok"], "signal termination returned True")
+require(signalled["status"] == 143, "signal status mismatch")
+
+iteration = 0
+while iteration < 32:
+    repeated = __tyrion_run_tool("printf", ["ok"])
+    require(repeated["ok"], "repeated capture failed")
+    require(repeated["stdout"] == "ok", "repeated capture changed output")
+    iteration = iteration + 1
+
+print("process-conformance-ok")

@@ -1,0 +1,13 @@
+def require(condition, message):
+    if not condition:
+        raise message
+
+
+# A weak path join would resolve this outside the approved extension root.
+# The dynamic loader must reject it as a name before attempting dlopen.
+name = ".." + "/foo"
+handle = __tyrion_native_host_load(name)
+require(__tyrion_native_host_call(handle, "foo.ping", "ignored") == none, "path traversal loaded an extension")
+require(not __tyrion_native_host_unload(handle), "invalid path produced a loaded handle")
+
+print("dynamic-extension-path-rejected")

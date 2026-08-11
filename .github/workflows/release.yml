@@ -1,0 +1,255 @@
+name: Build And Publish Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - tyrionc.ty
+      - tyrion/**
+      - modules/**
+      - extensions/**
+      - CHANGELOG.md
+      - compiler/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (${{ matrix.artifact }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            artifact: tyrionic-mac-arm64
+            interpreter_artifact: tyrion-mac-arm64
+          - runner: ubuntu-24.04
+            artifact: tyrionic-linux-amd64
+            interpreter_artifact: tyrion-linux-amd64
+          - runner: ubuntu-24.04-arm
+            artifact: tyrionic-linux-arm64
+            interpreter_artifact: tyrion-linux-arm64
+
+    steps:
+      - name: Checkout Tyrion
+        uses: actions/checkout@v6
+
+      - name: Checkout Bootstrap Compiler
+        uses: actions/checkout@v6
+        with:
+          repository: dennisvink/tyrionc
+          path: bootstrap
+
+      - name: Compile Bootstrap Compiler
+        shell: bash
+        run: make -C bootstrap
+
+      - name: Compile Embedded Native Packages
+        shell: bash
+        run: compiler/build_native_packages.sh
+
+      - name: Build Compiler Generations
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build dist
+
+          ./bootstrap/build/tyrionc \
+            --exec-call "$GITHUB_WORKSPACE/tyrionc.ty" \
+            build_native \
+            "$GITHUB_WORKSPACE/tyrionc.ty" \
+            "$GITHUB_WORKSPACE/build/c1"
+
+          ./build/c1 \
+            --build "$GITHUB_WORKSPACE/tyrionc.ty" \
+            --out "$GITHUB_WORKSPACE/build/c2"
+
+          ./build/c2 \
+            --build "$GITHUB_WORKSPACE/tyrionc.ty" \
+            --out "$GITHUB_WORKSPACE/dist/${{ matrix.artifact }}"
+
+          test -x "build/c1"
+          test -x "build/c2"
+          test -x "dist/${{ matrix.artifact }}"
+          expected_version="$(awk '/^## [0-9]+\.[0-9]+\.[0-9]+/{print $2; exit}' CHANGELOG.md)"
+          actual_version="$("dist/${{ matrix.artifact }}" --version)"
+          test "$actual_version" = "tyrion compiler $expected_version"
+
+      - name: Build And Test Tyrion Interpreter
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/tyrion"
+          "$GITHUB_WORKSPACE/dist/${{ matrix.artifact }}" \
+            --build "$PWD/tyrion.ty" \
+            --out "$GITHUB_WORKSPACE/dist/${{ matrix.interpreter_artifact }}" \
+            --ext-static=auto \
+            --ext-dynamic=allowed \
+            --ext-dir "$GITHUB_WORKSPACE/tyrion/extensions"
+
+          test -x "$GITHUB_WORKSPACE/dist/${{ matrix.interpreter_artifact }}"
+          expected_version="$(awk '/^## [0-9]+\.[0-9]+\.[0-9]+/{print $2; exit}' "$GITHUB_WORKSPACE/CHANGELOG.md")"
+          actual_version="$("$GITHUB_WORKSPACE/dist/${{ matrix.interpreter_artifact }}" --version)"
+          test "$actual_version" = "tyrion interpreter $expected_version"
+          output="$("$GITHUB_WORKSPACE/dist/${{ matrix.interpreter_artifact }}" \
+            "$GITHUB_WORKSPACE/examples/hello.ty")"
+          test "$output" = $'hello world\nmath 5 12 -3'
+          multiline_output="$("$GITHUB_WORKSPACE/dist/${{ matrix.interpreter_artifact }}" \
+            "$GITHUB_WORKSPACE/examples/multiline_expressions.ty")"
+          test "$multiline_output" = 'multiline 12 [12, 13] 5 [12]'
+
+          cd "$GITHUB_WORKSPACE"
+          ./compiler/tests/test_http_module.sh \
+            "$GITHUB_WORKSPACE/dist/${{ matrix.artifact }}" \
+            "$GITHUB_WORKSPACE/dist/${{ matrix.interpreter_artifact }}"
+          ./compiler/tests/test_https_module.sh \
+            "$GITHUB_WORKSPACE/dist/${{ matrix.artifact }}" \
+            "$GITHUB_WORKSPACE/dist/${{ matrix.interpreter_artifact }}"
+
+      - name: Build And Test Examples
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r source; do
+            if ! grep -Fq "\"$source\"" compiler/tests/examples.ty; then
+              echo "Example is missing from compiler/tests/examples.ty: $source" >&2
+              exit 1
+            fi
+          done < <(find examples -type f -name '*.ty' | sort)
+
+          platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          mkdir -p build/examples
+
+          while IFS= read -r source; do
+            if [[ "$source" == "examples/terminal_chess.ty" && "$platform" != "darwin" ]]; then
+              echo "Skipping unsupported Linux terminal example: $source"
+              continue
+            fi
+
+            name="$(basename "$source" .ty)"
+            output="$GITHUB_WORKSPACE/build/examples/$name"
+            args=(--build "$GITHUB_WORKSPACE/$source" --out "$output")
+
+            if [[ "$source" == examples/extensions/* ]]; then
+              args+=(--ext-static=required --ext-dir "$GITHUB_WORKSPACE/examples/extensions")
+            fi
+
+            echo "Building $source -> $output"
+            "$GITHUB_WORKSPACE/dist/${{ matrix.artifact }}" "${args[@]}"
+            test -x "$output"
+          done < <(find examples -type f -name '*.ty' | sort)
+
+          ./bootstrap/build/tyrionc \
+            --exec-call "$GITHUB_WORKSPACE/compiler/tests/examples.ty" \
+            main \
+            "$platform"
+
+      - name: Diagnose macOS Aggregate Crash
+        if: failure() && matrix.artifact == 'tyrionic-mac-arm64'
+        shell: bash
+        run: |
+          compiler/tests/diagnose_macos_aggregate_crash.sh \
+            "$GITHUB_WORKSPACE/build/examples/direct_native_aggregate_builtins"
+
+      - name: Upload Built Binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/${{ matrix.artifact }}
+            dist/${{ matrix.interpreter_artifact }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish Release
+    needs:
+      - build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download Built Binaries
+        uses: actions/download-artifact@v7
+        with:
+          pattern: tyrionic-*
+          path: dist
+          merge-multiple: true
+
+      - name: Resolve Version From Changelog
+        shell: pwsh
+        run: |
+          if (!(Test-Path "CHANGELOG.md")) {
+            throw "Missing CHANGELOG.md"
+          }
+
+          $lines = Get-Content "CHANGELOG.md"
+          $line = $lines | Where-Object { $_ -match '^\s*##\s+v?(\d+\.\d+\.\d+)(?:\s|$)' } | Select-Object -First 1
+          if (-not $line) {
+            throw "Could not find semantic version heading in CHANGELOG.md"
+          }
+          if ($line -notmatch '^\s*##\s+v?(\d+\.\d+\.\d+)(?:\s|$)') {
+            throw "Invalid semantic version heading in CHANGELOG.md"
+          }
+
+          $version = $Matches[1]
+          $start = [Array]::IndexOf($lines, $line)
+          $notes = New-Object System.Collections.Generic.List[string]
+
+          for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^\s*##\s+v?\d+\.\d+\.\d+(?:\s|$)') {
+              break
+            }
+            $notes.Add($lines[$i])
+          }
+
+          $releaseNotes = ($notes -join "`n").Trim()
+          if ([string]::IsNullOrWhiteSpace($releaseNotes)) {
+            throw "CHANGELOG.md section for $version has no release notes"
+          }
+
+          $releaseNotes | Out-File -FilePath "release-notes.md" -Encoding utf8
+          "RELEASE_TAG=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "RELEASE_NAME=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          $name = $env:RELEASE_NAME
+          $repo = "${{ github.repository }}"
+          $target = "${{ github.sha }}"
+
+          gh release view $tag --repo $repo *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo $repo --target $target --title $name --notes-file release-notes.md
+            if ($LASTEXITCODE -ne 0) {
+              gh release view $tag --repo $repo *> $null
+              if ($LASTEXITCODE -ne 0) {
+                throw "Could not create or access release $tag"
+              }
+            }
+          }
+
+          gh release edit $tag --repo $repo --title $name --notes-file release-notes.md
+          Get-ChildItem -Path dist -File | ForEach-Object {
+            gh release upload $tag $_.FullName --repo $repo --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not upload release asset $($_.FullName)"
+            }
+          }

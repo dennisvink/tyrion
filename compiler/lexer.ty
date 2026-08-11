@@ -1,0 +1,518 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# Canonical source lexer and token inventories.
+
+def token(kind, text, line, column):
+    return {"kind": kind, "text": text, "line": line, "column": column}
+
+
+
+def is_space(ch):
+    return ch == " " or ch == "\t" or ch == "\r"
+
+
+def is_digit(ch):
+    return ch >= "0" and ch <= "9"
+
+
+def is_lower(ch):
+    return ch >= "a" and ch <= "z"
+
+
+def is_upper(ch):
+    return ch >= "A" and ch <= "Z"
+
+
+def is_alpha(ch):
+    return is_lower(ch) or is_upper(ch)
+
+
+def is_ident_start(ch):
+    return ch == "_" or is_alpha(ch)
+
+
+def is_ident_continue(ch):
+    return is_ident_start(ch) or is_digit(ch)
+
+
+def keyword_kind(word):
+    if word == "def":
+        return "KW_DEF"
+    if word == "class":
+        return "KW_CLASS"
+    if word == "if":
+        return "KW_IF"
+    if word == "elif":
+        return "KW_ELIF"
+    if word == "else":
+        return "KW_ELSE"
+    if word == "while":
+        return "KW_WHILE"
+    if word == "for":
+        return "KW_FOR"
+    if word == "in":
+        return "KW_IN"
+    if word == "return":
+        return "KW_RETURN"
+    if word == "raise":
+        return "KW_RAISE"
+    if word == "try":
+        return "KW_TRY"
+    if word == "except":
+        return "KW_EXCEPT"
+    if word == "finally":
+        return "KW_FINALLY"
+    if word == "with":
+        return "KW_WITH"
+    if word == "as":
+        return "KW_AS"
+    if word == "and":
+        return "KW_AND"
+    if word == "or":
+        return "KW_OR"
+    if word == "not":
+        return "KW_NOT"
+    if word == "True" or word == "true":
+        return "KW_TRUE"
+    if word == "False" or word == "false":
+        return "KW_FALSE"
+    if word == "None" or word == "none":
+        return "KW_NONE"
+    if word == "break":
+        return "KW_BREAK"
+    if word == "continue" or word == "next":
+        return "KW_CONTINUE"
+    if word == "unless":
+        return "KW_UNLESS"
+    if word == "lambda":
+        return "KW_LAMBDA"
+    if word == "yield":
+        return "KW_YIELD"
+    return "IDENTIFIER"
+
+
+def simple_token_kind(ch):
+    if ch == "(":
+        return "LPAREN"
+    if ch == ")":
+        return "RPAREN"
+    if ch == "{":
+        return "LBRACE"
+    if ch == "}":
+        return "RBRACE"
+    if ch == "[":
+        return "LBRACKET"
+    if ch == "]":
+        return "RBRACKET"
+    if ch == ",":
+        return "COMMA"
+    if ch == ":":
+        return "COLON"
+    if ch == ".":
+        return "DOT"
+    if ch == "-":
+        return "MINUS"
+    if ch == "*":
+        return "STAR"
+    if ch == "/":
+        return "SLASH"
+    if ch == "%":
+        return "PERCENT"
+    if ch == "+":
+        return "PLUS"
+    if ch == "=":
+        return "EQ"
+    if ch == "!":
+        return "UNKNOWN"
+    if ch == "<":
+        return "LT"
+    if ch == ">":
+        return "GT"
+    return ""
+
+
+def two_char_token_kind(ch, nxt):
+    if ch == "+":
+        if nxt == "=":
+            return "PLUSEQ"
+    if ch == "=":
+        if nxt == "=":
+            return "EQEQ"
+    if ch == "!":
+        if nxt == "=":
+            return "NE"
+    if ch == "<":
+        if nxt == "=":
+            return "LE"
+    if ch == ">":
+        if nxt == "=":
+            return "GE"
+    return ""
+
+
+def char_is_tab(ch):
+    return ch == "\t"
+
+
+def char_is_newline(ch):
+    return ch == "\n"
+
+
+def char_is_hash(ch):
+    return ch == "#"
+
+
+def char_is_underscore(ch):
+    return ch == "_"
+
+
+def char_is_dot(ch):
+    return ch == "."
+
+
+def char_is_double_quote(ch):
+    return ch == "\""
+
+
+def char_is_single_quote(ch):
+    return ch == "'"
+
+
+def char_is_backslash(ch):
+    return ch == "\\"
+
+
+def emit_indent_delta(tokens, indents, indent, line):
+    current_idx = len(indents)
+    current_idx = current_idx - 1
+    current = indents[current_idx]
+    if indent > current:
+        indents = method_append(indents, indent)
+        __tyrion_native_token_builder_append(tokens, "INDENT", "INDENT", line, 1)
+        return {"tokens": tokens, "indents": indents}
+    while indent < current:
+        if len(indents) <= 1:
+            fail("invalid dedent")
+        # Rebuild stack without the last item. This avoids requiring pop().
+        next_indents = []
+        idx = 0
+        indents_limit = len(indents)
+        indents_limit = indents_limit - 1
+        while idx < indents_limit:
+            next_indents = method_append(next_indents, indents[idx])
+            idx = idx + 1
+        indents = next_indents
+        current_idx = len(indents)
+        current_idx = current_idx - 1
+        current = indents[current_idx]
+        __tyrion_native_token_builder_append(tokens, "DEDENT", "DEDENT", line, 1)
+    if indent != current:
+        fail("invalid dedent")
+    return {"tokens": tokens, "indents": indents}
+
+
+def lex(source):
+    tokens = __tyrion_native_ast_builder_create()
+    indents = [0]
+    i = 0
+    n = len(source)
+    line = 1
+    column = 1
+    at_line_start = True
+    bracket_depth = 0
+
+    while i < n:
+        skip_iteration = 0
+        if at_line_start:
+            scan = i
+            indent = 0
+            scanning_indent = True
+            while scanning_indent:
+                if scan >= n:
+                    scanning_indent = False
+                else:
+                    indent_ch = source[scan]
+                    if indent_ch == " " or indent_ch == "\t" or indent_ch == "\r":
+                        if indent_ch == "\t":
+                            indent = indent + 4
+                        else:
+                            indent = indent + 1
+                        scan = scan + 1
+                    else:
+                        scanning_indent = False
+            if scan >= n:
+                i = scan
+                skip_iteration = 1
+            if skip_iteration == 0:
+                scan_ch = source[scan]
+                if scan_ch == "\n":
+                    i = scan + 1
+                    line = line + 1
+                    column = 1
+                    skip_iteration = 1
+            if skip_iteration == 0:
+                scan_ch = source[scan]
+                if scan_ch == "#":
+                    module_source_marker = False
+                    if scan + 16 <= n and source[scan:scan + 16] == "# module-source:":
+                        module_source_marker = True
+                    scanning_comment = True
+                    while scanning_comment:
+                        if scan >= n:
+                            scanning_comment = False
+                        else:
+                            scan_ch = source[scan]
+                            if scan_ch == "\n":
+                                scanning_comment = False
+                            else:
+                                scan = scan + 1
+                    if scan < n:
+                        scan = scan + 1
+                    i = scan
+                    if module_source_marker:
+                        line = 1
+                    else:
+                        line = line + 1
+                    column = 1
+                    skip_iteration = 1
+            if skip_iteration == 0 and bracket_depth == 0:
+                indent_delta = emit_indent_delta(tokens, indents, indent, line)
+                tokens = indent_delta["tokens"]
+                indents = indent_delta["indents"]
+            if skip_iteration == 0:
+                i = scan
+                column = indent + 1
+                at_line_start = False
+
+        if skip_iteration == 0:
+            ch = source[i]
+            handled_char = 0
+            if ch == " " or ch == "\t" or ch == "\r":
+                i = i + 1
+                column = column + 1
+                handled_char = 1
+            if handled_char == 0:
+                if ch == "#":
+                    scanning_comment_body = True
+                    while scanning_comment_body:
+                        if i >= n:
+                            scanning_comment_body = False
+                        else:
+                            scan_ch = source[i]
+                            if scan_ch == "\n":
+                                scanning_comment_body = False
+                            else:
+                                i = i + 1
+                                column = column + 1
+                    handled_char = 1
+            if handled_char == 0:
+                if ch == "\n":
+                    newline_line = line + 1
+                    if bracket_depth == 0:
+                        __tyrion_native_token_builder_append(tokens, "NEWLINE", "NEWLINE", newline_line, column)
+                    i = i + 1
+                    line = newline_line
+                    column = 1
+                    at_line_start = True
+                    handled_char = 1
+            if handled_char == 0:
+                ident_start = False
+                if ch == "_":
+                    ident_start = True
+                if ch >= "a" and ch <= "z":
+                    ident_start = True
+                if ch >= "A" and ch <= "Z":
+                    ident_start = True
+                if ident_start:
+                    start = i
+                    start_col = column
+                    scanning_ident = True
+                    while scanning_ident:
+                        if i >= n:
+                            scanning_ident = False
+                        else:
+                            ident_ch = source[i]
+                            ident_continue = False
+                            if ident_ch == "_":
+                                ident_continue = True
+                            if ident_ch >= "a" and ident_ch <= "z":
+                                ident_continue = True
+                            if ident_ch >= "A" and ident_ch <= "Z":
+                                ident_continue = True
+                            if ident_ch >= "0" and ident_ch <= "9":
+                                ident_continue = True
+                            if ident_continue:
+                                i = i + 1
+                                column = column + 1
+                            else:
+                                scanning_ident = False
+                    text = source[start:i]
+                    kind = keyword_kind(text)
+                    __tyrion_native_token_builder_append(tokens, kind, text, line, start_col)
+                    handled_char = 1
+            if handled_char == 0:
+                if ch >= "0" and ch <= "9":
+                    start = i
+                    start_col = column
+                    scanning_number = True
+                    while scanning_number:
+                        if i >= n:
+                            scanning_number = False
+                        else:
+                            number_ch = source[i]
+                            digit_part = False
+                            if number_ch >= "0" and number_ch <= "9":
+                                digit_part = True
+                            if number_ch == "_":
+                                digit_part = True
+                            if digit_part:
+                                i = i + 1
+                                column = column + 1
+                            else:
+                                scanning_number = False
+                    kind = "INT"
+                    has_float = False
+                    if i + 1 < n:
+                        number_ch = source[i]
+                        next_number_ch = source[i + 1]
+                        if number_ch == ".":
+                            if next_number_ch >= "0" and next_number_ch <= "9":
+                                has_float = True
+                    if has_float:
+                        kind = "FLOAT"
+                        i = i + 1
+                        column = column + 1
+                        scanning_float = True
+                        while scanning_float:
+                            if i >= n:
+                                scanning_float = False
+                            else:
+                                number_ch = source[i]
+                                digit_part = False
+                                if number_ch >= "0" and number_ch <= "9":
+                                    digit_part = True
+                                if number_ch == "_":
+                                    digit_part = True
+                                if digit_part:
+                                    i = i + 1
+                                    column = column + 1
+                                else:
+                                    scanning_float = False
+                    text = source[start:i]
+                    __tyrion_native_token_builder_append(tokens, kind, text, line, start_col)
+                    handled_char = 1
+            if handled_char == 0:
+                quote_start = False
+                if char_is_double_quote(ch):
+                    quote_start = True
+                if char_is_single_quote(ch):
+                    quote_start = True
+                if quote_start:
+                    quote = ch
+                    quote_is_double = 0
+                    quote_is_single = 0
+                    if char_is_double_quote(ch):
+                        quote_is_double = 1
+                    else:
+                        quote_is_single = 1
+                    start = i
+                    start_col = column
+                    i = i + 1
+                    column = column + 1
+                    scanning = 1
+                    while scanning:
+                        if i >= n:
+                            fail("unterminated string")
+                        string_ch = source[i]
+                        if char_is_backslash(string_ch):
+                            i = i + 1
+                            column = column + 1
+                        else:
+                            if quote_is_double == 1:
+                                if char_is_double_quote(string_ch):
+                                    scanning = 0
+                            else:
+                                if char_is_single_quote(string_ch):
+                                    scanning = 0
+                        i = i + 1
+                        column = column + 1
+                    text = source[start:i]
+                    __tyrion_native_token_builder_append(tokens, "STRING", text, line, start_col)
+                    handled_char = 1
+            if handled_char == 0:
+                simple_kind = simple_token_kind(ch)
+                if simple_kind != "":
+                    kind = simple_kind
+                    text = ch
+                    if i + 1 < n:
+                        next_simple_ch = source[i + 1]
+                        two_kind = two_char_token_kind(ch, next_simple_ch)
+                        if two_kind != "":
+                            kind = two_kind
+                            text = source[i:i + 2]
+                            i = i + 1
+                            column = column + 1
+                    __tyrion_native_token_builder_append(tokens, kind, text, line, column)
+                    if ch == "(" or ch == "[" or ch == "{":
+                        bracket_depth = bracket_depth + 1
+                    elif ch == ")" or ch == "]" or ch == "}":
+                        bracket_depth = bracket_depth - 1
+                        if bracket_depth < 0:
+                            fail("unmatched closing bracket")
+                    i = i + 1
+                    column = column + 1
+                    handled_char = 1
+            if handled_char == 0:
+                __tyrion_native_token_builder_append(tokens, "UNKNOWN", ch, line, column)
+                i = i + 1
+                column = column + 1
+
+    if bracket_depth != 0:
+        fail("unclosed bracket")
+    indent_delta = emit_indent_delta(tokens, indents, 0, line)
+    tokens = indent_delta["tokens"]
+    __tyrion_native_token_builder_append(tokens, "EOF", "EOF", line, column)
+    if token_count(tokens) == 1:
+        fail("lex returned eof only")
+    return tokens
+
+
+def source_inventory(path):
+    source = read_text_file(path)
+    lines = source.split("\n")
+    nonempty = 0
+    idx = 0
+    while idx < len(lines):
+        if lines[idx].strip() != "":
+            nonempty = nonempty + 1
+        idx = idx + 1
+    return {"line_count": len(lines), "nonempty_line_count": nonempty}
+
+
+def token_inventory(tokens):
+    out = {"token_count": token_count(tokens), "identifier_count": 0, "keyword_count": 0, "string_count": 0, "int_count": 0, "float_count": 0, "indent_count": 0, "dedent_count": 0, "unknown_count": 0}
+    idx = 0
+    while idx < token_count(tokens):
+        kind = token_kind_at(tokens, idx)
+        if kind == "IDENTIFIER":
+            out["identifier_count"] = out["identifier_count"] + 1
+        elif kind == "STRING":
+            out["string_count"] = out["string_count"] + 1
+        elif kind == "INT":
+            out["int_count"] = out["int_count"] + 1
+        elif kind == "FLOAT":
+            out["float_count"] = out["float_count"] + 1
+        elif kind == "INDENT":
+            out["indent_count"] = out["indent_count"] + 1
+        elif kind == "DEDENT":
+            out["dedent_count"] = out["dedent_count"] + 1
+        elif kind == "UNKNOWN":
+            out["unknown_count"] = out["unknown_count"] + 1
+        elif kind != "EOF" and kind != "NEWLINE":
+            if kind[0] == "K":
+                out["keyword_count"] = out["keyword_count"] + 1
+        idx = idx + 1
+    return out

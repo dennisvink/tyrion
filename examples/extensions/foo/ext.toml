@@ -1,0 +1,4 @@
+name = "foo"
+abi = "tyrion-host-ext/v1"
+call_symbol = "tyext_foo_call_v1"
+sources = ["src/foo.c"]

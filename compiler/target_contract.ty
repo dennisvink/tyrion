@@ -1,0 +1,263 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# Target/backend contract and host-target discovery.
+
+
+def target_spec(os_name, arch):
+    backend = ""
+    entry = "_start"
+    text_section = ".text"
+    rodata_section = ".section .rodata"
+    data_section = ".data"
+    const_data_section = ".section .rodata"
+    asm_syntax = "elf-gas"
+    object_format = "elf64"
+    assembler_dialect = "gnu-as"
+    calling_convention = ""
+    symbol_prefix = ""
+    linker = "clang"
+    backend_status = "implemented"
+    capabilities = "core,collections,file,tcp,clock,process,compiler-file,compiler-writer,compiler-ast,libc,compiler-cli,runtime-native"
+    operations = "section,label,global,call,branch,address,constant,prologue,epilogue,audit,link"
+    if os_name == "darwin" and arch == "aarch64":
+        backend = "darwin-aarch64"
+        entry = "_main"
+        text_section = ".section __TEXT,__text"
+        rodata_section = ".section __TEXT,__cstring"
+        data_section = ".section __DATA,__data"
+        const_data_section = ".section __DATA,__const"
+        asm_syntax = "mach-o"
+        object_format = "macho64"
+        assembler_dialect = "apple-as"
+        calling_convention = "darwin-aapcs64"
+        symbol_prefix = "_"
+        capabilities = capabilities + ",terminal"
+        operations = operations + ",runtime-object,compiler-cli-full"
+    elif os_name == "linux" and arch == "aarch64":
+        backend = "linux-aarch64"
+        calling_convention = "sysv-aapcs64"
+        operations = operations + ",runtime-object,compiler-cli-full"
+    elif os_name == "linux" and arch == "x86_64":
+        backend = "linux-x86_64"
+        calling_convention = "sysv-amd64"
+        capabilities = capabilities + ",terminal"
+        operations = operations + ",runtime-object,compiler-cli-full,native-ir-literal,native-ir-value-writer,native-ir-cli,native-ir-call,native-ir-dispatch,native-ir-ast,native-ir-token,native-ir-statement,native-ir-expression-int,native-ir-environment,native-ir-statement-execution,native-ir-lowered-slot-dispatch,native-ir-v2-direct"
+    elif os_name == "windows" and arch == "aarch64":
+        backend = "windows-aarch64"
+        entry = "main"
+        rodata_section = ".section .rdata"
+        data_section = ".section .data"
+        const_data_section = ".section .rdata"
+        asm_syntax = "coff-gas"
+        object_format = "coff64"
+        assembler_dialect = "llvm-integrated-as"
+        calling_convention = "windows-arm64"
+        linker = "lld-link"
+        backend_status = "stub"
+        capabilities = ""
+        operations = ""
+    elif os_name == "windows" and arch == "x86_64":
+        backend = "windows-x86_64"
+        entry = "main"
+        rodata_section = ".section .rdata"
+        data_section = ".section .data"
+        const_data_section = ".section .rdata"
+        asm_syntax = "coff-gas"
+        object_format = "coff64"
+        assembler_dialect = "llvm-integrated-as"
+        calling_convention = "ms-x64"
+        linker = "lld-link"
+        backend_status = "stub"
+        capabilities = ""
+        operations = ""
+    else:
+        fail("target-capability rejected code=unknown-target;target=" + arch + "-" + os_name + ";operation=*")
+
+    return {"contract": "tyrion-target-v1", "backend": backend, "backend_status": backend_status, "arch": arch, "os": os_name, "triple": arch + "-" + os_name, "object_format": object_format, "assembler_dialect": assembler_dialect, "calling_convention": calling_convention, "symbol_prefix": symbol_prefix, "linker": linker, "entry_symbol": entry, "text_section": text_section, "rodata_section": rodata_section, "data_section": data_section, "const_data_section": const_data_section, "asm_syntax": asm_syntax, "capabilities": capabilities, "operations": operations}
+
+
+def target_validate(target):
+    if target["contract"] != "tyrion-target-v1":
+        fail("invalid target contract version")
+    expected = target_spec(target["os"], target["arch"])
+    fields = ["backend", "backend_status", "triple", "object_format", "assembler_dialect", "calling_convention", "symbol_prefix", "linker", "entry_symbol", "text_section", "rodata_section", "data_section", "const_data_section", "asm_syntax", "capabilities", "operations"]
+    idx = 0
+    while idx < len(fields):
+        field = fields[idx]
+        if target[field] != expected[field]:
+            fail("invalid target contract field: " + field)
+        idx = idx + 1
+    return target
+
+
+def target_has_capability(target, capability):
+    target_validate(target)
+    entries = target["capabilities"].split(",")
+    idx = 0
+    while idx < len(entries):
+        if entries[idx] == capability:
+            return True
+        idx = idx + 1
+    return False
+
+
+def backend_require_implemented(target):
+    target_validate(target)
+    if target["backend_status"] != "implemented":
+        fail("target-capability rejected code=backend-not-implemented;target=" + target["backend"] + ";operation=*")
+    return target
+
+
+def backend_has_operation(target, operation):
+    target_validate(target)
+    entries = target["operations"].split(",")
+    idx = 0
+    while idx < len(entries):
+        if entries[idx] == operation:
+            return True
+        idx = idx + 1
+    return False
+
+
+def backend_require_operation(target, operation):
+    backend_require_implemented(target)
+    if not backend_has_operation(target, operation):
+        fail("target-capability rejected code=operation-not-implemented;target=" + target["backend"] + ";operation=" + operation)
+    return target
+
+
+def backend_require_host_link_compatible(target, host):
+    target_validate(target)
+    target_validate(host)
+    if target["backend"] != host["backend"]:
+        fail("target-capability rejected code=host-link-mismatch;target=" + target["backend"] + ";operation=link;host=" + host["backend"])
+    return target
+
+
+def target_tcp_addrinfo_addr_offset(target):
+    target_validate(target)
+    if target["os"] == "darwin":
+        return 32
+    if target["os"] == "linux":
+        return 24
+    fail("target-capability rejected code=tcp-contract-missing;target=" + target["backend"] + ";operation=addrinfo")
+
+
+def target_tcp_socket_level(target):
+    target_validate(target)
+    if target["os"] == "darwin":
+        return 65535
+    if target["os"] == "linux":
+        return 1
+    fail("target-capability rejected code=tcp-contract-missing;target=" + target["backend"] + ";operation=socket-options")
+
+
+def target_tcp_send_timeout_option(target):
+    target_validate(target)
+    if target["os"] == "darwin":
+        return 4101
+    if target["os"] == "linux":
+        return 21
+    fail("target-capability rejected code=tcp-contract-missing;target=" + target["backend"] + ";operation=send-timeout")
+
+
+def target_tcp_recv_timeout_option(target):
+    target_validate(target)
+    if target["os"] == "darwin":
+        return 4102
+    if target["os"] == "linux":
+        return 20
+    fail("target-capability rejected code=tcp-contract-missing;target=" + target["backend"] + ";operation=recv-timeout")
+
+
+def target_contract_text(target):
+    target_validate(target)
+    return target["contract"] + ":" + target["backend"] + ":" + target["backend_status"] + ":" + target["object_format"] + ":" + target["assembler_dialect"] + ":" + target["calling_convention"] + ":" + target["symbol_prefix"] + ":" + target["linker"] + ":" + target["capabilities"] + ":" + target["operations"]
+
+
+def target_contract_for(os_name, arch):
+    return target_contract_text(target_spec(os_name, arch))
+
+
+def backend_contract_probe(os_name, arch):
+    target = target_spec(os_name, arch)
+    backend_require_operation(target, "link")
+    return target_contract_text(target)
+
+
+def backend_dependency_record(target):
+    target_validate(target)
+    if target["backend"] == "darwin-aarch64":
+        return {"contract": "tyrion-backend-dependencies-v1", "register_model": "aarch64", "relocation": "page-pageoff", "libc_symbols": "underscore", "syscall_abi": "libc", "terminal_abi": "darwin-termios", "link_args": "asm,-o,output", "executable_suffix": "", "link_mode": "host-static-like"}
+    if target["backend"] == "linux-aarch64":
+        return {"contract": "tyrion-backend-dependencies-v1", "register_model": "aarch64", "relocation": "adrp-lo12", "libc_symbols": "plain", "syscall_abi": "linux-aarch64", "terminal_abi": "linux-termios", "link_args": "asm,-o,output", "executable_suffix": "", "link_mode": "host-static"}
+    if target["backend"] == "linux-x86_64":
+        return {"contract": "tyrion-backend-dependencies-v1", "register_model": "x86-64", "relocation": "rip-relative-plt", "libc_symbols": "plain", "syscall_abi": "linux-x86-64", "terminal_abi": "linux-termios", "link_args": "asm,-o,output", "executable_suffix": "", "link_mode": "host-static"}
+    if target["backend"] == "windows-aarch64":
+        return {"contract": "tyrion-backend-dependencies-v1", "register_model": "aarch64", "relocation": "coff-page-rel", "libc_symbols": "coff", "syscall_abi": "win32", "terminal_abi": "windows-console", "link_args": "obj,/out:output", "executable_suffix": ".exe", "link_mode": "stub"}
+    if target["backend"] == "windows-x86_64":
+        return {"contract": "tyrion-backend-dependencies-v1", "register_model": "x86-64", "relocation": "coff-rip-relative", "libc_symbols": "coff", "syscall_abi": "win32", "terminal_abi": "windows-console", "link_args": "obj,/out:output", "executable_suffix": ".exe", "link_mode": "stub"}
+    fail("missing backend dependency inventory: " + target["backend"])
+
+
+def backend_dependency_inventory(target):
+    record = backend_dependency_record(target)
+    return "contract=" + record["contract"] + "|register-model=" + record["register_model"] + "|relocation=" + record["relocation"] + "|libc-symbols=" + record["libc_symbols"] + "|syscall-abi=" + record["syscall_abi"] + "|terminal-abi=" + record["terminal_abi"] + "|link-args=" + record["link_args"] + "|executable-suffix=" + record["executable_suffix"] + "|link-mode=" + record["link_mode"]
+
+
+def backend_dependency_inventory_for(os_name, arch):
+    return backend_dependency_inventory(target_spec(os_name, arch))
+
+def backend_primitive_implementation_keys(target):
+    backend_require_implemented(target)
+    common = "len,int,str,range,file_open,wall_time,tcp_connect,tcp_write,tcp_read,tcp_close,"
+    common = common + "read_text_file,read_module_graph,write_text_file,run_tool,run_tool_capture,writer_open,writer_append,"
+    common = common + "writer_close,writer_bytes,writer_set_backend,writer_is_x86,"
+    common = common + "ast_builder_create,ast_builder_len,ast_builder_append,ast_builder_finish,ast_builder_get,token_builder_count,token_builder_append,token_builder_field,lex,program_has_function,"
+    common = common + "bool,enumerate,zip,sum,min,max,any,all,sorted,"
+    common = common + "host_load,host_call,host_unload,tls_write,tls_read,ascii_text"
+    if target["backend"] == "darwin-aarch64":
+        return common + ",terminal_read_key,ansi_escape"
+    if target["backend"] == "linux-aarch64":
+        return common
+    if target["backend"] == "linux-x86_64":
+        return common + ",terminal_read_key,ansi_escape"
+    return ""
+
+def backend_primitive_implementation_keys_for(os_name, arch):
+    return backend_primitive_implementation_keys(target_spec(os_name, arch))
+
+def backend_has_primitive_implementation(target, implementation):
+    entries = split_inventory_text(backend_primitive_implementation_keys(target), ",")
+    idx = 0
+    while idx < len(entries):
+        if entries[idx] == implementation:
+            return True
+        idx = idx + 1
+    return False
+
+
+def host_target():
+    arch_result = __tyrion_run_tool("uname", ["-m"])
+    os_result = __tyrion_run_tool("uname", ["-s"])
+    arch_hint = ""
+    os_hint = ""
+    if arch_result["ok"]:
+        arch_hint = trim_spaces(str(arch_result["stdout"]))
+    if os_result["ok"]:
+        os_hint = trim_spaces(str(os_result["stdout"]))
+
+    arch = "x86_64"
+    if contains_text(arch_hint, "arm64") or contains_text(arch_hint, "aarch64"):
+        arch = "aarch64"
+
+    os_name = "linux"
+    if contains_text(os_hint, "Darwin") or contains_text(os_hint, "darwin"):
+        os_name = "darwin"
+    if contains_text(os_hint, "MINGW") or contains_text(os_hint, "MSYS") or contains_text(os_hint, "Windows"):
+        os_name = "windows"
+
+    return target_validate(target_spec(os_name, arch))

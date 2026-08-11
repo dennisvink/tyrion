@@ -1,0 +1,263 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# compiler / cli: responsibility-owned canonical compiler module.
+
+def compiler_usage_text():
+    return "Usage:\n  tyrionic --help\n  tyrionic --version\n  tyrionic --scan <input.ty>\n  tyrionic --tokens <input.ty>\n  tyrionic --token-summary <input.ty>\n  tyrionic --parse-summary <input.ty>\n  tyrionic --build <input.ty> --out <output>\n  tyrionic --build <input.ty> --out <output> --ext-static=<off|auto|required>\n  tyrionic --build <input.ty> --out <output> --ext-dynamic=<off|allowed> --ext-dir <path>"
+
+def compiler_version_text():
+    return "tyrion compiler 1.0.0"
+
+def usage():
+    print("Usage:")
+    print("  tyrionic --help")
+    print("  tyrionic --version")
+    print("  tyrionic --scan <input.ty>")
+    print("  tyrionic --tokens <input.ty>")
+    print("  tyrionic --token-summary <input.ty>")
+    print("  tyrionic --parse-summary <input.ty>")
+    print("  tyrionic --build <input.ty> --out <output>")
+    print("  tyrionic --build <input.ty> --out <output> --ext-static=<off|auto|required>")
+    print("  tyrionic --build <input.ty> --out <output> --ext-dynamic=<off|allowed> --ext-dir <path>")
+
+def version():
+    print(compiler_version_text())
+
+def command_scan(path):
+    inv = source_inventory(path)
+    print("source=" + path)
+    print("line_count=" + str(inv["line_count"]))
+    print("nonempty_line_count=" + str(inv["nonempty_line_count"]))
+
+def command_token_summary(path):
+    source = read_text_file(path)
+    tokens = lex(source)
+    inv = token_inventory(tokens)
+    print("source=" + path)
+    print("token_count=" + str(inv["token_count"]))
+    print("identifier_count=" + str(inv["identifier_count"]))
+    print("keyword_count=" + str(inv["keyword_count"]))
+    print("string_count=" + str(inv["string_count"]))
+    print("int_count=" + str(inv["int_count"]))
+    print("float_count=" + str(inv["float_count"]))
+    print("indent_count=" + str(inv["indent_count"]))
+    print("dedent_count=" + str(inv["dedent_count"]))
+    print("unknown_count=" + str(inv["unknown_count"]))
+
+def command_tokens(path):
+    source = read_text_file(path)
+    tokens = lex(source)
+    idx = 0
+    while idx < token_count(tokens):
+        print(str(idx) + ":" + token_kind_at(tokens, idx) + ":" + token_text_at(tokens, idx))
+        idx = idx + 1
+
+def command_parse_summary(path):
+    source = read_text_file(path)
+    tokens = lex(source)
+    program = parse_program(tokens)
+    inv = ast_inventory(program)
+    print("source=" + path)
+    print("node_count=" + str(inv["node_count"]))
+    print("function_count=" + str(inv["function_count"]))
+    print("assign_count=" + str(inv["assign_count"]))
+    print("return_count=" + str(inv["return_count"]))
+    print("if_count=" + str(inv["if_count"]))
+    print("while_count=" + str(inv["while_count"]))
+    print("for_count=" + str(inv["for_count"]))
+    print("expr_count=" + str(inv["expr_count"]))
+    print("call_count=" + str(inv["call_count"]))
+    print("print_call_count=" + str(inv["print_call_count"]))
+    print("binary_count=" + str(inv["binary_count"]))
+    print("unary_count=" + str(inv["unary_count"]))
+
+def cli_route_info_add_test(info, expr):
+    if expr["kind"] == "binary" and expr["op"] == "and":
+        info = cli_route_info_add_test(info, expr["left"])
+        return cli_route_info_add_test(info, expr["right"])
+    if expr["kind"] == "binary" and expr["op"] == "==":
+        if expr_is_args_len_call(expr["left"]) and expr["right"]["kind"] == "int":
+            info["argc"] = expr["right"]["value"]
+            return info
+        if expr_is_args_len_call(expr["right"]) and expr["left"]["kind"] == "int":
+            info["argc"] = expr["left"]["value"]
+            return info
+        if expr_is_args_index(expr["left"]) and expr["right"]["kind"] == "string":
+            info["tests"] = method_append(info["tests"], {"index": expr["left"]["index"]["value"], "value": expr["right"]["value"]})
+            return info
+        if expr_is_args_index(expr["right"]) and expr["left"]["kind"] == "string":
+            info["tests"] = method_append(info["tests"], {"index": expr["right"]["index"]["value"], "value": expr["left"]["value"]})
+            return info
+    fail("unsupported cli_main route condition for native lowering")
+
+def cli_route_info(condition):
+    return cli_route_info_add_test({"argc": -1, "tests": []}, condition)
+
+def cli_test_value(info, index):
+    idx = 0
+    while idx < len(info["tests"]):
+        if info["tests"][idx]["index"] == index:
+            return info["tests"][idx]["value"]
+        idx = idx + 1
+    return ""
+
+def cli_spec_record_route(spec, info, action):
+    first = cli_test_value(info, 0)
+    third = cli_test_value(info, 2)
+    if action == "usage":
+        if info["argc"] == 0 or info["argc"] == -1:
+            spec["usage_default"] = True
+        elif info["argc"] == 1 and first != "":
+            spec["help_flag"] = first
+    elif action == "version":
+        if info["argc"] == 1 and first != "":
+            spec["version_flag"] = first
+    elif action == "build_native":
+        if info["argc"] == 4 and first != "" and third != "":
+            spec["build_flag"] = first
+            spec["out_flag"] = third
+    elif action == "build_native_with_options":
+        if first != "" and third != "":
+            spec["build_flag"] = first
+            spec["out_flag"] = third
+    elif action != "":
+        if first != "":
+            spec["unsupported_flags"] = method_append(spec["unsupported_flags"], first)
+    return spec
+
+def cli_route_records_to_spec(records):
+    spec = {"usage_default": False, "help_flag": "", "version_flag": "", "build_flag": "", "out_flag": "", "unsupported_flags": []}
+    idx = 0
+    while idx < len(records):
+        spec = cli_spec_record_route(spec, records[idx]["info"], records[idx]["action"])
+        idx = idx + 1
+    if spec["help_flag"] == "":
+        spec["help_flag"] = "--help"
+    if spec["version_flag"] == "":
+        spec["version_flag"] = "--version"
+    if spec["build_flag"] == "":
+        spec["build_flag"] = "--build"
+    if spec["out_flag"] == "":
+        spec["out_flag"] = "--out"
+    return spec
+
+def build_runtime_native_x86_program(program, output_path, extension_mode, extension_root, dynamic_extension_mode):
+    artifact_path = output_path + ".tyn"
+    asm_path = make_asm_path(output_path)
+    extensions = static_extension_build_plan_configured(program, extension_mode, extension_root, dynamic_extension_mode)
+    asm_writer = asm_writer_open(asm_path)
+    asm_writer = emit_linux_x86_64_direct_program_with_extension_config_asm_into(asm_writer, program, extensions, dynamic_extension_mode, extension_root)
+    asm_writer_close(asm_writer)
+    artifact = "tyrion-runtime-native v1\nnative-build-target-kind=application\nnative-ir-contract=tyrion-native-ir-v2\nnative-lowering-plan=tyrion-native-direct-plan-v1\nnative-exec-mode=native-ir-v2-direct\n"
+    if len(extensions) > 0:
+        artifact = artifact + "native-static-extension-count=" + str(len(extensions)) + "\n"
+    if dynamic_extension_mode == "allowed":
+        artifact = artifact + "native-dynamic-extension-mode=allowed\n"
+    write_text_file(artifact_path, artifact)
+    link_plan = {"extensions": extensions, "extension_count": len(extensions), "dynamic_extension_mode": dynamic_extension_mode, "dynamic_extension_root": extension_root}
+    if not link_runtime_native_direct_program(host_target(), asm_path, output_path, link_plan):
+        fail("native-link rejected code=link-failed;path=" + asm_path + ";output=" + output_path)
+    return True
+
+def build_runtime_native_program_if_needed(raw_source, program, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode):
+    target = host_target()
+    # The architecture-neutral analysis contract owns source rejection.
+    # Backend emitters only receive accepted programs and therefore cannot
+    # expose private lowering diagnostics.
+    require_application_analysis(program, runtime_native_function_names(program))
+    if host_target()["backend"] == "linux-x86_64":
+        # Applications and compiler descendants share the same verified native
+        # IR path. Never route x86 applications through the historical
+        # AArch64-shaped runtime translator.
+        return build_runtime_native_x86_program(program, output_path, extension_mode, extension_root, dynamic_extension_mode)
+    else:
+        return build_runtime_native_direct_program_if_supported_with_extension_config(raw_source, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode)
+
+def build_native_with_extension_config(input_path, output_path, extension_mode, extension_root, dynamic_extension_mode):
+    if dynamic_extension_mode == "allowed":
+        if extension_root == "" or extension_root[0] != "/":
+            fail("--ext-dynamic=allowed requires an absolute --ext-dir")
+    raw_source = read_module_graph(input_path)
+    program = parse_program(lex(raw_source))
+    if build_runtime_native_program_if_needed(raw_source, program, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode):
+        return
+    fail("direct native lowering does not support this program")
+
+def build_native_configured(input_path, output_path, extension_mode, extension_root):
+    return build_native_with_extension_config(input_path, output_path, extension_mode, extension_root, "off")
+
+def build_native(input_path, output_path):
+    return build_native_configured(input_path, output_path, "auto", "./extensions")
+
+def build_native_with_options(args):
+    extension_mode = "auto"
+    extension_root = "./extensions"
+    dynamic_extension_mode = "off"
+    idx = 4
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "--ext-static=off":
+            extension_mode = "off"
+            idx = idx + 1
+        elif arg == "--ext-static=auto":
+            extension_mode = "auto"
+            idx = idx + 1
+        elif arg == "--ext-static=required":
+            extension_mode = "required"
+            idx = idx + 1
+        elif arg == "--ext-dynamic=off":
+            dynamic_extension_mode = "off"
+            idx = idx + 1
+        elif arg == "--ext-dynamic=allowed":
+            dynamic_extension_mode = "allowed"
+            idx = idx + 1
+        elif arg == "--ext-dir":
+            if idx + 1 >= len(args):
+                fail("missing path after --ext-dir")
+            extension_root = args[idx + 1]
+            idx = idx + 2
+        else:
+            fail("unknown or invalid compiler arguments")
+    return build_native_with_extension_config(args[1], args[3], extension_mode, extension_root, dynamic_extension_mode)
+
+def cli_main(args):
+    if len(args) == 0:
+        usage()
+        return
+    if len(args) == 1 and args[0] == "--help":
+        usage()
+        return
+    if len(args) == 1 and args[0] == "--version":
+        version()
+        return
+    if len(args) == 2 and args[0] == "--scan":
+        command_scan(args[1])
+        return
+    if len(args) == 2 and args[0] == "--token-summary":
+        command_token_summary(args[1])
+        return
+    if len(args) == 2 and args[0] == "--tokens":
+        command_tokens(args[1])
+        return
+    if len(args) == 2 and args[0] == "--parse-summary":
+        command_parse_summary(args[1])
+        return
+    if len(args) == 4 and args[0] == "--build" and args[2] == "--out":
+        build_native(args[1], args[3])
+        return
+    if len(args) == 5 and args[0] == "--build" and args[2] == "--out":
+        build_native_with_options(args)
+        return
+    if len(args) == 6 and args[0] == "--build" and args[2] == "--out":
+        build_native_with_options(args)
+        return
+    if len(args) == 7 and args[0] == "--build" and args[2] == "--out":
+        build_native_with_options(args)
+        return
+    if len(args) == 8 and args[0] == "--build" and args[2] == "--out":
+        build_native_with_options(args)
+        return
+    fail("unknown or invalid compiler arguments")

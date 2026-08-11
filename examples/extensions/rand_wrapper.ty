@@ -1,0 +1,22 @@
+def _rand_request(request):
+    return __tyrion_native_host_call(__tyrion_native_host_load("rand"), "rand.exec", request)
+
+
+def rand():
+    return float(__tyrion_native_host_call(__tyrion_native_host_load("rand"), "rand.float", ""))
+
+
+def rand_u64():
+    return int(__tyrion_native_host_call(__tyrion_native_host_load("rand"), "rand.u64", ""))
+
+
+def rand_int(max_exclusive):
+    return int(__tyrion_native_host_call(__tyrion_native_host_load("rand"), "rand.int", str(max_exclusive)))
+
+
+def rand_hex(nbytes):
+    return __tyrion_native_host_call(__tyrion_native_host_load("rand"), "rand.bytes.hex", str(nbytes))
+
+
+def rand_bool():
+    return int(__tyrion_native_host_call(__tyrion_native_host_load("rand"), "rand.bool", "")) == 1

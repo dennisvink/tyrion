@@ -1,0 +1,24 @@
+class Counter:
+    def __init__(self, start=0):
+        self.value = start
+
+    def inc(self, step=1):
+        self.value = self.value + step
+        return self.value
+
+
+counter = Counter(3)
+print("class", counter.inc(), counter.inc(4), counter.value)
+
+nums = [1, 2]
+nums = nums.append(5)
+nums = nums.remove(2)
+print("list", len(nums), nums[1])
+
+mapping = {"b": 2, "a": 1}
+keys = mapping.keys()
+items = mapping.items()
+print("dict", keys[0], keys[1], items[0][1], items[1][1])
+
+s = "  tyrionic-lang.ty  "
+print("str", s.strip(), s.endswith(".ty  "), "a,b".split(",")[1])

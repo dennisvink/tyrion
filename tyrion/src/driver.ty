@@ -1,0 +1,118 @@
+# Single-process Tyrion interpreter driver. Source loading, lexing, parsing, and
+# execution stay in memory; standard input remains available to guest programs.
+
+import src.text
+import src.builtin_modules
+import src.lexer
+import src.parser
+import src.runtime
+import src.operations
+import src.vm
+
+
+def tyrion_read_source(path):
+    with open(path, "r") as source_file:
+        return source_file.read()
+
+
+def tyrion_dirname(path):
+    parts = path.split("/")
+    if len(parts) <= 1:
+        return "."
+    out = ""
+    index = 0
+    if parts[0] == "":
+        out = "/"
+        index = 1
+    while index + 1 < len(parts):
+        if out != "" and not out.endswith("/"):
+            out = out + "/"
+        out = out + parts[index]
+        index = index + 1
+    if out == "":
+        return "."
+    return out
+
+
+def tyrion_module_path(current_path, module_name):
+    directory = tyrion_dirname(current_path)
+    module_parts = module_name.split(".")
+    directory_parts = directory.split("/")
+    if len(directory_parts) > 0 and len(module_parts) > 0:
+        if directory_parts[len(directory_parts) - 1] == module_parts[0]:
+            directory = tyrion_dirname(directory)
+    relative = ""
+    index = 0
+    while index < len(module_parts):
+        if index > 0:
+            relative = relative + "/"
+        relative = relative + module_parts[index]
+        index = index + 1
+    return directory + "/" + relative + ".ty"
+
+
+def tyrion_import_name(line):
+    stripped = line.strip()
+    if stripped.startswith("import "):
+        rest = stripped[7:].strip()
+        return rest.split(" ")[0]
+    if stripped.startswith("from "):
+        rest = stripped[5:].strip()
+        return rest.split(" ")[0]
+    return ""
+
+
+def tyrion_read_module_graph(path):
+    loaded = []
+    tasks = [{"kind": "visit", "path": path, "text": ""}]
+    text = ""
+    while len(tasks) > 0:
+        task = tasks[len(tasks) - 1]
+        tasks = tasks[:len(tasks) - 1]
+        if task["kind"] == "emit":
+            text = text + task["text"] + "\n"
+        elif task["path"] in loaded:
+            tasks = tasks
+        else:
+            loaded.append(task["path"])
+            module_source = task["text"]
+            if module_source == "":
+                module_source = tyrion_read_source(task["path"])
+            lines = module_source.split("\n")
+            index = len(lines) - 1
+            while index >= 0:
+                line = lines[index]
+                stripped = line.strip()
+                module_name = tyrion_import_name(line)
+                if module_name != "":
+                    if module_name != "selfhost.std" and not module_name.startswith("selfhost.std."):
+                        module_path = builtin_module_path(module_name)
+                        module_source = builtin_module_source_for_path(module_path)
+                        if module_path == "":
+                            module_path = tyrion_module_path(task["path"], module_name)
+                        tasks.append({"kind": "visit", "path": module_path, "text": module_source})
+                elif stripped.startswith("module ") or stripped.startswith("export "):
+                    tasks = tasks
+                else:
+                    tasks.append({"kind": "emit", "path": "", "text": line})
+                index = index - 1
+    return text
+
+
+def tyrion_main(host_args):
+    if len(host_args) == 1 and host_args[0] == "--version":
+        print("tyrion interpreter 1.0.0")
+        return None
+    if len(host_args) < 1:
+        print("Usage: tyrion <program.ty> [args...]")
+        return None
+    path = host_args[0]
+    guest_args = []
+    index = 1
+    while index < len(host_args):
+        guest_args.append(host_args[index])
+        index = index + 1
+    source = tyrion_read_module_graph(path)
+    tokens = tyrion_lex(source, path)
+    program = tyrion_parse(tokens, path)
+    return tyrion_execute_vm(program, path, guest_args)

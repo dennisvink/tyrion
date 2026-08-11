@@ -1,0 +1,4 @@
+import http
+
+target = http_parse_url("http://example.com:8080/hello")
+print(target["host"], target["port"], target["path"])

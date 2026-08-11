@@ -1,0 +1,10 @@
+total = 0
+for i in range(1, 6):
+    if i == 3:
+        total = total + 10
+    else:
+        total = total + i
+if total == 22:
+    print("for-range-if-else-ok")
+else:
+    print("for-range-if-else-fail")

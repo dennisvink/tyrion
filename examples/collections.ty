@@ -1,0 +1,16 @@
+# Lists, tuples, dicts, sets, slicing, and methods
+
+nums = [1, 2, 3]
+tpl = (4, 5, 6)
+dct = {"x": 1, "y": 2}
+st = {1, 2}
+
+print(nums[0], tpl[1], "slice", nums[1:3], "strslice", "abcde"[1:4])
+
+nums = nums.append(4)
+nums = nums.remove(2)
+st = st.add(3)
+dct["z"] = 3
+
+print("list", nums, "tuple", tpl, "dict z", dct["z"], "set", st)
+print("dict keys", dct.keys(), "items", dct.items())

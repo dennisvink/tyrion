@@ -1,0 +1,194 @@
+# Independent indentation-aware Tyrion lexer.
+
+
+def tyrion_token(kind, text, line, column):
+    return {"kind": kind, "text": text, "line": line, "column": column}
+
+
+def tyrion_lex_fail(path, line, column, message):
+    raise path + ":" + str(line) + ":" + str(column) + ": lexical error: " + message
+
+
+def tyrion_is_digit(ch):
+    return tyrion_text_contains("0123456789", ch)
+
+
+def tyrion_is_alpha(ch):
+    return tyrion_text_contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_", ch)
+
+
+def tyrion_is_alnum(ch):
+    return tyrion_is_alpha(ch) or tyrion_is_digit(ch)
+
+
+def tyrion_keyword_kind(text):
+    keywords = ["and", "as", "break", "class", "continue", "def", "elif", "else", "except", "False", "finally", "for", "from", "if", "import", "in", "lambda", "None", "not", "or", "pass", "raise", "return", "True", "try", "while", "with", "yield"]
+    if text in keywords:
+        return text
+    return "NAME"
+
+
+def tyrion_decode_escape(ch):
+    if ch == "n":
+        return "\n"
+    if ch == "r":
+        return "\r"
+    if ch == "t":
+        return "\t"
+    if ch == "\\":
+        return "\\"
+    if ch == "\"":
+        return "\""
+    if ch == "'":
+        return "'"
+    return ch
+
+
+def tyrion_indent_top(indents):
+    return indents[len(indents) - 1]
+
+
+def tyrion_lex_line(tokens, line_text, line_number, path, bracket_depth):
+    length = len(line_text)
+    pos = 0
+    while pos < length:
+        ch = line_text[pos]
+        column = pos + 1
+        if ch == " " or ch == "\t" or ch == "\r":
+            pos = pos + 1
+        elif ch == "#":
+            pos = length
+        elif tyrion_is_alpha(ch):
+            start = pos
+            pos = pos + 1
+            scanning = True
+            while scanning and pos < length:
+                if tyrion_is_alnum(line_text[pos]):
+                    pos = pos + 1
+                else:
+                    scanning = False
+            text = line_text[start:pos]
+            tokens.append(tyrion_token(tyrion_keyword_kind(text), text, line_number, start + 1))
+        elif tyrion_is_digit(ch):
+            start = pos
+            dots = 0
+            scanning = True
+            while scanning and pos < length:
+                number_ch = line_text[pos]
+                if tyrion_is_digit(number_ch) or number_ch == "." or number_ch == "_":
+                    if number_ch == ".":
+                        dots = dots + 1
+                    pos = pos + 1
+                else:
+                    scanning = False
+            if dots > 1:
+                tyrion_lex_fail(path, line_number, start + 1, "invalid numeric literal")
+            text = line_text[start:pos]
+            kind = "INT"
+            if dots == 1:
+                kind = "FLOAT"
+            tokens.append(tyrion_token(kind, text, line_number, start + 1))
+        elif ch == "\"" or ch == "'":
+            quote = ch
+            start = pos
+            pos = pos + 1
+            value = ""
+            closed = False
+            while pos < length and not closed:
+                current = line_text[pos]
+                if current == quote:
+                    closed = True
+                    pos = pos + 1
+                elif current == "\\":
+                    if pos + 1 >= length:
+                        tyrion_lex_fail(path, line_number, pos + 1, "unterminated escape")
+                    value = value + tyrion_decode_escape(line_text[pos + 1])
+                    pos = pos + 2
+                else:
+                    value = value + current
+                    pos = pos + 1
+            if not closed:
+                tyrion_lex_fail(path, line_number, start + 1, "unterminated string")
+            tokens.append(tyrion_token("STRING", value, line_number, start + 1))
+        else:
+            two = ""
+            if pos + 1 < length:
+                two = line_text[pos:pos + 2]
+            if two in ["==", "!=", "<=", ">=", "//", "->", "+=", "-=", "*=", "/="]:
+                tokens.append(tyrion_token(two, two, line_number, column))
+                pos = pos + 2
+            elif tyrion_text_contains("()[]{}:,.+-*/%=<>", ch):
+                tokens.append(tyrion_token(ch, ch, line_number, column))
+                if ch == "(" or ch == "[" or ch == "{":
+                    bracket_depth = bracket_depth + 1
+                elif ch == ")" or ch == "]" or ch == "}":
+                    bracket_depth = bracket_depth - 1
+                    if bracket_depth < 0:
+                        tyrion_lex_fail(path, line_number, column, "unmatched closing bracket")
+                pos = pos + 1
+            else:
+                tyrion_lex_fail(path, line_number, column, "unexpected character " + ch)
+    return {"tokens": tokens, "bracket_depth": bracket_depth}
+
+
+def tyrion_line_indent(line_text):
+    pos = 0
+    width = 0
+    scanning = True
+    while scanning and pos < len(line_text):
+        ch = line_text[pos]
+        if ch != " " and ch != "\t":
+            scanning = False
+        elif ch == "\t":
+            width = width + 4
+        else:
+            width = width + 1
+        if scanning:
+            pos = pos + 1
+    content = ""
+    if pos < len(line_text):
+        content = line_text[pos:]
+    return {"width": width, "content": content}
+
+
+def tyrion_line_is_blank(content):
+    stripped = content.strip()
+    return stripped == "" or stripped.startswith("#")
+
+
+def tyrion_lex(source, path):
+    lines = source.split("\n")
+    tokens = []
+    indents = [0]
+    bracket_depth = 0
+    line_index = 0
+    while line_index < len(lines):
+        line_number = line_index + 1
+        line_info = tyrion_line_indent(lines[line_index])
+        content = line_info["content"]
+        if not tyrion_line_is_blank(content):
+            if bracket_depth == 0:
+                width = line_info["width"]
+                top = tyrion_indent_top(indents)
+                if width > top:
+                    indents.append(width)
+                    tokens.append(tyrion_token("INDENT", "", line_number, 1))
+                elif width < top:
+                    while len(indents) > 1 and width < tyrion_indent_top(indents):
+                        indents = indents[:len(indents) - 1]
+                        tokens.append(tyrion_token("DEDENT", "", line_number, 1))
+                    if width != tyrion_indent_top(indents):
+                        tyrion_lex_fail(path, line_number, 1, "inconsistent indentation")
+            result = tyrion_lex_line(tokens, content, line_number, path, bracket_depth)
+            tokens = result["tokens"]
+            bracket_depth = result["bracket_depth"]
+            if bracket_depth == 0:
+                tokens.append(tyrion_token("NEWLINE", "", line_number, len(lines[line_index]) + 1))
+        line_index = line_index + 1
+    if bracket_depth != 0:
+        tyrion_lex_fail(path, len(lines), 1, "unclosed bracket")
+    while len(indents) > 1:
+        indents = indents[:len(indents) - 1]
+        tokens.append(tyrion_token("DEDENT", "", len(lines), 1))
+    tokens.append(tyrion_token("EOF", "", len(lines) + 1, 1))
+    return tokens

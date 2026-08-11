@@ -1,0 +1,8 @@
+vals = [10, 20, 30]
+pairs = []
+for idx, val in enumerate(vals, start=5):
+    pairs.append((idx, val))
+print("enum", pairs)
+
+nums = [3, 1, 2]
+print("sorted", sorted(nums), sorted(nums, key=lambda x: 0 - x))

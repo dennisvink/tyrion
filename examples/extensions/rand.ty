@@ -1,0 +1,22 @@
+import rand_wrapper
+
+print("rand()")
+print(rand())
+print(rand())
+
+print("rand_u64()")
+print(rand_u64())
+print(rand_u64())
+
+print("rand_int(10)")
+print(rand_int(10))
+print(rand_int(10))
+print(rand_int(10))
+
+print("rand_bool()")
+print(rand_bool())
+print(rand_bool())
+
+print("rand_hex(16)")
+print(rand_hex(16))
+print(rand_hex(16))

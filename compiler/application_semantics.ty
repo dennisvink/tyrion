@@ -1,0 +1,1214 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# Canonical target-neutral application semantics and direct-lowering analysis.
+
+def application_append_unique(items, value):
+    idx = 0
+    while idx < len(items):
+        if items[idx] == value:
+            return items
+        idx = idx + 1
+    return method_append(items, value)
+
+
+def application_append_unique_id(items, value):
+    out = []
+    inserted = False
+    idx = 0
+    while idx < len(items):
+        current = items[idx]
+        if current == value:
+            return items
+        if inserted == False and value < current:
+            out = method_append(out, value)
+            inserted = True
+        out = method_append(out, current)
+        idx = idx + 1
+    if inserted == False:
+        out = method_append(out, value)
+    return out
+
+
+def application_max(left, right):
+    if left > right:
+        return left
+    return right
+
+
+def application_expr_operation_id(kind):
+    if kind == "none":
+        return 1
+    if kind == "bool":
+        return 2
+    if kind == "int":
+        return 3
+    if kind == "float":
+        return 4
+    if kind == "string":
+        return 5
+    if kind == "var":
+        return 6
+    if kind == "unary":
+        return 7
+    if kind == "binary":
+        return 8
+    if kind == "index":
+        return 9
+    if kind == "slice":
+        return 10
+    if kind == "call":
+        return 11
+    if kind == "method_call":
+        return 12
+    if kind == "attr":
+        return 13
+    if kind == "list":
+        return 14
+    if kind == "tuple":
+        return 15
+    if kind == "set":
+        return 16
+    if kind == "dict":
+        return 17
+    if kind == "lambda":
+        return 18
+    if kind == "comprehension":
+        return 19
+    if kind == "kwarg":
+        return 20
+    return 0
+
+
+def application_statement_operation_id(kind):
+    if kind == "assign":
+        return 101
+    if kind == "expr":
+        return 102
+    if kind == "if":
+        return 103
+    if kind == "while":
+        return 104
+    if kind == "for":
+        return 105
+    if kind == "return":
+        return 106
+    if kind == "with":
+        return 107
+    if kind == "function":
+        return 108
+    if kind == "break":
+        return 109
+    if kind == "continue":
+        return 110
+    if kind == "try":
+        return 111
+    if kind == "raise":
+        return 112
+    if kind == "yield":
+        return 113
+    if kind == "class":
+        return 114
+    if kind == "meta":
+        return 115
+    return 0
+
+
+def application_value_kind_id(kind):
+    if kind == "none":
+        return 201
+    if kind == "bool":
+        return 202
+    if kind == "int":
+        return 203
+    if kind == "float":
+        return 204
+    if kind == "string":
+        return 205
+    if kind == "list":
+        return 206
+    if kind == "tuple":
+        return 207
+    if kind == "set":
+        return 208
+    if kind == "dict":
+        return 209
+    if kind == "function":
+        return 210
+    if kind == "class":
+        return 211
+    if kind == "object":
+        return 212
+    if kind == "file":
+        return 213
+    if kind == "generator":
+        return 214
+    if kind == "terminal_event":
+        return 215
+    if kind == "tcp":
+        return 216
+    return 0
+
+
+def application_assignment_target_id(kind):
+    if kind == "var":
+        return 301
+    if kind == "index":
+        return 302
+    if kind == "unpack":
+        return 303
+    if kind == "attr":
+        return 304
+    return 0
+
+
+def application_iterator_kind_id(kind):
+    if kind == "generic":
+        return 401
+    if kind == "range":
+        return 402
+    if kind == "enumerate":
+        return 403
+    if kind == "zip":
+        return 404
+    if kind == "dict":
+        return 405
+    if kind == "generator":
+        return 406
+    return 0
+
+
+def application_call_kind_id(kind):
+    if kind == "builtin":
+        return 501
+    if kind == "user":
+        return 502
+    if kind == "constructor":
+        return 503
+    if kind == "method":
+        return 504
+    if kind == "bound_method":
+        return 505
+    return 0
+
+
+def application_method_names():
+    return ["append", "remove", "add", "keys", "items", "strip", "split", "startswith", "endswith", "read", "write", "flush", "seek", "close"]
+
+
+def application_method_ids():
+    return [601, 602, 603, 604, 605, 606, 607, 608, 609, 610, 611, 612, 613, 614]
+
+
+def application_method_count():
+    return 14
+
+
+def application_method_name_at(index):
+    if index == 0:
+        return "append"
+    if index == 1:
+        return "remove"
+    if index == 2:
+        return "add"
+    if index == 3:
+        return "keys"
+    if index == 4:
+        return "items"
+    if index == 5:
+        return "strip"
+    if index == 6:
+        return "split"
+    if index == 7:
+        return "startswith"
+    if index == 8:
+        return "endswith"
+    if index == 9:
+        return "read"
+    if index == 10:
+        return "write"
+    if index == 11:
+        return "flush"
+    if index == 12:
+        return "seek"
+    if index == 13:
+        return "close"
+    return ""
+
+
+def application_method_id_at(index):
+    if index >= 0 and index < application_method_count():
+        return 601 + index
+    return 0
+
+
+def application_method_id(name):
+    if name == "append":
+        return 601
+    if name == "remove":
+        return 602
+    if name == "add":
+        return 603
+    if name == "keys":
+        return 604
+    if name == "items":
+        return 605
+    if name == "strip":
+        return 606
+    if name == "split":
+        return 607
+    if name == "startswith":
+        return 608
+    if name == "endswith":
+        return 609
+    if name == "read":
+        return 610
+    if name == "write":
+        return 611
+    if name == "flush":
+        return 612
+    if name == "seek":
+        return 613
+    if name == "close":
+        return 614
+    return 0
+
+
+def application_binary_operator_names():
+    return ["+", "-", "*", "==", "!=", "<", "<=", ">", ">=", "/", "in", "or", "and", "%"]
+
+
+def application_binary_operator_ids():
+    return [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014]
+
+
+def application_binary_operator_count():
+    return 14
+
+
+def application_binary_operator_name_at(index):
+    if index == 0:
+        return "+"
+    if index == 1:
+        return "-"
+    if index == 2:
+        return "*"
+    if index == 3:
+        return "=="
+    if index == 4:
+        return "!="
+    if index == 5:
+        return "<"
+    if index == 6:
+        return "<="
+    if index == 7:
+        return ">"
+    if index == 8:
+        return ">="
+    if index == 9:
+        return "/"
+    if index == 10:
+        return "in"
+    if index == 11:
+        return "or"
+    if index == 12:
+        return "and"
+    if index == 13:
+        return "%"
+    return ""
+
+
+def application_binary_operator_id_at(index):
+    if index >= 0 and index < application_binary_operator_count():
+        return 1001 + index
+    return 0
+
+
+def application_binary_operator_id(name):
+    if name == "+":
+        return 1001
+    if name == "-":
+        return 1002
+    if name == "*":
+        return 1003
+    if name == "==":
+        return 1004
+    if name == "!=":
+        return 1005
+    if name == "<":
+        return 1006
+    if name == "<=":
+        return 1007
+    if name == ">":
+        return 1008
+    if name == ">=":
+        return 1009
+    if name == "/":
+        return 1010
+    if name == "in":
+        return 1011
+    if name == "or":
+        return 1012
+    if name == "and":
+        return 1013
+    if name == "%":
+        return 1014
+    return 0
+
+
+def application_unary_operator_id(name):
+    if name == "-":
+        return 1101
+    if name == "not":
+        return 1102
+    return 0
+
+
+def application_control_exit_id(kind):
+    if kind == "return":
+        return 701
+    if kind == "break":
+        return 702
+    if kind == "continue":
+        return 703
+    if kind == "raise":
+        return 704
+    if kind == "yield":
+        return 705
+    return 0
+
+
+def application_component_id(name):
+    if name == "collections":
+        return 801
+    if name == "iterator":
+        return 802
+    if name == "callable":
+        return 803
+    if name == "objects":
+        return 804
+    if name == "file":
+        return 805
+    if name == "exceptions":
+        return 806
+    if name == "generator":
+        return 807
+    if name == "tcp":
+        return 808
+    if name == "terminal":
+        return 809
+    if name == "time":
+        return 810
+    if name == "host-extension":
+        return 811
+    return 0
+
+
+def application_runtime_operation_id(name):
+    primitive_id = primitive_schema_id(name)
+    if primitive_id != -1:
+        return int(primitive_id)
+    if name == "file.read":
+        return 901
+    if name == "file.write":
+        return 902
+    if name == "file.flush":
+        return 903
+    if name == "file.seek":
+        return 904
+    return 0
+
+
+def application_runtime_operation_ids(names):
+    ids = []
+    for name in names:
+        operation_id = application_runtime_operation_id(name)
+        if operation_id != 0:
+            ids = application_append_unique_id(ids, operation_id)
+    return ids
+
+
+def application_analysis_ok(operation_id):
+    operations = []
+    if operation_id != 0:
+        operations = method_append(operations, operation_id)
+    return {"ok": True, "code": "", "path": "", "detail": "", "operations": operations, "value_kinds": [], "assignment_targets": [], "iterator_kinds": [], "call_kinds": [], "methods": [], "control_exits": [], "components": [], "component_ids": [], "runtime_operations": [], "temporary_slots": 1}
+
+
+def application_analysis_fail(operation_id, code, kind, path, detail):
+    analysis = application_analysis_ok(operation_id)
+    analysis["ok"] = False
+    analysis["code"] = code
+    analysis["path"] = path
+    analysis["detail"] = detail
+    return analysis
+
+
+def application_analysis_merge(left, right):
+    for operation in right["operations"]:
+        left["operations"] = application_append_unique_id(left["operations"], operation)
+    for value_kind in right["value_kinds"]:
+        left["value_kinds"] = application_append_unique_id(left["value_kinds"], value_kind)
+    for assignment_target in right["assignment_targets"]:
+        left["assignment_targets"] = application_append_unique_id(left["assignment_targets"], assignment_target)
+    for iterator_kind in right["iterator_kinds"]:
+        left["iterator_kinds"] = application_append_unique_id(left["iterator_kinds"], iterator_kind)
+    for call_kind in right["call_kinds"]:
+        left["call_kinds"] = application_append_unique_id(left["call_kinds"], call_kind)
+    for method in right["methods"]:
+        left["methods"] = application_append_unique_id(left["methods"], method)
+    for control_exit in right["control_exits"]:
+        left["control_exits"] = application_append_unique_id(left["control_exits"], control_exit)
+    for component in right["components"]:
+        left["components"] = application_append_unique(left["components"], component)
+    for component_id in right["component_ids"]:
+        left["component_ids"] = application_append_unique_id(left["component_ids"], component_id)
+    for runtime_operation in right["runtime_operations"]:
+        left["runtime_operations"] = application_append_unique(left["runtime_operations"], runtime_operation)
+    left["temporary_slots"] = application_max(left["temporary_slots"], right["temporary_slots"])
+    if left["ok"] and not right["ok"]:
+        left["ok"] = False
+        left["code"] = right["code"]
+        left["path"] = right["path"]
+        left["detail"] = right["detail"]
+    return left
+
+
+def application_analysis_kind(code, detail):
+    if code == "unsupported-assignment-target":
+        return "assignment_target"
+    if code == "multiple-starred-targets":
+        return "unpack"
+    if code == "break-outside-loop":
+        return "break"
+    if code == "continue-outside-loop":
+        return "continue"
+    if code == "return-outside-function":
+        return "return"
+    if code == "yield-outside-function":
+        return "yield"
+    if code == "unknown-call" or code == "primitive-arity" or code == "unsupported-callee":
+        return "call"
+    if code == "unsupported-lambda-capture":
+        return "lambda"
+    if code == "unsupported-method" or code == "method-arity":
+        return "method_call"
+    if code == "unsupported-keyword":
+        return "kwarg"
+    if code == "unsupported-unary":
+        return "unary"
+    if code == "unsupported-binary":
+        return "binary"
+    if code == "unsupported-comprehension":
+        return "comprehension"
+    if code == "unsupported-for-target":
+        return "for"
+    return detail
+
+
+def application_analysis_require_value_kind(analysis, kind):
+    value_kind = application_value_kind_id(kind)
+    if value_kind != 0:
+        analysis["value_kinds"] = application_append_unique_id(analysis["value_kinds"], value_kind)
+    return analysis
+
+
+def application_analysis_require_assignment_target(analysis, kind):
+    target_id = application_assignment_target_id(kind)
+    if target_id != 0:
+        analysis["assignment_targets"] = application_append_unique_id(analysis["assignment_targets"], target_id)
+    return analysis
+
+
+def application_analysis_require_iterator(analysis, kind):
+    iterator_id = application_iterator_kind_id(kind)
+    if iterator_id != 0:
+        analysis["iterator_kinds"] = application_append_unique_id(analysis["iterator_kinds"], iterator_id)
+    return analysis
+
+
+def application_analysis_require_call(analysis, kind):
+    call_id = application_call_kind_id(kind)
+    if call_id != 0:
+        analysis["call_kinds"] = application_append_unique_id(analysis["call_kinds"], call_id)
+    return analysis
+
+
+def application_analysis_require_method(analysis, name):
+    method_id = application_method_id(name)
+    if method_id != 0:
+        analysis["methods"] = application_append_unique_id(analysis["methods"], method_id)
+    return analysis
+
+
+def application_analysis_require_control_exit(analysis, kind):
+    exit_id = application_control_exit_id(kind)
+    if exit_id != 0:
+        analysis["control_exits"] = application_append_unique_id(analysis["control_exits"], exit_id)
+    return analysis
+
+
+def application_analysis_require_component(analysis, name):
+    component_id = application_component_id(name)
+    analysis["components"] = application_append_unique(analysis["components"], name)
+    if component_id != 0:
+        analysis["component_ids"] = application_append_unique_id(analysis["component_ids"], component_id)
+    return analysis
+
+
+def application_analysis_require_runtime_operation(analysis, name):
+    analysis["runtime_operations"] = application_append_unique(analysis["runtime_operations"], name)
+    return analysis
+
+
+def application_direct_operator_supported(op):
+    return application_binary_operator_id(op) != 0
+
+
+def application_direct_builtin_supported(name):
+    if name == "argv":
+        return True
+    implementation = primitive_schema_impl_key(name)
+    if implementation == "file_open" or implementation == "len" or implementation == "float" or implementation == "bool":
+        return True
+    if implementation == "int" or implementation == "str" or implementation == "range":
+        return True
+    if implementation == "ascii_text":
+        return True
+    if implementation == "enumerate" or implementation == "zip" or implementation == "sum":
+        return True
+    if implementation == "min" or implementation == "max" or implementation == "any" or implementation == "all":
+        return True
+    if implementation == "sorted" or implementation == "wall_time":
+        return True
+    if implementation == "terminal_read_key" or implementation == "ansi_escape":
+        return True
+    if implementation == "tcp_connect" or implementation == "tcp_write":
+        return True
+    if implementation == "tcp_read" or implementation == "tcp_close":
+        return True
+    if implementation == "tls_write" or implementation == "tls_read":
+        return True
+    if implementation == "host_load" or implementation == "host_call" or implementation == "host_unload":
+        return True
+    if implementation == "run_tool" or implementation == "run_tool_capture":
+        return True
+    if implementation == "read_text_file" or implementation == "read_module_graph" or implementation == "write_text_file":
+        return True
+    if implementation == "writer_open" or implementation == "writer_append" or implementation == "writer_close" or implementation == "writer_bytes":
+        return True
+    if implementation == "writer_set_backend" or implementation == "writer_is_x86":
+        return True
+    if implementation == "ast_builder_create" or implementation == "ast_builder_len":
+        return True
+    if implementation == "ast_builder_append" or implementation == "ast_builder_finish" or implementation == "token_builder_append":
+        return True
+    if implementation == "ast_builder_get":
+        return True
+    if implementation == "token_builder_count" or implementation == "token_builder_field":
+        return True
+    if implementation == "lex" or implementation == "program_has_function":
+        return True
+    return False
+
+
+def application_expr_iterator_kind(expr):
+    if expr["kind"] == "call" and expr["callee"]["kind"] == "var":
+        name = expr["callee"]["value"]
+        if name == "range" or name == "enumerate" or name == "zip":
+            return name
+    if expr["kind"] == "dict":
+        return "dict"
+    return "generic"
+
+
+def application_name_char_band(ch):
+    if ch < "0":
+        return 1
+    if ch < "A":
+        return 2
+    if ch < "G":
+        return 3
+    if ch < "M":
+        return 4
+    if ch < "S":
+        return 5
+    if ch < "Y":
+        return 6
+    if ch < "a":
+        return 7
+    if ch < "g":
+        return 8
+    if ch < "m":
+        return 9
+    if ch < "s":
+        return 10
+    if ch < "y":
+        return 11
+    return 12
+
+
+def application_name_hash(name):
+    modulus = 4093
+    length = len(name)
+    value = length % modulus
+    if length > 0:
+        value = (value * 17 + application_name_char_band(name[0])) % modulus
+        value = (value * 17 + application_name_char_band(name[length - 1])) % modulus
+    if length > 2:
+        value = (value * 17 + application_name_char_band(name[1])) % modulus
+        value = (value * 17 + application_name_char_band(name[length - 2])) % modulus
+    return value
+
+
+def application_name_index(names):
+    heads = range(4096)
+    head_idx = 0
+    while head_idx < len(heads):
+        heads[head_idx] = 0
+        head_idx = head_idx + 1
+    entries = __tyrion_native_ast_builder_create()
+    name_idx = 0
+    while name_idx < len(names):
+        name = names[name_idx]
+        bucket = application_name_hash(name)
+        __tyrion_native_ast_builder_append(entries, 0, {"name": name, "next": heads[bucket]})
+        heads[bucket] = __tyrion_native_ast_builder_len(entries, 0)
+        name_idx = name_idx + 1
+    return {"contract": "tyrion-application-name-index-v1", "heads": heads, "entries": entries}
+
+
+def application_name_index_present(index, name):
+    if index["contract"] != "tyrion-application-name-index-v1":
+        fail("application analysis rejected code=name-index-contract")
+    bucket = application_name_hash(name)
+    cursor = index["heads"][bucket]
+    while cursor > 0:
+        entry = __tyrion_native_ast_builder_get(index["entries"], 0, cursor - 1)
+        if entry["name"] == name:
+            return True
+        cursor = entry["next"]
+    return False
+
+
+def application_name_index_add(index, name):
+    if application_name_index_present(index, name):
+        return index
+    bucket = application_name_hash(name)
+    __tyrion_native_ast_builder_append(index["entries"], 0, {"name": name, "next": index["heads"][bucket]})
+    # Lists are copy-on-write values. Reattach the updated head vector to the
+    # index instead of mutating a temporary value returned by field lookup.
+    heads = index["heads"]
+    heads[bucket] = __tyrion_native_ast_builder_len(index["entries"], 0)
+    index["heads"] = heads
+    return index
+
+
+def application_name_present(names, name):
+    for candidate in names:
+        if candidate == name:
+            return True
+    return False
+
+
+def application_bound_target_names(target, index):
+    if target["kind"] == "var":
+        return application_name_index_add(index, "@bound:" + target["value"])
+    if target["kind"] == "unpack":
+        for entry in target["targets"]:
+            index = application_name_index_add(index, "@bound:" + entry["name"])
+    return index
+
+
+def application_bound_statement_names(items, index):
+    for stmt in items:
+        kind = stmt["kind"]
+        if kind == "assign":
+            index = application_bound_target_names(stmt["target"], index)
+        elif kind == "for":
+            for name in stmt["targets"]:
+                index = application_name_index_add(index, "@bound:" + name)
+            index = application_bound_statement_names(stmt["body"], index)
+        elif kind == "with":
+            index = application_name_index_add(index, "@bound:" + stmt["name"])
+            index = application_bound_statement_names(stmt["body"], index)
+        elif kind == "try":
+            if stmt["except_binding"] != "":
+                index = application_name_index_add(index, "@bound:" + stmt["except_binding"])
+            index = application_bound_statement_names(stmt["body"], index)
+            index = application_bound_statement_names(stmt["except_body"], index)
+            index = application_bound_statement_names(stmt["finally_body"], index)
+        elif kind == "if":
+            index = application_bound_statement_names(stmt["body"], index)
+            for branch in stmt["elifs"]:
+                index = application_bound_statement_names(branch["body"], index)
+            index = application_bound_statement_names(stmt["else_body"], index)
+        elif kind == "while":
+            index = application_bound_statement_names(stmt["body"], index)
+        elif kind == "function":
+            for param in stmt["params"]:
+                index = application_name_index_add(index, "@bound:" + param["name"])
+            index = application_bound_statement_names(stmt["body"], index)
+        elif kind == "class":
+            for member in stmt["body"]:
+                if member["kind"] == "function":
+                    for param in member["params"]:
+                        index = application_name_index_add(index, "@bound:" + param["name"])
+                    index = application_bound_statement_names(member["body"], index)
+    return index
+
+
+def application_analysis_name_index(program, function_names):
+    index = application_name_index(function_names)
+    index = application_bound_statement_names(program["items"], index)
+    return index
+
+
+def application_lambda_capture_name(expr, params, function_names):
+    kind = expr["kind"]
+    if kind == "var":
+        name = expr["value"]
+        if application_name_present(params, name):
+            return ""
+        if application_name_index_present(function_names, name):
+            return ""
+        if application_direct_builtin_supported(name):
+            return ""
+        return name
+    if kind == "binary":
+        name = application_lambda_capture_name(expr["left"], params, function_names)
+        if name != "":
+            return name
+        return application_lambda_capture_name(expr["right"], params, function_names)
+    if kind == "unary" or kind == "kwarg":
+        return application_lambda_capture_name(expr["value"], params, function_names)
+    if kind == "call":
+        if expr["callee"]["kind"] != "var":
+            name = application_lambda_capture_name(expr["callee"], params, function_names)
+            if name != "":
+                return name
+        for arg in expr["args"]:
+            name = application_lambda_capture_name(arg, params, function_names)
+            if name != "":
+                return name
+        return ""
+    if kind == "method_call":
+        name = application_lambda_capture_name(expr["receiver"], params, function_names)
+        if name != "":
+            return name
+        for arg in expr["args"]:
+            name = application_lambda_capture_name(arg, params, function_names)
+            if name != "":
+                return name
+        return ""
+    if kind == "index":
+        name = application_lambda_capture_name(expr["receiver"], params, function_names)
+        if name != "":
+            return name
+        return application_lambda_capture_name(expr["index"], params, function_names)
+    if kind == "slice":
+        name = application_lambda_capture_name(expr["receiver"], params, function_names)
+        if name != "":
+            return name
+        name = application_lambda_capture_name(expr["start"], params, function_names)
+        if name != "":
+            return name
+        return application_lambda_capture_name(expr["stop"], params, function_names)
+    if kind == "attr":
+        return application_lambda_capture_name(expr["receiver"], params, function_names)
+    if kind == "list" or kind == "tuple" or kind == "set":
+        for item in expr["items"]:
+            name = application_lambda_capture_name(item, params, function_names)
+            if name != "":
+                return name
+        return ""
+    if kind == "dict":
+        for entry in expr["entries"]:
+            name = application_lambda_capture_name(entry["key"], params, function_names)
+            if name != "":
+                return name
+            name = application_lambda_capture_name(entry["value"], params, function_names)
+            if name != "":
+                return name
+        return ""
+    if kind == "lambda":
+        nested_params = params
+        for param in expr["params"]:
+            nested_params = application_append_unique(nested_params, param)
+        return application_lambda_capture_name(expr["body"], nested_params, function_names)
+    return ""
+
+
+def analyze_application_expr(expr, function_names, path):
+    kind = expr["kind"]
+    operation_id = application_expr_operation_id(kind)
+    if operation_id == 0:
+        return application_analysis_fail(0, "unknown-expression", kind, path, kind)
+    analysis = application_analysis_ok(operation_id)
+    analysis = application_analysis_require_value_kind(analysis, kind)
+    if kind == "none" or kind == "bool" or kind == "int" or kind == "float" or kind == "string" or kind == "var":
+        return analysis
+    if kind == "attr":
+        analysis = application_analysis_merge(analysis, analyze_application_expr(expr["receiver"], function_names, path + ".receiver"))
+        analysis = application_analysis_require_component(analysis, "objects")
+        analysis["temporary_slots"] = analysis["temporary_slots"] + 1
+        return analysis
+    if kind == "unary":
+        unary_operation_id = application_unary_operator_id(expr["op"])
+        if unary_operation_id == 0:
+            return application_analysis_fail(operation_id, "unsupported-unary", kind, path, expr["op"])
+        # The source Pratt parser canonicalizes `-value` as `0 - value`, while
+        # the native AST arena retains a unary-minus record for direct codegen.
+        # Report the same target-neutral semantic inventory for both shapes.
+        if expr["op"] == "-":
+            analysis = application_analysis_ok(application_expr_operation_id("binary"))
+            analysis = application_analysis_merge(analysis, application_analysis_ok(application_expr_operation_id("int")))
+            analysis = application_analysis_merge(analysis, application_analysis_ok(application_binary_operator_id("-")))
+            analysis = application_analysis_require_value_kind(analysis, "int")
+        else:
+            analysis = application_analysis_merge(analysis, application_analysis_ok(unary_operation_id))
+        child_path = path + ".value"
+        if expr["op"] == "-":
+            child_path = path + ".right"
+        child = analyze_application_expr(expr["value"], function_names, child_path)
+        child["temporary_slots"] = child["temporary_slots"] + 1
+        return application_analysis_merge(analysis, child)
+    if kind == "binary":
+        binary_operation_id = application_binary_operator_id(expr["op"])
+        if binary_operation_id == 0:
+            return application_analysis_fail(operation_id, "unsupported-binary", kind, path, expr["op"])
+        analysis = application_analysis_merge(analysis, application_analysis_ok(binary_operation_id))
+        left = analyze_application_expr(expr["left"], function_names, path + ".left")
+        right = analyze_application_expr(expr["right"], function_names, path + ".right")
+        analysis = application_analysis_merge(analysis, left)
+        analysis = application_analysis_merge(analysis, right)
+        analysis["temporary_slots"] = analysis["temporary_slots"] + 2
+        return analysis
+    if kind == "slice":
+        analysis = application_analysis_merge(analysis, analyze_application_expr(expr["receiver"], function_names, path + ".receiver"))
+        analysis = application_analysis_merge(analysis, analyze_application_expr(expr["start"], function_names, path + ".start"))
+        analysis = application_analysis_merge(analysis, analyze_application_expr(expr["stop"], function_names, path + ".stop"))
+        analysis = application_analysis_require_component(analysis, "collections")
+        analysis["temporary_slots"] = analysis["temporary_slots"] + 3
+        return analysis
+    if kind == "index":
+        analysis = application_analysis_merge(analysis, analyze_application_expr(expr["receiver"], function_names, path + ".receiver"))
+        analysis = application_analysis_merge(analysis, analyze_application_expr(expr["index"], function_names, path + ".index"))
+        analysis["temporary_slots"] = analysis["temporary_slots"] + 2
+        return analysis
+    if kind == "list" or kind == "tuple" or kind == "set":
+        item_idx = 0
+        for item in expr["items"]:
+            child = analyze_application_expr(item, function_names, path + ".item" + str(item_idx))
+            analysis = application_analysis_merge(analysis, child)
+            item_idx = item_idx + 1
+        analysis = application_analysis_require_component(analysis, "collections")
+        analysis["temporary_slots"] = analysis["temporary_slots"] + 1
+        return analysis
+    if kind == "dict":
+        entry_idx = 0
+        for entry in expr["entries"]:
+            key = analyze_application_expr(entry["key"], function_names, path + ".entry" + str(entry_idx) + ".key")
+            value = analyze_application_expr(entry["value"], function_names, path + ".entry" + str(entry_idx) + ".value")
+            analysis = application_analysis_merge(analysis, key)
+            analysis = application_analysis_merge(analysis, value)
+            entry_idx = entry_idx + 1
+        analysis = application_analysis_require_component(analysis, "collections")
+        analysis["temporary_slots"] = analysis["temporary_slots"] + 2
+        return analysis
+    if kind == "lambda":
+        # Materialize parser-backed handle fields before recursive calls. The
+        # source parser returns dictionaries and the generated parser returns
+        # retained AST handles; named locals give both representations the same
+        # lifetime across the multi-argument recursive call ABI.
+        lambda_body = expr["body"]
+        lambda_params = expr["params"]
+        body_analysis = analyze_application_expr(lambda_body, function_names, path + ".body")
+        analysis = application_analysis_merge(analysis, body_analysis)
+        analysis = application_analysis_require_value_kind(analysis, "function")
+        analysis = application_analysis_require_component(analysis, "callable")
+        analysis["temporary_slots"] = analysis["temporary_slots"] + len(lambda_params) + 1
+        return analysis
+    if kind == "comprehension":
+        analysis = application_analysis_merge(analysis, analyze_application_expr(expr["iterable"], function_names, path + ".iterable"))
+        analysis = application_analysis_merge(analysis, analyze_application_expr(expr["condition"], function_names, path + ".condition"))
+        if expr["out_kind"] == "list":
+            analysis = application_analysis_merge(analysis, analyze_application_expr(expr["expr"], function_names, path + ".expr"))
+        elif expr["out_kind"] == "dict":
+            analysis = application_analysis_merge(analysis, analyze_application_expr(expr["key"], function_names, path + ".key"))
+            analysis = application_analysis_merge(analysis, analyze_application_expr(expr["value"], function_names, path + ".value"))
+        else:
+            return application_analysis_fail(operation_id, "unsupported-comprehension", kind, path, expr["out_kind"])
+        analysis = application_analysis_require_iterator(analysis, application_expr_iterator_kind(expr["iterable"]))
+        analysis = application_analysis_require_component(analysis, "iterator")
+        analysis = application_analysis_require_component(analysis, "collections")
+        analysis["temporary_slots"] = analysis["temporary_slots"] + 6
+        return analysis
+    if kind == "call":
+        if expr["callee"]["kind"] != "var":
+            return application_analysis_fail(operation_id, "unsupported-callee", "call", path + ".callee", expr["callee"]["kind"])
+        call_name = expr["callee"]["value"]
+        builtin = application_direct_builtin_supported(call_name)
+        if builtin:
+            analysis = application_analysis_require_call(analysis, "builtin")
+        else:
+            analysis = application_analysis_require_call(analysis, "user")
+        if builtin and call_name != "argv" and not primitive_schema_accepts_arity(call_name, len(expr["args"])):
+            return application_analysis_fail(operation_id, "primitive-arity", kind, path, call_name)
+        if call_name == "argv" and len(expr["args"]) != 0:
+            return application_analysis_fail(operation_id, "primitive-arity", kind, path, call_name)
+        if not builtin and not application_name_index_present(function_names, call_name) and not application_name_index_present(function_names, "@bound:" + call_name):
+            return application_analysis_fail(operation_id, "unknown-call", kind, path, call_name)
+        if primitive_schema_runtime_visible(call_name):
+            capability = primitive_schema_capability(call_name)
+            if capability != "core" and capability != "collections":
+                analysis = application_analysis_require_runtime_operation(analysis, call_name)
+            if capability == "file" or capability == "compiler-file":
+                analysis = application_analysis_require_component(analysis, "file")
+            elif capability == "tcp":
+                analysis = application_analysis_require_component(analysis, "tcp")
+            elif capability == "terminal":
+                analysis = application_analysis_require_component(analysis, "terminal")
+            elif capability == "host-extension":
+                analysis = application_analysis_require_component(analysis, "host-extension")
+            elif capability == "clock":
+                analysis = application_analysis_require_component(analysis, "time")
+        arg_idx = 0
+        for arg in expr["args"]:
+            if arg["kind"] == "kwarg":
+                if builtin:
+                    keyword_ok = False
+                    if call_name == "enumerate" and arg["name"] == "start":
+                        keyword_ok = True
+                    if call_name == "sum" and arg["name"] == "start":
+                        keyword_ok = True
+                    if call_name == "sorted" and arg["name"] == "key":
+                        keyword_ok = True
+                    if not keyword_ok:
+                        return application_analysis_fail(operation_id, "unsupported-keyword", "kwarg", path + ".arg" + str(arg_idx), arg["name"])
+                analysis = application_analysis_merge(analysis, analyze_application_expr(arg["value"], function_names, path + ".arg" + str(arg_idx)))
+            else:
+                analysis = application_analysis_merge(analysis, analyze_application_expr(arg, function_names, path + ".arg" + str(arg_idx)))
+            arg_idx = arg_idx + 1
+        analysis["temporary_slots"] = analysis["temporary_slots"] + len(expr["args"]) + 1
+        return analysis
+    if kind == "method_call":
+        method_name = expr["name"]
+        object_method = application_name_index_present(function_names, "@method:" + method_name)
+        analysis = application_analysis_require_method(analysis, method_name)
+        if object_method:
+            analysis = application_analysis_require_call(analysis, "bound_method")
+        else:
+            analysis = application_analysis_require_call(analysis, "method")
+        if application_method_id(method_name) == 0 and not object_method:
+            return application_analysis_fail(operation_id, "unsupported-method", kind, path, method_name)
+        analysis = application_analysis_merge(analysis, analyze_application_expr(expr["receiver"], function_names, path + ".receiver"))
+        arg_idx = 0
+        for arg in expr["args"]:
+            if arg["kind"] == "kwarg":
+                if not object_method:
+                    return application_analysis_fail(operation_id, "unsupported-keyword", "kwarg", path + ".arg" + str(arg_idx), arg["name"])
+                analysis = application_analysis_merge(analysis, analyze_application_expr(arg["value"], function_names, path + ".arg" + str(arg_idx)))
+            else:
+                analysis = application_analysis_merge(analysis, analyze_application_expr(arg, function_names, path + ".arg" + str(arg_idx)))
+            arg_idx = arg_idx + 1
+        argc = len(expr["args"])
+        if not object_method and method_name == "read" and argc != 0 and argc != 1:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "write" and argc != 1:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "flush" and argc != 0:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "seek" and argc != 1 and argc != 2:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "close" and argc != 0:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "append" and argc != 1:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "remove" and argc != 1:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "add" and argc != 1:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and (method_name == "keys" or method_name == "items") and argc != 0:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "strip" and argc != 0:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and (method_name == "split" or method_name == "startswith" or method_name == "endswith") and argc != 1:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if object_method:
+            analysis = application_analysis_require_component(analysis, "objects")
+        elif method_name == "append" or method_name == "remove" or method_name == "add" or method_name == "keys" or method_name == "items" or method_name == "strip" or method_name == "split" or method_name == "startswith" or method_name == "endswith":
+            analysis = application_analysis_require_component(analysis, "collections")
+        else:
+            analysis = application_analysis_require_component(analysis, "file")
+            if method_name == "read" or method_name == "write" or method_name == "flush" or method_name == "seek":
+                analysis = application_analysis_require_runtime_operation(analysis, "file." + method_name)
+        analysis["temporary_slots"] = analysis["temporary_slots"] + argc + 1
+        return analysis
+    return application_analysis_fail(operation_id, "unsupported-expression", kind, path, kind)
+
+
+def application_statements_have_control_exit(items):
+    for stmt in items:
+        kind = stmt["kind"]
+        if kind == "return" or kind == "break" or kind == "continue":
+            return True
+        if kind == "if":
+            if application_statements_have_control_exit(stmt["body"]):
+                return True
+            for branch in stmt["elifs"]:
+                if application_statements_have_control_exit(branch["body"]):
+                    return True
+            if application_statements_have_control_exit(stmt["else_body"]):
+                return True
+        if kind == "while" or kind == "with":
+            if application_statements_have_control_exit(stmt["body"]):
+                return True
+    return False
+
+
+def analyze_application_statements(items, function_names, in_function, in_loop, path):
+    analysis = application_analysis_ok(0)
+    idx = 0
+    for stmt in items:
+        child = analyze_application_statement(stmt, function_names, in_function, in_loop, path + ".stmt" + str(idx))
+        analysis = application_analysis_merge(analysis, child)
+        idx = idx + 1
+    return analysis
+
+
+def analyze_application_statement(stmt, function_names, in_function, in_loop, path):
+    kind = stmt["kind"]
+    operation_id = application_statement_operation_id(kind)
+    if operation_id == 0:
+        return application_analysis_fail(0, "unknown-statement", kind, path, kind)
+    analysis = application_analysis_ok(operation_id)
+    if kind == "assign":
+        target_kind = stmt["target"]["kind"]
+        if target_kind != "var" and target_kind != "index" and target_kind != "unpack" and target_kind != "attr":
+            return application_analysis_fail(operation_id, "unsupported-assignment-target", "assignment_target", path + ".target", stmt["target"]["kind"])
+        analysis = application_analysis_require_assignment_target(analysis, target_kind)
+        if target_kind == "attr":
+            analysis = application_analysis_merge(analysis, analyze_application_expr(stmt["target"]["receiver"], function_names, path + ".target.receiver"))
+            analysis = application_analysis_require_component(analysis, "objects")
+            analysis["temporary_slots"] = analysis["temporary_slots"] + 3
+        if target_kind == "index":
+            analysis = application_analysis_merge(analysis, analyze_application_expr(stmt["target"]["receiver"], function_names, path + ".target.receiver"))
+            analysis = application_analysis_merge(analysis, analyze_application_expr(stmt["target"]["index"], function_names, path + ".target.index"))
+            analysis["temporary_slots"] = analysis["temporary_slots"] + 3
+        if target_kind == "unpack":
+            star_count = 0
+            for target in stmt["target"]["targets"]:
+                if target["star"]:
+                    star_count = star_count + 1
+            if star_count > 1:
+                return application_analysis_fail(operation_id, "multiple-starred-targets", "unpack", path + ".target", str(star_count))
+            analysis = application_analysis_require_iterator(analysis, "generic")
+            analysis = application_analysis_require_component(analysis, "iterator")
+            analysis["temporary_slots"] = analysis["temporary_slots"] + 4
+        # Keep parser-backed AST values owned by the caller across recursive
+        # analysis. Passing stmt["value"] directly creates a temporary handle
+        # whose release can precede later field reads inside the callee.
+        assignment_value = stmt["value"]
+        value_analysis = analyze_application_expr(assignment_value, function_names, path + ".value")
+        return application_analysis_merge(analysis, value_analysis)
+    if kind == "expr":
+        expr = stmt["value"]
+        if expr["kind"] == "call" and expr["callee"]["kind"] == "var" and expr["callee"]["value"] == "print":
+            analysis = application_analysis_require_call(analysis, "builtin")
+            arg_idx = 0
+            for arg in expr["args"]:
+                if arg["kind"] == "kwarg":
+                    return application_analysis_fail(operation_id, "unsupported-keyword", "kwarg", path + ".arg" + str(arg_idx), arg["name"])
+                analysis = application_analysis_merge(analysis, analyze_application_expr(arg, function_names, path + ".arg" + str(arg_idx)))
+                arg_idx = arg_idx + 1
+            return analysis
+        return application_analysis_merge(analysis, analyze_application_expr(expr, function_names, path + ".value"))
+    if kind == "if":
+        analysis = application_analysis_merge(analysis, analyze_application_expr(stmt["condition"], function_names, path + ".condition"))
+        analysis = application_analysis_merge(analysis, analyze_application_statements(stmt["body"], function_names, in_function, in_loop, path + ".if"))
+        branch_idx = 0
+        for branch in stmt["elifs"]:
+            analysis = application_analysis_merge(analysis, analyze_application_expr(branch["condition"], function_names, path + ".elif" + str(branch_idx) + ".condition"))
+            analysis = application_analysis_merge(analysis, analyze_application_statements(branch["body"], function_names, in_function, in_loop, path + ".elif" + str(branch_idx)))
+            branch_idx = branch_idx + 1
+        return application_analysis_merge(analysis, analyze_application_statements(stmt["else_body"], function_names, in_function, in_loop, path + ".else"))
+    if kind == "while":
+        analysis = application_analysis_merge(analysis, analyze_application_expr(stmt["condition"], function_names, path + ".condition"))
+        return application_analysis_merge(analysis, analyze_application_statements(stmt["body"], function_names, in_function, True, path + ".body"))
+    if kind == "for":
+        if len(stmt["targets"]) < 1:
+            return application_analysis_fail(operation_id, "unsupported-for-target", kind, path + ".target", str(len(stmt["targets"])))
+        analysis = application_analysis_merge(analysis, analyze_application_expr(stmt["iterable"], function_names, path + ".iterable"))
+        analysis = application_analysis_merge(analysis, analyze_application_statements(stmt["body"], function_names, in_function, True, path + ".body"))
+        analysis = application_analysis_require_iterator(analysis, application_expr_iterator_kind(stmt["iterable"]))
+        analysis = application_analysis_require_component(analysis, "iterator")
+        analysis["temporary_slots"] = analysis["temporary_slots"] + 3
+        return analysis
+    if kind == "return":
+        if not in_function:
+            return application_analysis_fail(operation_id, "return-outside-function", kind, path, kind)
+        analysis = application_analysis_require_control_exit(analysis, "return")
+        return application_analysis_merge(analysis, analyze_application_expr(stmt["value"], function_names, path + ".value"))
+    if kind == "with":
+        analysis = application_analysis_merge(analysis, analyze_application_expr(stmt["resource"], function_names, path + ".resource"))
+        analysis = application_analysis_require_component(analysis, "file")
+        analysis["temporary_slots"] = analysis["temporary_slots"] + 3
+        return application_analysis_merge(analysis, analyze_application_statements(stmt["body"], function_names, in_function, in_loop, path + ".body"))
+    if kind == "try":
+        analysis = application_analysis_merge(analysis, analyze_application_statements(stmt["body"], function_names, in_function, in_loop, path + ".body"))
+        analysis = application_analysis_merge(analysis, analyze_application_statements(stmt["except_body"], function_names, in_function, in_loop, path + ".except"))
+        analysis = application_analysis_merge(analysis, analyze_application_statements(stmt["finally_body"], function_names, in_function, in_loop, path + ".finally"))
+        analysis = application_analysis_require_component(analysis, "exceptions")
+        # exception value, handler match/binding scratch, propagation flag,
+        # and pending return/break/continue state used while finally executes.
+        analysis["temporary_slots"] = analysis["temporary_slots"] + 4
+        return analysis
+    if kind == "raise":
+        analysis = application_analysis_merge(analysis, analyze_application_expr(stmt["value"], function_names, path + ".value"))
+        analysis = application_analysis_require_control_exit(analysis, "raise")
+        analysis = application_analysis_require_component(analysis, "exceptions")
+        return analysis
+    if kind == "yield":
+        if not in_function:
+            return application_analysis_fail(operation_id, "yield-outside-function", kind, path, kind)
+        analysis = application_analysis_merge(analysis, analyze_application_expr(stmt["value"], function_names, path + ".value"))
+        analysis = application_analysis_require_control_exit(analysis, "yield")
+        analysis = application_analysis_require_value_kind(analysis, "generator")
+        analysis = application_analysis_require_component(analysis, "generator")
+        return analysis
+    if kind == "function":
+        analysis = application_analysis_require_value_kind(analysis, "function")
+        return application_analysis_merge(analysis, analyze_application_statements(stmt["body"], function_names, True, False, path + ".body"))
+    if kind == "class":
+        analysis = application_analysis_require_value_kind(analysis, "class")
+        analysis = application_analysis_require_value_kind(analysis, "object")
+        for member in stmt["body"]:
+            if member["kind"] != "function":
+                return application_analysis_fail(operation_id, "unsupported-class-member", member["kind"], path, member["kind"])
+            analysis = application_analysis_merge(analysis, analyze_application_statements(member["body"], function_names, True, False, path + "." + member["name"]))
+        analysis = application_analysis_require_component(analysis, "objects")
+        return analysis
+    if kind == "break" or kind == "continue":
+        if not in_loop:
+            return application_analysis_fail(operation_id, kind + "-outside-loop", kind, path, kind)
+        analysis = application_analysis_require_control_exit(analysis, kind)
+        return analysis
+    return application_analysis_fail(operation_id, "unsupported-statement", kind, path, kind)
+
+
+def analyze_application_program(program, function_names):
+    return analyze_application_statements(program["items"], application_analysis_name_index(program, function_names), False, False, "program")
+
+
+def application_analysis_diagnostic(application):
+    return "direct-native analysis rejected code=" + application["code"] + ";kind=" + application_analysis_kind(application["code"], application["detail"]) + ";position=" + application["path"] + ";detail=" + application["detail"]
+
+
+def require_application_analysis(program, function_names):
+    application = analyze_application_program(program, function_names)
+    if not application["ok"]:
+        fail(application_analysis_diagnostic(application))
+    return application

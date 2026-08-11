@@ -1,0 +1,178 @@
+# CI builds the example executables directly; this Tyrion suite verifies
+# their presence and asserts their runtime output before release publication.
+
+def require(condition, message):
+    if not condition:
+        raise message
+
+
+def contains_text(text, expected):
+    return len(text.split(expected)) > 1
+
+
+def run_tool_checked(command, args, label):
+    result = __tyrion_run_tool(command, args)
+    if not result["ok"]:
+        raise label + " failed (status " + str(result["status"]) + "): " + result["stderr"]
+    return result["stdout"]
+
+
+def require_built(source, output):
+    run_tool_checked("test", ["-x", output], "verify executable for " + source)
+
+
+def run_example(binary):
+    return run_tool_checked(binary, [], "run " + binary)
+
+
+def require_output(binary, expected):
+    output = run_example(binary)
+    for fragment in expected:
+        require(contains_text(output, fragment), binary + " missing expected output: " + fragment + "\nactual output:\n" + output)
+    require(not contains_text(output, "should not reach"), binary + " reached an unreachable branch:\n" + output)
+    return output
+
+
+def require_chars(text, allowed, label):
+    idx = 0
+    while idx < len(text):
+        require(contains_text(allowed, text[idx]), label + " contains invalid character: " + text[idx])
+        idx = idx + 1
+
+
+def require_random_case(actual, expected, label):
+    uppercase = {"a": "A", "b": "B", "e": "E", "f": "F", "g": "G", "i": "I", "m": "M", "n": "N", "o": "O", "r": "R", "s": "S", "t": "T"}
+    require(len(actual) == len(expected), label + " has the wrong length")
+    idx = 0
+    while idx < len(expected):
+        lower = expected[idx]
+        require(actual[idx] == lower or actual[idx] == uppercase[lower], label + " changed a non-case character")
+        idx = idx + 1
+
+
+def test_deterministic_examples():
+    cases = []
+    cases = cases.append(["examples/class.ty", "class", ["Hello Sansa I'm Arya"]])
+    cases = cases.append(["examples/collections.ty", "collections", ["1 5 slice [2, 3] strslice bcd", "list [1, 3, 4]", "dict keys"]])
+    cases = cases.append(["examples/control_flow.ty", "control_flow", ["add 12", "describe neg zero pos", "sum list 10", "range reverse [3, 2, 1]", "tick 1"]])
+    cases = cases.append(["examples/direct_native_aggregate_builtins.ty", "direct_native_aggregate_builtins", ["sum 14 24", "minmax 1 5 2 9", "truth True True False"]])
+    cases = cases.append(["examples/direct_native_assignments.ty", "direct_native_assignments", ["counts 2 0 1", "nums 10 25 23", "unpack 1 3 2 4 5"]])
+    cases = cases.append(["examples/direct_native_builtin_kwargs.ty", "direct_native_builtin_kwargs", ["sorted [1, 2, 3] [3, 2, 1]"]])
+    cases = cases.append(["examples/direct_native_class_runtime_helpers.ty", "direct_native_class_runtime_helpers", ["class 4 8 8", "list 2 5", "dict b a 2 1", "str tyrionic-lang.ty True b"]])
+    cases = cases.append(["examples/direct_native_control_flow.ty", "direct_native_control_flow", ["lt3 1", "mid 3", "gt3 5", "sum 15"]])
+    cases = cases.append(["examples/direct_native_exceptions_comprehensions.ty", "direct_native_exceptions_comprehensions", ["comp 3 11 12", "caught boom", "finally 5"]])
+    cases = cases.append(["examples/direct_native_for_range_if_else_branch.ty", "direct_native_for_range_if_else_branch", ["for-range-if-else-ok"]])
+    cases = cases.append(["examples/direct_native_functions_data.ty", "direct_native_functions_data", ["total 10", "first_last 1 4", "mapped 10 12", "builtins 4 4 7 2.5 False"]])
+    cases = cases.append(["examples/direct_native_generators.ty", "direct_native_generators", ["gen 3 1 4 7 12", "squares 4 0 9"]])
+    cases = cases.append(["examples/direct_native_int_call_abi_branch.ty", "direct_native_int_call_abi_branch", ["int-call-abi-ok", "4294967324", "-4294967325"]])
+    cases = cases.append(["examples/direct_native_int_compare_branch.ty", "direct_native_int_compare_branch", ["int-compare-fail"]])
+    cases = cases.append(["examples/direct_native_loop_break_continue_branch.ty", "direct_native_loop_break_continue_branch", ["loop-break-continue-ok"]])
+    cases = cases.append(["examples/direct_native_process.ty", "direct_native_process", ["process-conformance-ok"]])
+    cases = cases.append(["examples/direct_native_runtime_io.ty", "direct_native_runtime_io", ["io winter is coming 10"]])
+    cases = cases.append(["examples/direct_native_scalar_expressions.ty", "direct_native_scalar_expressions", ["12\n2\n35\n7", "4\n7\n8\n3", "True\nTrue\nTrue\nTrue"]])
+    cases = cases.append(["examples/full_feature_test.ty", "full_feature_test", ["== primitives ==", "file read hello file", "add result 12", "caught neg", "finally ran", "big 1000000 acc 3"]])
+    cases = cases.append(["examples/hello.ty", "hello", ["hello world", "math 5 12 -3"]])
+    cases = cases.append(["examples/multiline_expressions.ty", "multiline_expressions", ["multiline 12 [12, 13] 5 [12]"]])
+    cases = cases.append(["examples/tail_demo.ty", "tail_demo", ["line: alpha", "line: beta", "hello world!", "hello world?", "current time (secs):"]])
+
+    for case in cases:
+        source = case[0]
+        binary = "build/examples/" + case[1]
+        require_built(source, binary)
+        output = require_output(binary, case[2])
+        if case[1] == "direct_native_builtin_kwargs":
+            list_pairs = contains_text(output, "enum [[5, 10], [6, 20], [7, 30]]")
+            tuple_pairs = contains_text(output, "enum [(5, 10), (6, 20), (7, 30)]")
+            require(list_pairs or tuple_pairs, binary + " has invalid enumerate output:\n" + output)
+
+
+def test_socket_example():
+    binary = "build/examples/socket_tcp_min"
+    require_built("examples/socket_tcp_min.ty", binary)
+    output = require_output(binary, ["connecting example.com 80", "bytes written"])
+    read_completed = contains_text(output, "read eof") or contains_text(output, "read chunk bytes")
+    require(read_completed, binary + " did not report a completed read:\n" + output)
+
+
+def test_terminal_example(platform):
+    if platform != "darwin":
+        return
+    binary = "build/examples/terminal_chess"
+    require_built("examples/terminal_chess.ty", binary)
+
+
+def test_foo_extension():
+    binary = "build/examples/foo"
+    require_built("examples/extensions/foo.ty", binary)
+    output = run_example(binary)
+    require(output == "hello-static\npong\n", binary + " output mismatch:\n" + output)
+
+
+def test_static_extension_lifecycle():
+    binary = "build/examples/static_lifecycle"
+    require_built("examples/extensions/static_lifecycle.ty", binary)
+    output = run_example(binary)
+    require(output == "static-extension-conformance-ok\n", binary + " output mismatch:\n" + output)
+
+
+def test_foobar_extension():
+    binary = "build/examples/foobar"
+    require_built("examples/extensions/foobar.ty", binary)
+    output = run_example(binary)
+    lines = output.strip().split("\n")
+    require(len(lines) == 2, binary + " expected two output lines:\n" + output)
+    require_random_case(lines[0], "barfoo", binary + " first randomized value")
+    require_random_case(lines[1], "somestring", binary + " second randomized value")
+
+
+def test_rand_extension():
+    binary = "build/examples/rand"
+    require_built("examples/extensions/rand.ty", binary)
+    output = run_example(binary)
+    lines = output.strip().split("\n")
+    require(len(lines) == 16, binary + " expected sixteen output lines:\n" + output)
+    require(lines[0] == "rand()", binary + " missing rand header")
+    require(float(lines[1]) >= 0.0 and float(lines[1]) < 1.0, binary + " rand value is outside [0, 1)")
+    require(float(lines[2]) >= 0.0 and float(lines[2]) < 1.0, binary + " rand value is outside [0, 1)")
+    require(lines[3] == "rand_u64()", binary + " missing rand_u64 header")
+    require(int(lines[4]) >= 0, binary + " rand_u64 value is negative")
+    require(int(lines[5]) >= 0, binary + " rand_u64 value is negative")
+    require(lines[6] == "rand_int(10)", binary + " missing rand_int header")
+    require(int(lines[7]) >= 0 and int(lines[7]) < 10, binary + " rand_int value is outside [0, 10)")
+    require(int(lines[8]) >= 0 and int(lines[8]) < 10, binary + " rand_int value is outside [0, 10)")
+    require(int(lines[9]) >= 0 and int(lines[9]) < 10, binary + " rand_int value is outside [0, 10)")
+    require(lines[10] == "rand_bool()", binary + " missing rand_bool header")
+    require(lines[11] == "True" or lines[11] == "False", binary + " invalid rand_bool value")
+    require(lines[12] == "True" or lines[12] == "False", binary + " invalid rand_bool value")
+    require(lines[13] == "rand_hex(16)", binary + " missing rand_hex header")
+
+    # The two hexadecimal values follow the final header.
+    raw_lines = output.split("\n")
+    require(len(raw_lines) >= 17, binary + " missing hexadecimal output:\n" + output)
+    require(len(raw_lines[14]) == 32, binary + " first rand_hex value has the wrong length")
+    require(len(raw_lines[15]) == 32, binary + " second rand_hex value has the wrong length")
+    require_chars(raw_lines[14], "0123456789abcdef", binary + " first rand_hex value")
+    require_chars(raw_lines[15], "0123456789abcdef", binary + " second rand_hex value")
+
+
+def test_extension_modules():
+    wrappers = []
+    wrappers = wrappers.append(["examples/extensions/foobar_wrapper.ty", "foobar_wrapper"])
+    wrappers = wrappers.append(["examples/extensions/rand_wrapper.ty", "rand_wrapper"])
+    for wrapper in wrappers:
+        binary = "build/examples/" + wrapper[1]
+        require_built(wrapper[0], binary)
+        output = run_example(binary)
+        require(output == "", binary + " wrapper module unexpectedly printed output:\n" + output)
+
+
+def main(platform):
+    test_deterministic_examples()
+    test_socket_example()
+    test_terminal_example(platform)
+    test_foo_extension()
+    test_static_extension_lifecycle()
+    test_foobar_extension()
+    test_rand_extension()
+    test_extension_modules()
+    print("example_suite=ok")

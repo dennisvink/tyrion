@@ -1,0 +1,16 @@
+counts = {}
+for color in ["red", "green", "blue"]:
+    counts[color] = 0
+
+for word in ["red", "blue", "red"]:
+    counts[word] = counts[word] + 1
+
+nums = [10, 20, 30]
+nums[1] += 5
+nums[-1] = nums[-1] - 7
+
+a, *mid, z = [1, 2, 3, 4, 5]
+
+print("counts", counts["red"], counts["green"], counts["blue"])
+print("nums", nums[0], nums[1], nums[2])
+print("unpack", a, len(mid), mid[0], mid[2], z)

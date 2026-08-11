@@ -1,0 +1,1038 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# compiler / runtime plan: responsibility-owned canonical compiler module.
+
+def runtime_native_append_unique(items, value):
+    idx = 0
+    while idx < len(items):
+        if items[idx] == value:
+            return items
+        idx = idx + 1
+    items = method_append(items, value)
+    return items
+
+def runtime_native_direct_builtin(name):
+    return application_direct_builtin_supported(name)
+
+def runtime_native_function_names(program):
+    names = []
+    for stmt in program["items"]:
+        if stmt["kind"] == "function":
+            names = method_append(names, stmt["name"])
+        elif stmt["kind"] == "class":
+            names = method_append(names, stmt["name"])
+            for member in stmt["body"]:
+                if member["kind"] == "function":
+                    names = method_append(names, "@method:" + member["name"])
+        elif stmt["kind"] == "assign" and stmt["target"]["kind"] == "var" and stmt["value"]["kind"] == "lambda":
+            names = method_append(names, stmt["target"]["value"])
+    return names
+
+def runtime_native_append_literal(literals, kind, value):
+    idx = 0
+    while idx < len(literals):
+        item = literals[idx]
+        # Parser-backed scalar handles and ordinary lowered scalar values can
+        # have different internal representations in generated descendants.
+        # Literal kind plus canonical text is the stable metadata identity.
+        if item["kind"] == kind and str(item["value"]) == str(value):
+            return literals
+        idx = idx + 1
+    literal = {"id": len(literals), "kind": kind, "value": value}
+    return method_append(literals, literal)
+
+def runtime_native_expr_metadata(expr, metadata):
+    kind = expr["kind"]
+    if kind == "string" or kind == "int" or kind == "float":
+        metadata["literals"] = runtime_native_append_literal(metadata["literals"], kind, expr["value"])
+        return metadata
+    if kind == "call":
+        if expr["callee"]["kind"] == "var":
+            metadata["calls"] = runtime_native_append_unique(metadata["calls"], expr["callee"]["value"])
+        metadata = runtime_native_expr_metadata(expr["callee"], metadata)
+        for arg in expr["args"]:
+            if arg["kind"] == "kwarg":
+                metadata = runtime_native_expr_metadata(arg["value"], metadata)
+            else:
+                metadata = runtime_native_expr_metadata(arg, metadata)
+        return metadata
+    if kind == "method_call":
+        metadata = runtime_native_expr_metadata(expr["receiver"], metadata)
+        for arg in expr["args"]:
+            if arg["kind"] == "kwarg":
+                metadata = runtime_native_expr_metadata(arg["value"], metadata)
+            else:
+                metadata = runtime_native_expr_metadata(arg, metadata)
+        return metadata
+    if kind == "binary":
+        metadata = runtime_native_expr_metadata(expr["left"], metadata)
+        return runtime_native_expr_metadata(expr["right"], metadata)
+    if kind == "unary":
+        # Source Pratt parsing canonicalizes unary minus as `0 - value`, while
+        # generated AST records preserve an explicit unary node. Include the
+        # implicit zero so literal metadata remains representation-neutral.
+        if expr["op"] == "-":
+            metadata["literals"] = runtime_native_append_literal(metadata["literals"], "int", 0)
+        return runtime_native_expr_metadata(expr["value"], metadata)
+    if kind == "kwarg":
+        return runtime_native_expr_metadata(expr["value"], metadata)
+    if kind == "index":
+        metadata = runtime_native_expr_metadata(expr["receiver"], metadata)
+        return runtime_native_expr_metadata(expr["index"], metadata)
+    if kind == "slice":
+        metadata = runtime_native_expr_metadata(expr["receiver"], metadata)
+        metadata = runtime_native_expr_metadata(expr["start"], metadata)
+        return runtime_native_expr_metadata(expr["stop"], metadata)
+    if kind == "attr":
+        metadata["literals"] = runtime_native_append_literal(metadata["literals"], "string", expr["name"])
+        return runtime_native_expr_metadata(expr["receiver"], metadata)
+    if kind == "list" or kind == "tuple" or kind == "set":
+        for item in expr["items"]:
+            metadata = runtime_native_expr_metadata(item, metadata)
+        return metadata
+    if kind == "dict":
+        for entry in expr["entries"]:
+            metadata = runtime_native_expr_metadata(entry["key"], metadata)
+            metadata = runtime_native_expr_metadata(entry["value"], metadata)
+        return metadata
+    if kind == "lambda":
+        return runtime_native_expr_metadata(expr["body"], metadata)
+    if kind == "comprehension":
+        metadata = runtime_native_expr_metadata(expr["expr"], metadata)
+        metadata = runtime_native_expr_metadata(expr["key"], metadata)
+        metadata = runtime_native_expr_metadata(expr["value"], metadata)
+        metadata = runtime_native_expr_metadata(expr["iterable"], metadata)
+        return runtime_native_expr_metadata(expr["condition"], metadata)
+    return metadata
+
+def runtime_native_statement_metadata(stmt, metadata):
+    kind = stmt["kind"]
+    if kind == "assign":
+        metadata = runtime_native_expr_metadata(stmt["target"], metadata)
+        return runtime_native_expr_metadata(stmt["value"], metadata)
+    if kind == "expr" or kind == "return" or kind == "raise" or kind == "yield":
+        return runtime_native_expr_metadata(stmt["value"], metadata)
+    if kind == "if":
+        metadata = runtime_native_expr_metadata(stmt["condition"], metadata)
+        metadata = runtime_native_statement_list_metadata(stmt["body"], metadata)
+        for branch in stmt["elifs"]:
+            metadata = runtime_native_expr_metadata(branch["condition"], metadata)
+            metadata = runtime_native_statement_list_metadata(branch["body"], metadata)
+        return runtime_native_statement_list_metadata(stmt["else_body"], metadata)
+    if kind == "while":
+        metadata = runtime_native_expr_metadata(stmt["condition"], metadata)
+        return runtime_native_statement_list_metadata(stmt["body"], metadata)
+    if kind == "for":
+        metadata = runtime_native_expr_metadata(stmt["iterable"], metadata)
+        return runtime_native_statement_list_metadata(stmt["body"], metadata)
+    if kind == "with":
+        metadata = runtime_native_expr_metadata(stmt["resource"], metadata)
+        return runtime_native_statement_list_metadata(stmt["body"], metadata)
+    if kind == "try":
+        metadata = runtime_native_statement_list_metadata(stmt["body"], metadata)
+        metadata = runtime_native_statement_list_metadata(stmt["except_body"], metadata)
+        if stmt["except_name"] != "":
+            metadata["literals"] = runtime_native_append_literal(metadata["literals"], "string", stmt["except_name"])
+        return runtime_native_statement_list_metadata(stmt["finally_body"], metadata)
+    return metadata
+
+def runtime_native_statement_list_metadata(items, metadata):
+    for stmt in items:
+        metadata = runtime_native_statement_metadata(stmt, metadata)
+    return metadata
+
+def runtime_native_append_name(names, name):
+    if name in names:
+        return names
+    return method_append(names, name)
+
+def runtime_native_collect_target_names(target, names):
+    kind = target["kind"]
+    if kind == "var":
+        return runtime_native_append_name(names, target["value"])
+    if kind == "unpack":
+        for item in target["targets"]:
+            if item["kind"] == "var":
+                names = runtime_native_append_name(names, item["value"])
+            elif item["kind"] == "unpack_target":
+                names = runtime_native_append_name(names, item["name"])
+    return names
+
+def runtime_native_collect_expr_names(expr, names):
+    kind = expr["kind"]
+    if kind == "comprehension":
+        names = runtime_native_append_name(names, expr["target"])
+        names = runtime_native_collect_expr_names(expr["iterable"], names)
+        names = runtime_native_collect_expr_names(expr["condition"], names)
+        names = runtime_native_collect_expr_names(expr["expr"], names)
+        names = runtime_native_collect_expr_names(expr["key"], names)
+        return runtime_native_collect_expr_names(expr["value"], names)
+    if kind == "binary":
+        names = runtime_native_collect_expr_names(expr["left"], names)
+        return runtime_native_collect_expr_names(expr["right"], names)
+    if kind == "unary" or kind == "kwarg" or kind == "lambda":
+        if kind == "lambda":
+            return runtime_native_collect_expr_names(expr["body"], names)
+        return runtime_native_collect_expr_names(expr["value"], names)
+    if kind == "call" or kind == "method_call":
+        if kind == "call":
+            names = runtime_native_collect_expr_names(expr["callee"], names)
+        else:
+            names = runtime_native_collect_expr_names(expr["receiver"], names)
+        for arg in expr["args"]:
+            names = runtime_native_collect_expr_names(arg, names)
+        return names
+    if kind == "index":
+        names = runtime_native_collect_expr_names(expr["receiver"], names)
+        return runtime_native_collect_expr_names(expr["index"], names)
+    if kind == "slice":
+        names = runtime_native_collect_expr_names(expr["receiver"], names)
+        names = runtime_native_collect_expr_names(expr["start"], names)
+        return runtime_native_collect_expr_names(expr["stop"], names)
+    if kind == "attr":
+        return runtime_native_collect_expr_names(expr["receiver"], names)
+    if kind == "list" or kind == "tuple" or kind == "set":
+        for item in expr["items"]:
+            names = runtime_native_collect_expr_names(item, names)
+        return names
+    if kind == "dict":
+        for entry in expr["entries"]:
+            names = runtime_native_collect_expr_names(entry["key"], names)
+            names = runtime_native_collect_expr_names(entry["value"], names)
+    return names
+
+def runtime_native_collect_statement_names(items, names):
+    for stmt in items:
+        kind = stmt["kind"]
+        if kind == "assign":
+            names = runtime_native_collect_target_names(stmt["target"], names)
+            names = runtime_native_collect_expr_names(stmt["value"], names)
+        elif kind == "expr" or kind == "return" or kind == "raise" or kind == "yield":
+            names = runtime_native_collect_expr_names(stmt["value"], names)
+        elif kind == "for":
+            for target in stmt["targets"]:
+                names = runtime_native_append_name(names, target)
+            names = runtime_native_collect_statement_names(stmt["body"], names)
+        elif kind == "if":
+            names = runtime_native_collect_statement_names(stmt["body"], names)
+            for branch in stmt["elifs"]:
+                names = runtime_native_collect_statement_names(branch["body"], names)
+            names = runtime_native_collect_statement_names(stmt["else_body"], names)
+        elif kind == "while":
+            names = runtime_native_collect_statement_names(stmt["body"], names)
+        elif kind == "with":
+            names = runtime_native_append_name(names, stmt["name"])
+            names = runtime_native_collect_statement_names(stmt["body"], names)
+        elif kind == "try":
+            names = runtime_native_collect_statement_names(stmt["body"], names)
+            if stmt["except_binding"] != "":
+                names = runtime_native_append_name(names, stmt["except_binding"])
+            names = runtime_native_collect_statement_names(stmt["except_body"], names)
+            names = runtime_native_collect_statement_names(stmt["finally_body"], names)
+    return names
+
+def runtime_native_function_params(fn):
+    names = []
+    for param in fn["params"]:
+        name = param["name"]
+        if name in names:
+            fail("duplicate runtime-native parameter: " + name)
+        names = method_append(names, name)
+    return names
+
+def runtime_native_statement_list_yield_count(items):
+    count = 0
+    for stmt in items:
+        kind = stmt["kind"]
+        if kind == "yield":
+            count = count + 1
+        elif kind == "if":
+            count = count + runtime_native_statement_list_yield_count(stmt["body"])
+            for branch in stmt["elifs"]:
+                count = count + runtime_native_statement_list_yield_count(branch["body"])
+            count = count + runtime_native_statement_list_yield_count(stmt["else_body"])
+        elif kind == "while" or kind == "for" or kind == "with":
+            count = count + runtime_native_statement_list_yield_count(stmt["body"])
+        elif kind == "try":
+            count = count + runtime_native_statement_list_yield_count(stmt["body"])
+            count = count + runtime_native_statement_list_yield_count(stmt["except_body"])
+            count = count + runtime_native_statement_list_yield_count(stmt["finally_body"])
+    return count
+
+def runtime_native_function_plan(fn, function_id):
+    params = runtime_native_function_params(fn)
+    locals = runtime_native_collect_statement_names(fn["body"], params)
+    metadata = runtime_native_statement_list_metadata(fn["body"], {"calls": [], "literals": []})
+    for param in fn["params"]:
+        if "has_default" in param and param["has_default"]:
+            metadata = runtime_native_expr_metadata(param["default"], metadata)
+    yield_count = runtime_native_statement_list_yield_count(fn["body"])
+    return {"id": function_id, "name": fn["name"], "label": "__tyrion_app_fn_" + str(function_id), "params": params, "parameter_records": fn["params"], "locals": locals, "local_count": len(locals), "calls": metadata["calls"], "literals": metadata["literals"], "generator": yield_count > 0, "yield_count": yield_count}
+
+def runtime_native_class_method_plan(fn, function_id, class_name, class_id):
+    plan = runtime_native_function_plan(fn, function_id)
+    plan["source_name"] = fn["name"]
+    plan["name"] = class_name + "." + fn["name"]
+    plan["class_name"] = class_name
+    plan["class_id"] = class_id
+    plan["method_name"] = fn["name"]
+    return plan
+
+def runtime_native_class_plans(program):
+    classes = []
+    class_id = 1
+    for stmt in program["items"]:
+        if stmt["kind"] == "class":
+            methods = []
+            for member in stmt["body"]:
+                if member["kind"] != "function":
+                    fail("runtime-native class body supports methods only: " + stmt["name"])
+                methods = method_append(methods, member["name"])
+            classes = method_append(classes, {"id": class_id, "name": stmt["name"], "methods": methods})
+            class_id = class_id + 1
+    return classes
+
+def runtime_native_class_plan(plan, name):
+    for class_plan in plan["classes"]:
+        if class_plan["name"] == name:
+            return class_plan
+    fail("runtime-native direct class not found: " + name)
+
+def runtime_native_is_class_name(plan, name):
+    for class_plan in plan["classes"]:
+        if class_plan["name"] == name:
+            return True
+    return False
+
+def runtime_native_class_method_function_plan(plan, class_name, method_name):
+    qualified = class_name + "." + method_name
+    for fn_plan in plan["functions"]:
+        if fn_plan["name"] == qualified:
+            return fn_plan
+    fail("runtime-native direct class method not found: " + qualified)
+
+def runtime_native_lambda_function_plan(expr, name, function_id, anonymous, owner):
+    params = expr["params"]
+    parameter_records = []
+    for param in params:
+        parameter_records = method_append(parameter_records, {"name": param, "has_default": False, "default": {"kind": "none", "items": [], "value": none}})
+    metadata = runtime_native_expr_metadata(expr["body"], {"calls": [], "literals": []})
+    return {"id": function_id, "name": name, "label": "__tyrion_app_fn_" + str(function_id), "params": params, "parameter_records": parameter_records, "locals": params, "local_count": len(params), "calls": metadata["calls"], "literals": metadata["literals"], "lambda": True, "anonymous": anonymous, "owner": owner, "body_expr": expr["body"]}
+
+def runtime_native_register_lambda_expr(expr, state):
+    kind = expr["kind"]
+    if kind == "lambda":
+        name = "__tyrion_lambda_" + str(state["next_id"])
+        state["plans"] = method_append(state["plans"], runtime_native_lambda_function_plan(expr, name, state["next_id"], True, state["owner"]))
+        state["next_id"] = state["next_id"] + 1
+        state = runtime_native_register_lambda_expr(expr["body"], state)
+        return state
+    if kind == "binary":
+        state = runtime_native_register_lambda_expr(expr["left"], state)
+        state = runtime_native_register_lambda_expr(expr["right"], state)
+        return state
+    if kind == "unary" or kind == "kwarg":
+        state = runtime_native_register_lambda_expr(expr["value"], state)
+        return state
+    if kind == "call" or kind == "method_call":
+        if kind == "call":
+            state = runtime_native_register_lambda_expr(expr["callee"], state)
+        else:
+            state = runtime_native_register_lambda_expr(expr["receiver"], state)
+        for arg in expr["args"]:
+            state = runtime_native_register_lambda_expr(arg, state)
+        return state
+    if kind == "index":
+        state = runtime_native_register_lambda_expr(expr["receiver"], state)
+        state = runtime_native_register_lambda_expr(expr["index"], state)
+        return state
+    if kind == "slice":
+        state = runtime_native_register_lambda_expr(expr["receiver"], state)
+        state = runtime_native_register_lambda_expr(expr["start"], state)
+        state = runtime_native_register_lambda_expr(expr["stop"], state)
+        return state
+    if kind == "attr":
+        state = runtime_native_register_lambda_expr(expr["receiver"], state)
+        return state
+    if kind == "list" or kind == "tuple" or kind == "set":
+        for item in expr["items"]:
+            state = runtime_native_register_lambda_expr(item, state)
+        return state
+    if kind == "dict":
+        for entry in expr["entries"]:
+            state = runtime_native_register_lambda_expr(entry["key"], state)
+            state = runtime_native_register_lambda_expr(entry["value"], state)
+        return state
+    if kind == "comprehension":
+        state = runtime_native_register_lambda_expr(expr["iterable"], state)
+        state = runtime_native_register_lambda_expr(expr["condition"], state)
+        state = runtime_native_register_lambda_expr(expr["expr"], state)
+        state = runtime_native_register_lambda_expr(expr["key"], state)
+        state = runtime_native_register_lambda_expr(expr["value"], state)
+        return state
+    return state
+
+def runtime_native_register_lambda_statements(items, state):
+    for stmt in items:
+        kind = stmt["kind"]
+        if kind == "assign" or kind == "expr" or kind == "return" or kind == "raise" or kind == "yield":
+            named_lambda = False
+            if kind == "assign" and stmt["target"]["kind"] == "var" and stmt["value"]["kind"] == "lambda":
+                named_lambda = True
+            if not named_lambda:
+                state = runtime_native_register_lambda_expr(stmt["value"], state)
+        elif kind == "if":
+            state = runtime_native_register_lambda_expr(stmt["condition"], state)
+            state = runtime_native_register_lambda_statements(stmt["body"], state)
+            for branch in stmt["elifs"]:
+                state = runtime_native_register_lambda_expr(branch["condition"], state)
+                state = runtime_native_register_lambda_statements(branch["body"], state)
+            state = runtime_native_register_lambda_statements(stmt["else_body"], state)
+        elif kind == "while":
+            state = runtime_native_register_lambda_expr(stmt["condition"], state)
+            state = runtime_native_register_lambda_statements(stmt["body"], state)
+        elif kind == "for":
+            state = runtime_native_register_lambda_expr(stmt["iterable"], state)
+            state = runtime_native_register_lambda_statements(stmt["body"], state)
+        elif kind == "with":
+            state = runtime_native_register_lambda_expr(stmt["resource"], state)
+            state = runtime_native_register_lambda_statements(stmt["body"], state)
+        elif kind == "try":
+            state = runtime_native_register_lambda_statements(stmt["body"], state)
+            state = runtime_native_register_lambda_statements(stmt["except_body"], state)
+            state = runtime_native_register_lambda_statements(stmt["finally_body"], state)
+        elif kind == "function" or kind == "class":
+            old_owner = state["owner"]
+            state["owner"] = stmt["name"]
+            state = runtime_native_register_lambda_statements(stmt["body"], state)
+            state["owner"] = old_owner
+    return state
+
+def runtime_native_function_plans(program):
+    plans = []
+    function_id = 1
+    for stmt in program["items"]:
+        if stmt["kind"] == "function":
+            plans = method_append(plans, runtime_native_function_plan(stmt, function_id))
+            function_id = function_id + 1
+        elif stmt["kind"] == "assign" and stmt["target"]["kind"] == "var" and stmt["value"]["kind"] == "lambda":
+            lambda_expr = stmt["value"]
+            name = stmt["target"]["value"]
+            plans = method_append(plans, runtime_native_lambda_function_plan(lambda_expr, name, function_id, False, "<module>"))
+            function_id = function_id + 1
+    class_id = 1
+    for stmt in program["items"]:
+        if stmt["kind"] == "class":
+            for member in stmt["body"]:
+                if member["kind"] == "function":
+                    plans = method_append(plans, runtime_native_class_method_plan(member, function_id, stmt["name"], class_id))
+                    function_id = function_id + 1
+            class_id = class_id + 1
+    state = {"plans": plans, "next_id": function_id, "owner": "<module>"}
+    state = runtime_native_register_lambda_statements(program["items"], state)
+    return state["plans"]
+
+def runtime_native_lambda_expr_count(expr):
+    kind = expr["kind"]
+    count = 0
+    if kind == "lambda":
+        return 1 + runtime_native_lambda_expr_count(expr["body"])
+    if kind == "binary":
+        return runtime_native_lambda_expr_count(expr["left"]) + runtime_native_lambda_expr_count(expr["right"])
+    if kind == "unary" or kind == "kwarg":
+        return runtime_native_lambda_expr_count(expr["value"])
+    if kind == "call" or kind == "method_call":
+        if kind == "call":
+            count = runtime_native_lambda_expr_count(expr["callee"])
+        else:
+            count = runtime_native_lambda_expr_count(expr["receiver"])
+        for arg in expr["args"]:
+            count = count + runtime_native_lambda_expr_count(arg)
+        return count
+    if kind == "index":
+        return runtime_native_lambda_expr_count(expr["receiver"]) + runtime_native_lambda_expr_count(expr["index"])
+    if kind == "slice":
+        count = runtime_native_lambda_expr_count(expr["receiver"])
+        count = count + runtime_native_lambda_expr_count(expr["start"])
+        return count + runtime_native_lambda_expr_count(expr["stop"])
+    if kind == "attr":
+        return runtime_native_lambda_expr_count(expr["receiver"])
+    if kind == "list" or kind == "tuple" or kind == "set":
+        for item in expr["items"]:
+            count = count + runtime_native_lambda_expr_count(item)
+        return count
+    if kind == "dict":
+        for entry in expr["entries"]:
+            count = count + runtime_native_lambda_expr_count(entry["key"])
+            count = count + runtime_native_lambda_expr_count(entry["value"])
+        return count
+    if kind == "comprehension":
+        count = runtime_native_lambda_expr_count(expr["iterable"])
+        count = count + runtime_native_lambda_expr_count(expr["condition"])
+        count = count + runtime_native_lambda_expr_count(expr["expr"])
+        count = count + runtime_native_lambda_expr_count(expr["key"])
+        return count + runtime_native_lambda_expr_count(expr["value"])
+    return 0
+
+def runtime_native_lambda_statement_count(items):
+    count = 0
+    for stmt in items:
+        kind = stmt["kind"]
+        if kind == "assign" or kind == "expr" or kind == "return" or kind == "raise" or kind == "yield":
+            named_lambda = False
+            if kind == "assign" and stmt["target"]["kind"] == "var" and stmt["value"]["kind"] == "lambda":
+                named_lambda = True
+            if not named_lambda:
+                count = count + runtime_native_lambda_expr_count(stmt["value"])
+        elif kind == "if":
+            count = count + runtime_native_lambda_expr_count(stmt["condition"])
+            count = count + runtime_native_lambda_statement_count(stmt["body"])
+            for branch in stmt["elifs"]:
+                count = count + runtime_native_lambda_expr_count(branch["condition"])
+                count = count + runtime_native_lambda_statement_count(branch["body"])
+            count = count + runtime_native_lambda_statement_count(stmt["else_body"])
+        elif kind == "while":
+            count = count + runtime_native_lambda_expr_count(stmt["condition"])
+            count = count + runtime_native_lambda_statement_count(stmt["body"])
+        elif kind == "for":
+            count = count + runtime_native_lambda_expr_count(stmt["iterable"])
+            count = count + runtime_native_lambda_statement_count(stmt["body"])
+        elif kind == "with":
+            count = count + runtime_native_lambda_expr_count(stmt["resource"])
+            count = count + runtime_native_lambda_statement_count(stmt["body"])
+        elif kind == "try":
+            count = count + runtime_native_lambda_statement_count(stmt["body"])
+            count = count + runtime_native_lambda_statement_count(stmt["except_body"])
+            count = count + runtime_native_lambda_statement_count(stmt["finally_body"])
+        elif kind == "function" or kind == "class":
+            count = count + runtime_native_lambda_statement_count(stmt["body"])
+    return count
+
+def runtime_native_function_count(program):
+    count = 0
+    for stmt in program["items"]:
+        if stmt["kind"] == "function":
+            count = count + 1
+        elif stmt["kind"] == "class":
+            for member in stmt["body"]:
+                if member["kind"] == "function":
+                    count = count + 1
+        elif stmt["kind"] == "assign" and stmt["target"]["kind"] == "var" and stmt["value"]["kind"] == "lambda":
+            count = count + 1
+    return count + runtime_native_lambda_statement_count(program["items"])
+
+def runtime_native_top_level_items(program):
+    items = []
+    for stmt in program["items"]:
+        lambda_binding = False
+        if stmt["kind"] == "assign" and stmt["target"]["kind"] == "var" and stmt["value"]["kind"] == "lambda":
+            lambda_binding = True
+        if stmt["kind"] != "function" and stmt["kind"] != "class" and not lambda_binding:
+            items = method_append(items, stmt)
+    return items
+
+def runtime_native_program_literals(program, top_items):
+    top_metadata = runtime_native_statement_list_metadata(top_items, {"calls": [], "literals": []})
+    literals = top_metadata["literals"]
+    # Literal inventory is source semantics, not derived function-plan state.
+    # Read it directly from canonical AST bodies so parser-backed handles and
+    # ordinary dictionaries never need a lossy plan -> AST round trip.
+    for source_stmt in program["items"]:
+        source_metadata = {"calls": [], "literals": []}
+        if source_stmt["kind"] == "function":
+            source_metadata = runtime_native_statement_list_metadata(source_stmt["body"], source_metadata)
+            for source_param in source_stmt["params"]:
+                if "has_default" in source_param and source_param["has_default"]:
+                    source_metadata = runtime_native_expr_metadata(source_param["default"], source_metadata)
+        elif source_stmt["kind"] == "class":
+            for source_member in source_stmt["body"]:
+                if source_member["kind"] == "function":
+                    source_metadata = runtime_native_statement_list_metadata(source_member["body"], source_metadata)
+                    for source_param in source_member["params"]:
+                        if "has_default" in source_param and source_param["has_default"]:
+                            source_metadata = runtime_native_expr_metadata(source_param["default"], source_metadata)
+        elif source_stmt["kind"] == "assign" and source_stmt["value"]["kind"] == "lambda":
+            source_metadata = runtime_native_expr_metadata(source_stmt["value"], source_metadata)
+        for source_literal in source_metadata["literals"]:
+            literals = runtime_native_append_literal(literals, source_literal["kind"], source_literal["value"])
+    return literals
+
+def runtime_native_reachable_plan(program, target):
+    native_functions = native_direct_function_plans(program)
+    native_classes = native_direct_class_plans(program, native_functions)
+    executable_items = native_direct_executable_program_items(program)
+    executable_source_indices = native_direct_executable_program_source_indices(program)
+    reachable = native_direct_reachable_function_ids(executable_items, executable_source_indices, native_functions, native_classes, target, native_direct_root_manifest(target))
+    names = []
+    reachable_idx = 0
+    while reachable_idx < len(reachable["ids"]):
+        function_plan = native_direct_function_plan_by_id(native_functions, reachable["ids"][reachable_idx])
+        name = function_plan["source_name"]
+        if function_plan["callable_kind"] == "method":
+            class_idx = 0
+            while class_idx < len(native_classes) and native_classes[class_idx]["id"] != function_plan["class_id"]:
+                class_idx = class_idx + 1
+            if class_idx == len(native_classes):
+                fail("runtime-native reachability rejected method without class")
+            name = native_classes[class_idx]["name"] + "." + function_plan["method_name"]
+        if name[0:8] != "@lambda:":
+            names = runtime_native_append_name(names, name)
+        reachable_idx = reachable_idx + 1
+    return {"names": names, "class_ids": reachable["class_ids"]}
+
+def runtime_native_name_in_list(names, name):
+    for candidate in names:
+        if candidate == name:
+            return True
+    return False
+
+def runtime_native_class_id_reachable(reachable, class_id):
+    for reachable_class_id in reachable["class_ids"]:
+        if reachable_class_id == class_id:
+            return True
+    return False
+
+def runtime_native_prune_program(program, reachable):
+    items = []
+    class_id = 1
+    for statement in program["items"]:
+        keep = True
+        if statement["kind"] == "function":
+            keep = runtime_native_name_in_list(reachable["names"], statement["name"])
+        elif statement["kind"] == "assign" and statement["target"]["kind"] == "var" and statement["value"]["kind"] == "lambda":
+            keep = runtime_native_name_in_list(reachable["names"], statement["target"]["value"])
+        elif statement["kind"] == "class":
+            keep = runtime_native_class_id_reachable(reachable, class_id)
+            if keep:
+                members = []
+                for member in statement["body"]:
+                    if member["kind"] != "function" or runtime_native_name_in_list(reachable["names"], statement["name"] + "." + member["name"]):
+                        members = method_append(members, member)
+                statement = ast_class(statement["name"], members)
+            class_id = class_id + 1
+        if keep:
+            items = method_append(items, statement)
+    return {"kind": "program", "items": items}
+
+def runtime_native_reachable_literals(top_items, function_plans):
+    top_metadata = runtime_native_statement_list_metadata(top_items, {"calls": [], "literals": []})
+    literals = top_metadata["literals"]
+    for function_plan in function_plans:
+        for literal in function_plan["literals"]:
+            literals = runtime_native_append_literal(literals, literal["kind"], literal["value"])
+    return literals
+
+def collect_runtime_native_program_plan_with_extension_config(program, target, extensions, dynamic_extension_mode, dynamic_extension_root):
+    function_names = runtime_native_function_names(program)
+    application = require_application_analysis(program, function_names)
+    operations = application["runtime_operations"]
+    reachable = runtime_native_reachable_plan(program, target)
+    program = runtime_native_prune_program(program, reachable)
+    function_names = runtime_native_function_names(program)
+    top_items = runtime_native_top_level_items(program)
+    top_locals = runtime_native_collect_statement_names(top_items, [])
+    top_metadata = runtime_native_statement_list_metadata(top_items, {"calls": [], "literals": []})
+    top_plan = {"id": 0, "name": "<module>", "label": "__tyrion_app_main", "params": [], "locals": top_locals, "local_count": len(top_locals), "calls": top_metadata["calls"], "literals": top_metadata["literals"]}
+    function_plans = runtime_native_function_plans(program)
+    class_plans = runtime_native_class_plans(program)
+    literals = runtime_native_reachable_literals(top_items, function_plans)
+    plan = {}
+    plan["enabled"] = len(operations) > 0
+    plan["target"] = target["triple"]
+    plan["operations"] = operations
+    plan["runtime_operation_ids"] = application_runtime_operation_ids(operations)
+    plan["semantic_operations"] = application["operations"]
+    plan["value_kinds"] = application["value_kinds"]
+    plan["assignment_targets"] = application["assignment_targets"]
+    plan["iterator_kinds"] = application["iterator_kinds"]
+    plan["call_kinds"] = application["call_kinds"]
+    plan["methods"] = application["methods"]
+    plan["control_exits"] = application["control_exits"]
+    plan["components"] = application["components"]
+    plan["component_ids"] = application["component_ids"]
+    plan["temporary_slots"] = application["temporary_slots"]
+    plan["function_names"] = function_names
+    plan["function_count"] = len(function_names)
+    plan["top_level_count"] = len(top_items)
+    plan["top_level"] = top_plan
+    plan["functions"] = function_plans
+    plan["classes"] = class_plans
+    plan["class_count"] = len(class_plans)
+    plan["extensions"] = extensions
+    plan["extension_count"] = len(plan["extensions"])
+    plan["dynamic_extension_mode"] = dynamic_extension_mode
+    plan["dynamic_extension_root"] = dynamic_extension_root
+    plan["literals"] = literals
+    plan["literal_count"] = len(literals)
+    plan["slot_size"] = 128
+    plan["tag_offset"] = 127
+    plan["plan_version"] = "runtime-native-program-v3"
+    plan["program"] = program
+    return plan
+
+def collect_runtime_native_program_plan_with_extensions(program, target, extensions):
+    return collect_runtime_native_program_plan_with_extension_config(program, target, extensions, "off", "")
+
+def collect_runtime_native_program_plan(program, target):
+    return collect_runtime_native_program_plan_with_extensions(program, target, static_extension_plan(program, "./extensions"))
+
+def runtime_native_program_plan_from_source(source):
+    tokens = lex(source)
+    program = parse_program(tokens)
+    return collect_runtime_native_program_plan(program, host_target())
+
+def runtime_native_program_summary_plan(source, target):
+    tokens = lex(source)
+    program = parse_program(tokens)
+    function_names = runtime_native_function_names(program)
+    application = require_application_analysis(program, function_names)
+    top_items = runtime_native_top_level_items(program)
+    literals = runtime_native_program_literals(program, top_items)
+    plan = {}
+    plan["enabled"] = len(application["runtime_operations"]) > 0
+    plan["target"] = target["triple"]
+    plan["function_count"] = runtime_native_function_count(program)
+    plan["top_level_count"] = len(top_items)
+    plan["literal_count"] = len(literals)
+    plan["slot_size"] = 128
+    plan["operations"] = application["runtime_operations"]
+    plan["runtime_operation_ids"] = application_runtime_operation_ids(application["runtime_operations"])
+    plan["semantic_operations"] = application["operations"]
+    plan["component_ids"] = application["component_ids"]
+    plan["value_kinds"] = application["value_kinds"]
+    plan["assignment_targets"] = application["assignment_targets"]
+    plan["iterator_kinds"] = application["iterator_kinds"]
+    plan["call_kinds"] = application["call_kinds"]
+    plan["methods"] = application["methods"]
+    plan["control_exits"] = application["control_exits"]
+    return plan
+
+def runtime_native_program_summary_plan_from_source(source):
+    return runtime_native_program_summary_plan(source, host_target())
+
+def runtime_native_program_plan_summary_from_plan(plan):
+    out = "enabled=" + str(plan["enabled"])
+    out = out + ";target=" + plan["target"]
+    out = out + ";functions=" + str(plan["function_count"])
+    out = out + ";top_level=" + str(plan["top_level_count"])
+    out = out + ";literals=" + str(plan["literal_count"])
+    out = out + ";slot_size=" + str(plan["slot_size"])
+    out = out + ";operations="
+    idx = 0
+    while idx < len(plan["operations"]):
+        if idx > 0:
+            out = out + ","
+        out = out + plan["operations"][idx]
+        idx = idx + 1
+    out = out + ";runtime_operation_ids="
+    idx = 0
+    while idx < len(plan["runtime_operation_ids"]):
+        if idx > 0:
+            out = out + ","
+        out = out + str(plan["runtime_operation_ids"][idx])
+        idx = idx + 1
+    out = out + ";semantic_operations="
+    idx = 0
+    while idx < len(plan["semantic_operations"]):
+        if idx > 0:
+            out = out + ","
+        out = out + str(plan["semantic_operations"][idx])
+        idx = idx + 1
+    out = out + ";component_ids="
+    idx = 0
+    while idx < len(plan["component_ids"]):
+        if idx > 0:
+            out = out + ","
+        out = out + str(plan["component_ids"][idx])
+        idx = idx + 1
+    out = out + ";value_kinds="
+    idx = 0
+    while idx < len(plan["value_kinds"]):
+        if idx > 0:
+            out = out + ","
+        out = out + str(plan["value_kinds"][idx])
+        idx = idx + 1
+    out = out + ";assignment_targets="
+    idx = 0
+    while idx < len(plan["assignment_targets"]):
+        if idx > 0:
+            out = out + ","
+        out = out + str(plan["assignment_targets"][idx])
+        idx = idx + 1
+    out = out + ";iterator_kinds="
+    idx = 0
+    while idx < len(plan["iterator_kinds"]):
+        if idx > 0:
+            out = out + ","
+        out = out + str(plan["iterator_kinds"][idx])
+        idx = idx + 1
+    out = out + ";call_kinds="
+    idx = 0
+    while idx < len(plan["call_kinds"]):
+        if idx > 0:
+            out = out + ","
+        out = out + str(plan["call_kinds"][idx])
+        idx = idx + 1
+    out = out + ";methods="
+    idx = 0
+    while idx < len(plan["methods"]):
+        if idx > 0:
+            out = out + ","
+        out = out + str(plan["methods"][idx])
+        idx = idx + 1
+    out = out + ";control_exits="
+    idx = 0
+    while idx < len(plan["control_exits"]):
+        if idx > 0:
+            out = out + ","
+        out = out + str(plan["control_exits"][idx])
+        idx = idx + 1
+    return out
+
+def runtime_native_program_plan_summary(source):
+    # Inventory probes exercise canonical parser/analysis semantics directly.
+    # Constructing nested backend plans here used to make diagnostics depend
+    # on compact transport details that production compilation tests already
+    # cover independently.
+    return runtime_native_program_plan_summary_from_plan(runtime_native_program_summary_plan_from_source(source))
+
+def runtime_native_program_plan_summary_for_target(source, os_name, arch):
+    target = target_validate(target_spec(os_name, arch))
+    backend_require_implemented(target)
+    return runtime_native_program_plan_summary_from_plan(runtime_native_program_summary_plan(source, target))
+
+def runtime_native_direct_operator_supported(op):
+    return application_direct_operator_supported(op)
+
+def runtime_native_direct_name_present(names, name):
+    return application_name_present(names, name)
+
+def runtime_native_direct_expr_supported(expr, function_names):
+    return analyze_application_expr(expr, application_name_index(function_names), "expr")["ok"]
+
+def runtime_native_direct_statements_have_control_exit(items):
+    return application_statements_have_control_exit(items)
+
+def runtime_native_direct_statement_supported(stmt, function_names, in_function):
+    return analyze_application_statement(stmt, application_name_index(function_names), in_function, "stmt")["ok"]
+
+def runtime_native_direct_statements_supported(items, function_names, in_function):
+    return analyze_application_statements(items, application_name_index(function_names), in_function, "statements")["ok"]
+
+def runtime_native_direct_program_supported(program):
+    function_names = runtime_native_function_names(program)
+    return analyze_application_program(program, function_names)["ok"]
+
+def runtime_native_direct_local_index(frame, name):
+    idx = 0
+    while idx < len(frame["locals"]):
+        if frame["locals"][idx] == name:
+            return idx
+        idx = idx + 1
+    fail("runtime-native direct local not found: " + name)
+
+def runtime_native_direct_local_index_or_none(frame, name):
+    idx = 0
+    while idx < len(frame["locals"]):
+        if frame["locals"][idx] == name:
+            return idx
+        idx = idx + 1
+    return -1
+
+def runtime_native_direct_global_index(plan, name):
+    idx = 0
+    while idx < len(plan["top_level"]["locals"]):
+        if plan["top_level"]["locals"][idx] == name:
+            return idx
+        idx = idx + 1
+    fail("runtime-native direct name not found: " + name)
+
+def runtime_native_direct_slot_offset(slot):
+    return slot * generated_value_slot_size()
+
+def runtime_native_direct_slot_addr(out, reg, slot):
+    offset = runtime_native_direct_slot_offset(slot)
+    out = asm_line(out, "ldr x15, =" + str(offset))
+    return asm_line(out, "add " + reg + ", sp, x15")
+
+def runtime_native_direct_frame_bytes(frame, plan):
+    slots = len(frame["locals"]) + plan["temporary_slots"] + 16
+    if slots < 64:
+        slots = 64
+    return slots * generated_value_slot_size()
+
+def runtime_native_direct_copy_slot(out, dst, src):
+    out = runtime_native_direct_slot_addr(out, "x0", dst)
+    out = runtime_native_direct_slot_addr(out, "x1", src)
+    return asm_line(out, "bl __tyrion_app_slot_copy")
+
+def runtime_native_direct_literal_id(plan, kind, value):
+    idx = 0
+    while idx < len(plan["literals"]):
+        literal = plan["literals"][idx]
+        if literal["kind"] == kind and literal["value"] == value:
+            return literal["id"]
+        idx = idx + 1
+    fail("runtime-native direct literal not found")
+
+def runtime_native_direct_function_plan(plan, name):
+    for fn_plan in plan["functions"]:
+        if fn_plan["name"] == name:
+            return fn_plan
+    fail("runtime-native direct function not found: " + name)
+
+def runtime_native_direct_anonymous_lambda_plan(plan, owner, ordinal):
+    current = 0
+    for fn_plan in plan["functions"]:
+        anonymous = False
+        if "anonymous" in fn_plan:
+            anonymous = fn_plan["anonymous"]
+        if anonymous and fn_plan["owner"] == owner:
+            if current == ordinal:
+                return fn_plan
+            current = current + 1
+    fail("runtime-native anonymous lambda plan not found: " + owner + ":" + str(ordinal))
+
+def runtime_native_direct_source_function(program, name):
+    for stmt in program["items"]:
+        if stmt["kind"] == "function" and stmt["name"] == name:
+            return stmt
+        if stmt["kind"] == "class":
+            for member in stmt["body"]:
+                if member["kind"] == "function" and stmt["name"] + "." + member["name"] == name:
+                    return member
+    fail("runtime-native direct source function not found: " + name)
+
+def link_runtime_native_direct_program(target, asm_path, output_path, plan):
+    dynamic_extension_mode = "off"
+    if "dynamic_extension_mode" in plan:
+        dynamic_extension_mode = plan["dynamic_extension_mode"]
+    if plan["extension_count"] == 0 and dynamic_extension_mode == "off":
+        return link_executable(target, asm_path, output_path)
+    object_path = output_path + ".o"
+    if not run_tool("cc", "-c", asm_path, "-o" + object_path):
+        fail("native-tool rejected code=assemble-failed;path=" + asm_path + ";output=" + object_path)
+    response_path = output_path + ".extlink.rsp"
+    response = "\"" + object_path + "\"\n"
+    for extension in plan["extensions"]:
+        embedded_resource = ""
+        if "embedded_resource" in extension:
+            embedded_resource = extension["embedded_resource"]
+        if embedded_resource != "":
+            archive_path = output_path + ".native-" + extension["name"] + ".a"
+            native_package_write_embedded(embedded_resource, archive_path)
+            response = response + "\"" + archive_path + "\"\n"
+        else:
+            for source_path in extension["sources"]:
+                if contains_text(source_path, "\"") or contains_text(source_path, "\n"):
+                    fail("invalid static extension linker source path")
+                response = response + "\"" + source_path + "\"\n"
+    if dynamic_extension_mode == "allowed" and target["os"] == "linux":
+        response = response + "-ldl\n"
+    write_text_file(response_path, response)
+    if not run_tool("cc", "@" + response_path, "-o", output_path):
+        fail("native-tool rejected code=link-failed;path=" + object_path + ";output=" + output_path)
+    return True
+
+def build_runtime_native_direct_program(program, plan, input_path, output_path):
+    asm_path = output_path + ".runtime.s"
+    artifact_path = output_path + ".tyn"
+    target = host_target()
+    lowered = lower_program({"contract": "tyrion-runtime-plan-v1", "target": target, "program": program, "runtime": plan})
+    writer = asm_writer_open(asm_path)
+    writer = emit_object_source(writer, lowered)
+    asm_writer_close(writer)
+    if not link_runtime_native_direct_program(target, asm_path, output_path, plan):
+        fail("native-link rejected code=link-failed;path=" + asm_path + ";output=" + output_path)
+    artifact = "tyrion-bootstrap-native v0\n"
+    artifact = artifact + "entry=" + input_path + "\n"
+    artifact = artifact + "native-build-target-kind=user-program\n"
+    artifact = artifact + "native-lowering-plan=runtime-native-direct-v1\n"
+    artifact = artifact + "native-exec-mode=user-program-native-runtime\n"
+    artifact = artifact + "native-link-mode=asm-object-link\n"
+    if plan["extension_count"] > 0:
+        artifact = artifact + "native-static-extension-count=" + str(plan["extension_count"]) + "\n"
+    if plan["dynamic_extension_mode"] == "allowed":
+        artifact = artifact + "native-dynamic-extension-mode=allowed\n"
+    write_text_file(artifact_path, artifact)
+    return True
+
+def build_runtime_native_direct_program_if_supported_with_extension_config(raw_source, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode):
+    target = host_target()
+    if not backend_has_operation(target, "runtime-object"):
+        return False
+    parsed = parse_source(raw_source, target)
+    analysis = analyze_program(parsed)
+    program = analysis["program"]
+    require_application_analysis(program, runtime_native_function_names(program))
+    extensions = static_extension_build_plan_configured(program, extension_mode, extension_root, dynamic_extension_mode)
+    plan_record = plan_runtime_with_extension_config(analysis, extensions, dynamic_extension_mode, extension_root)
+    plan = plan_record["runtime"]
+    return build_runtime_native_direct_program(plan["program"], plan, input_path, output_path)
+
+def build_runtime_native_direct_program_if_supported_configured(raw_source, input_path, output_path, extension_mode, extension_root):
+    return build_runtime_native_direct_program_if_supported_with_extension_config(raw_source, input_path, output_path, extension_mode, extension_root, "off")
+
+def build_runtime_native_direct_program_if_supported(raw_source, input_path, output_path):
+    return build_runtime_native_direct_program_if_supported_configured(raw_source, input_path, output_path, "auto", "./extensions")
+
+def print_arg_runtime_file_part(expr, data_var, strings):
+    if expr["kind"] == "var" and expr["value"] == data_var:
+        return {"ok": True, "kind": "data", "value": ""}
+    value = expr_static_string(expr, strings)
+    if value["ok"]:
+        return {"ok": True, "kind": "literal", "value": value["value"]}
+    return {"ok": False, "kind": "", "value": ""}
+
+def runtime_file_disabled_plan():
+    return {"enabled": False, "path": "", "read_len": 8191, "mode": "", "parts": [], "compare_op": "", "compare_value": "", "true_when_nonempty": True, "true_parts": [], "false_parts": [], "loop_parts": []}
+
+def runtime_file_plan_after_read(program, start_idx, read, strings, resource_path, file_var):
+    items = program["items"]
+    if start_idx >= len(items):
+        return runtime_file_disabled_plan()
+    printed = stmt_prints_runtime_file_var(items[start_idx], read["var"], strings)
+    if printed["ok"]:
+        return {"enabled": True, "path": resource_path, "read_len": read["read_len"], "mode": "print", "parts": printed["parts"], "compare_op": "", "compare_value": "", "true_when_nonempty": True, "true_parts": [], "false_parts": [], "loop_parts": []}
+    branch = stmt_runtime_file_if_plan(items[start_idx], read["var"], strings)
+    if branch["ok"]:
+        return {"enabled": True, "path": resource_path, "read_len": read["read_len"], "mode": branch["mode"], "parts": [], "compare_op": branch["compare_op"], "compare_value": branch["compare_value"], "true_when_nonempty": branch["true_when_nonempty"], "true_parts": branch["true_parts"], "false_parts": branch["false_parts"], "loop_parts": []}
+    chunks = stmt_runtime_file_while_chunks_plan(items[start_idx], read["var"], file_var, read["read_len"], strings)
+    if chunks["ok"]:
+        return {"enabled": True, "path": resource_path, "read_len": read["read_len"], "mode": "while_read_chunks", "parts": [], "compare_op": "", "compare_value": "", "true_when_nonempty": True, "true_parts": [], "false_parts": [], "loop_parts": chunks["loop_parts"]}
+    return runtime_file_disabled_plan()
+
+def collect_runtime_file_read_plan(program):
+    strings = {}
+    items = program["items"]
+    idx = 0
+    while idx < len(items):
+        stmt = items[idx]
+        strings = stmt_assigns_static_string(stmt, strings)
+        if stmt["kind"] == "with":
+            resource = expr_is_open_read_resource(stmt["resource"], strings)
+            if resource["ok"] and len(stmt["body"]) == 1 and idx + 1 < len(items):
+                read = stmt_reads_file_to_var(stmt["body"][0], stmt["name"])
+                if read["ok"]:
+                    plan = runtime_file_plan_after_read(program, idx + 1, read, strings, resource["path"], stmt["name"])
+                    if plan["enabled"]:
+                        return plan
+        if stmt["kind"] == "assign" and stmt["target"]["kind"] == "var":
+            resource = expr_is_open_read_resource(stmt["value"], strings)
+            if resource["ok"] and idx + 2 < len(items):
+                read = stmt_reads_file_to_var(items[idx + 1], stmt["target"]["value"])
+                if read["ok"]:
+                    plan = runtime_file_plan_after_read(program, idx + 2, read, strings, resource["path"], stmt["target"]["value"])
+                    if plan["enabled"]:
+                        return plan
+        idx = idx + 1
+    return runtime_file_disabled_plan()
+
+def runtime_file_literal_label(idx):
+    return "__tyrion_rt_lit_" + str(idx)
+
+def runtime_file_prefixed_literal_label(prefix, idx):
+    return prefix + str(idx)

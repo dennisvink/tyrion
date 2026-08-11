@@ -1,0 +1,34 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+import compiler.core
+import compiler.builtin_modules
+import compiler.module_graph
+import compiler.generated_abi
+import compiler.native_ir
+import compiler.native_ir_verify
+import compiler.target_contract
+import compiler.primitives
+import compiler.lexer
+import compiler.frontend
+import compiler.native_ir_source
+import compiler.application_semantics
+import compiler.native_ir_lowering
+import compiler.writer
+import compiler.lowering
+import compiler.evaluation
+import compiler.runtime_plan
+import compiler.runtime_abi
+import compiler.static_extensions
+import compiler.backend.exec_functions
+import compiler.backend.native_runtime
+import compiler.backend.components
+import compiler.targets.darwin_aarch64
+import compiler.targets.linux
+import compiler.targets.linux_x86_64_native
+import compiler.cli
+
+
+cli_main(argv())

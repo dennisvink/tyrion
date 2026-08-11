@@ -1,0 +1,13 @@
+nums = [1, 2, 3, 4, 5]
+bigger = [x for x in nums if x > 2]
+pairs = {x: x + 10 for x in nums if x < 4}
+double = lambda v: v * 2
+
+print("comp", len(bigger), pairs[1], double(6))
+
+try:
+    raise "boom"
+except boom as err:
+    print("caught", err)
+finally:
+    print("finally", len(nums))

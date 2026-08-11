@@ -1,0 +1,55 @@
+# Tyrion TLS client transport.
+# The native extension is precompiled and embedded in the Tyrion toolchain;
+# applications only link it when this module is present in their graph.
+
+
+def tls_require_result(result, operation):
+    if result == None:
+        raise "ConnectionError: TLS " + operation + " returned no result"
+    if len(result) >= 4 and result[0:4] == "err:":
+        raise "ConnectionError: TLS " + operation + " failed: " + result[4:]
+    return result
+
+
+def tls_connect(host, port, timeout_ms):
+    extension = __tyrion_native_host_load("tls")
+    result = __tyrion_native_host_call(
+        extension,
+        "tls.connect",
+        host + "\n" + str(port) + "\n" + str(timeout_ms),
+    )
+    result = tls_require_result(result, "connect")
+    if len(result) < 4 or result[0:3] != "ok:":
+        __tyrion_native_host_unload(extension)
+        raise "ConnectionError: malformed TLS connect response"
+    return {"extension": extension, "session": int(result[3:])}
+
+
+def tls_write(handle, data, timeout_ms):
+    result = __tyrion_native_tls_write(handle["session"], data, timeout_ms)
+    if result < 0:
+        raise "ConnectionError: TLS write failed"
+    return result
+
+
+def tls_read(handle, maximum, timeout_ms):
+    result = __tyrion_native_tls_read(handle["session"], maximum, timeout_ms)
+    if result == None:
+        raise "ConnectionError: TLS read failed"
+    return result
+
+
+def tls_close(handle):
+    result = None
+    try:
+        result = __tyrion_native_host_call(
+            handle["extension"],
+            "tls.close",
+            str(handle["session"]),
+        )
+    finally:
+        __tyrion_native_host_unload(handle["extension"])
+    result = tls_require_result(result, "close")
+    if result != "ok":
+        raise "ConnectionError: malformed TLS close response"
+    return True

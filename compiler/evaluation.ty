@@ -1,0 +1,946 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# compiler / evaluation: responsibility-owned canonical compiler module.
+
+def call_stmt_name(stmt):
+    if stmt["kind"] == "expr":
+        expr = stmt["value"]
+        if expr["kind"] == "call" and expr["callee"]["kind"] == "var":
+            return expr["callee"]["value"]
+    return ""
+
+def const_helper_env_get(env, name):
+    if name in env:
+        return env[name]
+    fail("constant helper lowering could not resolve name: " + name)
+
+def const_helper_decode_string(value):
+    out = ""
+    idx = 0
+    while idx < len(value):
+        ch = value[idx]
+        if ch == "\\" and idx + 1 < len(value):
+            nxt = value[idx + 1]
+            if nxt == "n":
+                out = out + "\n"
+            elif nxt == "t":
+                out = out + "\t"
+            elif nxt == "r":
+                out = out + "\r"
+            elif nxt == "\"":
+                out = out + "\""
+            elif nxt == "\\":
+                out = out + "\\"
+            else:
+                out = out + ch + nxt
+            idx = idx + 2
+        else:
+            out = out + ch
+            idx = idx + 1
+    return out
+
+def const_helper_call(program, name, args, depth):
+    if depth > 32:
+        fail("constant helper lowering exceeded call depth")
+    if name == "asm_escape_string":
+        if len(args) != 1:
+            fail("asm_escape_string constant helper expects one arg")
+        return asm_escape_string(args[0])
+    fn = program_find_function(program, name)
+    if len(fn["params"]) != len(args):
+        fail("constant helper lowering arg count mismatch for " + name)
+    env = {}
+    idx = 0
+    while idx < len(args):
+        env[param_name(fn["params"][idx])] = args[idx]
+        idx = idx + 1
+    idx = 0
+    while idx < len(fn["body"]):
+        stmt = fn["body"][idx]
+        if stmt["kind"] == "assign":
+            env[stmt["name"]] = const_helper_eval_expr(program, env, stmt["value"], depth + 1)
+        elif stmt["kind"] == "return":
+            return const_helper_eval_expr(program, env, stmt["value"], depth + 1)
+        else:
+            fail("constant helper lowering only supports assign/return in " + name + ", got: " + stmt["kind"])
+        idx = idx + 1
+    fail("constant helper lowering reached end of " + name + " without return")
+
+def const_helper_eval_expr(program, env, expr, depth):
+    kind = expr["kind"]
+    if kind == "string":
+        return const_helper_decode_string(expr["value"])
+    if kind == "var":
+        return const_helper_env_get(env, expr["value"])
+    if kind == "binary":
+        if expr["op"] != "+":
+            fail("constant helper lowering only supports string + expressions")
+        return const_helper_eval_expr(program, env, expr["left"], depth + 1) + const_helper_eval_expr(program, env, expr["right"], depth + 1)
+    if kind == "call":
+        name = expr_call_name(expr)
+        args = []
+        idx = 0
+        while idx < len(expr["args"]):
+            args = method_append(args, const_helper_eval_expr(program, env, expr["args"][idx], depth + 1))
+            idx = idx + 1
+        return const_helper_call(program, name, args, depth + 1)
+    fail("constant helper lowering unsupported expression kind: " + kind)
+
+def const_helper_eval_zero_arg_function(program, name):
+    return const_helper_call(program, name, [], 0)
+
+def env_get(env, name):
+    if name in env:
+        return env[name]
+    fail("name not defined during compiler evaluation: " + name)
+
+def const_value(kind, value):
+    return {"kind": kind, "value": value}
+
+def const_clone(value):
+    kind = value["kind"]
+    if kind == "list" or kind == "tuple" or kind == "set":
+        items = []
+        idx = 0
+        while idx < len(value["value"]):
+            items = method_append(items, const_clone(value["value"][idx]))
+            idx = idx + 1
+        return const_value(kind, items)
+    if kind == "dict":
+        out = {}
+        keys = value["value"].keys()
+        idx = 0
+        while idx < len(keys):
+            key = keys[idx]
+            out[key] = const_clone(value["value"][key])
+            idx = idx + 1
+        return const_value("dict", out)
+    if kind == "object":
+        return const_value("object", value["value"])
+    if kind == "file":
+        return const_value("file", value["value"])
+    return const_value(kind, value["value"])
+
+def value_to_output(value):
+    kind = value["kind"]
+    if kind == "bool":
+        if value["value"]:
+            return "True"
+        return "False"
+    if kind == "none":
+        return "None"
+    if kind == "list":
+        out = "["
+        idx = 0
+        while idx < len(value["value"]):
+            if idx > 0:
+                out = out + ", "
+            out = out + value_to_output(value["value"][idx])
+            idx = idx + 1
+        return out + "]"
+    if kind == "tuple":
+        out = "("
+        idx = 0
+        while idx < len(value["value"]):
+            if idx > 0:
+                out = out + ", "
+            out = out + value_to_output(value["value"][idx])
+            idx = idx + 1
+        if len(value["value"]) == 1:
+            out = out + ","
+        return out + ")"
+    if kind == "set":
+        out = "{"
+        idx = 0
+        while idx < len(value["value"]):
+            if idx > 0:
+                out = out + ", "
+            out = out + value_to_output(value["value"][idx])
+            idx = idx + 1
+        return out + "}"
+    if kind == "dict":
+        out = "{"
+        keys = value["value"].keys()
+        idx = 0
+        while idx < len(keys):
+            if idx > 0:
+                out = out + ", "
+            key = keys[idx]
+            out = out + str(key) + ": " + value_to_output(value["value"][key])
+            idx = idx + 1
+        return out + "}"
+    if kind == "object":
+        return "<" + value["value"]["klass"] + " object>"
+    if kind == "file":
+        return "<file>"
+    return str(value["value"])
+
+def const_truthy(value):
+    kind = value["kind"]
+    if kind == "none":
+        return False
+    if kind == "bool":
+        return value["value"]
+    if kind == "int" or kind == "float":
+        return value["value"] != 0
+    if kind == "string":
+        return len(value["value"]) != 0
+    if kind == "list" or kind == "tuple" or kind == "set":
+        return len(value["value"]) != 0
+    if kind == "dict":
+        return len(value["value"].keys()) != 0
+    return True
+
+def const_unbox(value):
+    return value["value"]
+
+def const_kind_for_number(value):
+    if value["kind"] == "float":
+        return "float"
+    return "int"
+
+def const_equal(left, right):
+    if left["kind"] != right["kind"]:
+        return False
+    return left["value"] == right["value"]
+
+def const_range(args):
+    if len(args) == 1:
+        start = 0
+        stop = args[0]["value"]
+        step = 1
+    elif len(args) == 2:
+        start = args[0]["value"]
+        stop = args[1]["value"]
+        step = 1
+    elif len(args) == 3:
+        start = args[0]["value"]
+        stop = args[1]["value"]
+        step = args[2]["value"]
+    else:
+        fail("range expects 1..3 args")
+    if step == 0:
+        fail("range step cannot be zero")
+    out = []
+    cur = start
+    if step > 0:
+        while cur < stop:
+            out = method_append(out, const_value("int", cur))
+            cur = cur + step
+    else:
+        while cur > stop:
+            out = method_append(out, const_value("int", cur))
+            cur = cur + step
+    return const_value("list", out)
+
+def const_set_index(target, value, env, functions):
+    if target["kind"] == "var":
+        env[target["value"]] = value
+        return env
+    if target["kind"] == "index":
+        receiver_node = target["receiver"]
+        if receiver_node["kind"] != "var":
+            fail("index assignment currently requires variable receiver")
+        receiver_name = receiver_node["value"]
+        receiver = env_get(env, receiver_name)
+        index = eval_const_expr(target["index"], env, functions)
+        if receiver["kind"] == "list":
+            items = []
+            index_value = index["value"]
+            if index_value < 0:
+                index_value = len(receiver["value"]) + index_value
+            idx = 0
+            while idx < len(receiver["value"]):
+                if idx == index_value:
+                    items = method_append(items, const_clone(value))
+                else:
+                    items = method_append(items, const_clone(receiver["value"][idx]))
+                idx = idx + 1
+            env[receiver_name] = const_value("list", items)
+            return env
+        if receiver["kind"] == "dict":
+            items = {}
+            keys = receiver["value"].keys()
+            idx = 0
+            while idx < len(keys):
+                key = keys[idx]
+                items[key] = const_clone(receiver["value"][key])
+                idx = idx + 1
+            items[value_to_output(index)] = const_clone(value)
+            env[receiver_name] = const_value("dict", items)
+            return env
+        fail("unsupported index assignment receiver: " + receiver["kind"])
+    if target["kind"] == "attr":
+        if target["receiver"]["kind"] != "var":
+            fail("attribute assignment currently requires variable receiver")
+        receiver = env_get(env, target["receiver"]["value"])
+        if receiver["kind"] != "object":
+            fail("attribute assignment receiver is not object")
+        attrs = receiver["value"]["attrs"]
+        attrs[target["name"]] = const_clone(value)
+        receiver_value = receiver["value"]
+        receiver_value["attrs"] = attrs
+        receiver["value"] = receiver_value
+        env[target["receiver"]["value"]] = receiver
+        return env
+    if target["kind"] == "unpack":
+        if value["kind"] != "list" and value["kind"] != "tuple":
+            fail("unpack assignment requires list/tuple value")
+        star_index = -1
+        idx = 0
+        while idx < len(target["targets"]):
+            if target["targets"][idx]["star"]:
+                star_index = idx
+            idx = idx + 1
+        if star_index == -1:
+            if len(target["targets"]) != len(value["value"]):
+                fail("unpack assignment arity mismatch")
+            idx = 0
+            while idx < len(target["targets"]):
+                env[target["targets"][idx]["name"]] = const_clone(value["value"][idx])
+                idx = idx + 1
+            return env
+        prefix_count = star_index
+        suffix_count = len(target["targets"]) - star_index - 1
+        if len(value["value"]) < prefix_count + suffix_count:
+            fail("star unpack assignment arity mismatch")
+        idx = 0
+        while idx < prefix_count:
+            env[target["targets"][idx]["name"]] = const_clone(value["value"][idx])
+            idx = idx + 1
+        mid = []
+        mid_idx = prefix_count
+        mid_end = len(value["value"]) - suffix_count
+        while mid_idx < mid_end:
+            mid = method_append(mid, const_clone(value["value"][mid_idx]))
+            mid_idx = mid_idx + 1
+        env[target["targets"][star_index]["name"]] = const_value("list", mid)
+        idx = 0
+        while idx < suffix_count:
+            target_idx = star_index + 1 + idx
+            value_idx = len(value["value"]) - suffix_count + idx
+            env[target["targets"][target_idx]["name"]] = const_clone(value["value"][value_idx])
+            idx = idx + 1
+        return env
+    fail("unsupported assignment target: " + target["kind"])
+
+def collect_functions(program):
+    functions = {}
+    items = program["items"]
+    idx = 0
+    while idx < len(items):
+        stmt = items[idx]
+        if stmt["kind"] == "function":
+            functions[stmt["name"]] = stmt
+        elif stmt["kind"] == "class":
+            body_idx = 0
+            while body_idx < len(stmt["body"]):
+                item = stmt["body"][body_idx]
+                if item["kind"] == "function":
+                    functions[stmt["name"] + "." + item["name"]] = item
+                body_idx = body_idx + 1
+        idx = idx + 1
+    return functions
+
+def collect_classes(program):
+    classes = {}
+    items = program["items"]
+    idx = 0
+    while idx < len(items):
+        stmt = items[idx]
+        if stmt["kind"] == "class":
+            classes[stmt["name"]] = stmt
+        idx = idx + 1
+    return classes
+
+def const_iter_values(value):
+    if value["kind"] == "dict":
+        keys = value["value"].keys()
+        out = []
+        idx = 0
+        while idx < len(keys):
+            out = method_append(out, const_value("string", keys[idx]))
+            idx = idx + 1
+        return out
+    if value["kind"] == "list" or value["kind"] == "tuple" or value["kind"] == "set":
+        return value["value"]
+    if value["kind"] == "string":
+        out = []
+        idx = 0
+        while idx < len(value["value"]):
+            out = method_append(out, const_value("string", value["value"][idx]))
+            idx = idx + 1
+        return out
+    fail("unsupported iteration value during compiler evaluation: " + value["kind"])
+
+def eval_lambda_call(lambda_value, args, functions):
+    params = lambda_value["value"]["params"]
+    if len(args) != len(params):
+        fail("lambda argument count mismatch")
+    local = {"__functions": functions}
+    idx = 0
+    while idx < len(args):
+        local[params[idx]] = const_clone(args[idx])
+        idx = idx + 1
+    return eval_const_expr(lambda_value["value"]["body"], local, functions)
+
+def eval_call_expr(node, env, functions):
+    positional = []
+    kwargs = {}
+    idx = 0
+    while idx < len(node["args"]):
+        arg_node = node["args"][idx]
+        if arg_node["kind"] == "kwarg":
+            kwargs[arg_node["name"]] = eval_const_expr(arg_node["value"], env, functions)
+        else:
+            positional = method_append(positional, eval_const_expr(arg_node, env, functions))
+        idx = idx + 1
+    if node["callee"]["kind"] != "var":
+        callee_value = eval_const_expr(node["callee"], env, functions)
+        if callee_value["kind"] == "lambda":
+            return eval_lambda_call(callee_value, positional, functions)
+        fail("unsupported call callee during compiler evaluation")
+    name = node["callee"]["value"]
+    args = positional
+    if name == "str":
+        if len(args) != 1:
+            fail("str expects one arg")
+        return const_value("string", value_to_output(args[0]))
+    if name == "int":
+        if len(args) != 1:
+            fail("int expects one arg")
+        return const_value("int", int(args[0]["value"]))
+    if name == "float":
+        if len(args) != 1:
+            fail("float expects one arg")
+        return const_value("float", float(args[0]["value"]))
+    if name == "bool":
+        if len(args) != 1:
+            fail("bool expects one arg")
+        return const_value("bool", const_truthy(args[0]))
+    if name == "len":
+        if len(args) != 1:
+            fail("len expects one arg")
+        if args[0]["kind"] == "dict":
+            return const_value("int", len(args[0]["value"].keys()))
+        return const_value("int", len(args[0]["value"]))
+    if name == "range":
+        return const_range(args)
+    if name == "open":
+        if len(args) != 2:
+            fail("open expects path and mode")
+        return const_value("file", open(args[0]["value"], args[1]["value"]))
+    if name == "time":
+        if len(args) != 0:
+            fail("time expects no args")
+        return const_value("int", time())
+    if name == "__tyrion_native_tcp_connect" or name == "std_io_tcp_connect":
+        if len(args) != 3:
+            fail(name + " expects host, port, timeout_ms")
+        return const_value("int", __tyrion_native_tcp_connect(args[0]["value"], args[1]["value"], args[2]["value"]))
+    if name == "__tyrion_native_tcp_write" or name == "std_io_tcp_write":
+        if len(args) != 3:
+            fail(name + " expects handle, bytes, timeout_ms")
+        raw_bytes = []
+        idx = 0
+        while idx < len(args[1]["value"]):
+            raw_bytes = method_append(raw_bytes, args[1]["value"][idx]["value"])
+            idx = idx + 1
+        return const_value("int", __tyrion_native_tcp_write(args[0]["value"], raw_bytes, args[2]["value"]))
+    if name == "__tyrion_native_tcp_read" or name == "std_io_tcp_read":
+        if len(args) != 3:
+            fail(name + " expects handle, max_bytes, timeout_ms")
+        raw_read = __tyrion_native_tcp_read(args[0]["value"], args[1]["value"], args[2]["value"])
+        if raw_read == none:
+            return const_value("none", none)
+        out = []
+        idx = 0
+        while idx < len(raw_read):
+            out = method_append(out, const_value("int", raw_read[idx]))
+            idx = idx + 1
+        return const_value("list", out)
+    if name == "__tyrion_native_tcp_close" or name == "std_io_tcp_close":
+        if len(args) != 1:
+            fail(name + " expects handle")
+        __tyrion_native_tcp_close(args[0]["value"])
+        return const_value("none", none)
+    if name in env:
+        callee_value = env_get(env, name)
+        if callee_value["kind"] == "lambda":
+            return eval_lambda_call(callee_value, args, functions)
+    if "__classes" in env and name in env["__classes"]:
+        obj = const_value("object", {"klass": name, "attrs": {}})
+        init_name = name + ".__init__"
+        if init_name in functions:
+            fn = functions[init_name]
+            local = {"__functions": functions, "__classes": env["__classes"], "self": obj}
+            idx = 0
+            if len(fn["params"]) > 0 and param_name(fn["params"][0]) == "self":
+                idx = 1
+            arg_idx = 0
+            while idx < len(fn["params"]):
+                p = fn["params"][idx]
+                pname = param_name(p)
+                if arg_idx < len(args):
+                    local[pname] = const_clone(args[arg_idx])
+                elif pname in kwargs:
+                    local[pname] = const_clone(kwargs[pname])
+                elif param_has_default(p):
+                    local[pname] = eval_const_expr(p["default"], env, functions)
+                else:
+                    fail("missing constructor argument for " + name + ": " + pname)
+                idx = idx + 1
+                arg_idx = arg_idx + 1
+            result = lower_statement_list(fn["body"], local)
+            if result["signal"] != "" and result["signal"] != "return":
+                fail("unsupported constructor signal for " + name + ": " + result["signal"])
+            obj = result["env"]["self"]
+        return obj
+    if name == "enumerate":
+        if len(args) < 1 or len(args) > 2:
+            fail("enumerate expects one or two args")
+        start = 0
+        if "start" in kwargs:
+            start = kwargs["start"]["value"]
+        elif len(args) == 2:
+            start = args[1]["value"]
+        values = const_iter_values(args[0])
+        out = []
+        idx = 0
+        while idx < len(values):
+            out = method_append(out, const_value("tuple", [const_value("int", start + idx), const_clone(values[idx])]))
+            idx = idx + 1
+        return const_value("list", out)
+    if name == "zip":
+        if len(args) != 2:
+            fail("zip currently expects two args")
+        left = const_iter_values(args[0])
+        right = const_iter_values(args[1])
+        out = []
+        idx = 0
+        limit = len(left)
+        if len(right) < limit:
+            limit = len(right)
+        while idx < limit:
+            out = method_append(out, const_value("tuple", [const_clone(left[idx]), const_clone(right[idx])]))
+            idx = idx + 1
+        return const_value("list", out)
+    if name == "sum":
+        if len(args) < 1 or len(args) > 2:
+            fail("sum expects one or two args")
+        values = const_iter_values(args[0])
+        total = 0
+        if len(args) == 2:
+            total = args[1]["value"]
+        idx = 0
+        while idx < len(values):
+            total = total + values[idx]["value"]
+            idx = idx + 1
+        return const_value("int", total)
+    if name == "min" or name == "max":
+        values = []
+        if len(args) == 1 and (args[0]["kind"] == "list" or args[0]["kind"] == "tuple" or args[0]["kind"] == "set"):
+            values = const_iter_values(args[0])
+        else:
+            values = args
+        if len(values) == 0:
+            fail(name + " expects at least one value")
+        best = const_clone(values[0])
+        idx = 1
+        while idx < len(values):
+            if name == "min":
+                if values[idx]["value"] < best["value"]:
+                    best = const_clone(values[idx])
+            else:
+                if values[idx]["value"] > best["value"]:
+                    best = const_clone(values[idx])
+            idx = idx + 1
+        return best
+    if name == "any" or name == "all":
+        if len(args) != 1:
+            fail(name + " expects one arg")
+        values = const_iter_values(args[0])
+        if name == "any":
+            idx = 0
+            while idx < len(values):
+                if const_truthy(values[idx]):
+                    return const_value("bool", True)
+                idx = idx + 1
+            return const_value("bool", False)
+        idx = 0
+        while idx < len(values):
+            if not const_truthy(values[idx]):
+                return const_value("bool", False)
+            idx = idx + 1
+        return const_value("bool", True)
+    if name == "sorted":
+        if len(args) < 1 or len(args) > 2:
+            fail("sorted expects one or two positional args")
+        values = const_iter_values(args[0])
+        out = []
+        idx = 0
+        while idx < len(values):
+            out = method_append(out, const_clone(values[idx]))
+            idx = idx + 1
+        key_lambda = const_value("none", none)
+        if "key" in kwargs:
+            key_lambda = kwargs["key"]
+        elif len(args) == 2:
+            key_lambda = args[1]
+        changed = True
+        while changed:
+            changed = False
+            idx = 0
+            while idx + 1 < len(out):
+                left_key = out[idx]
+                right_key = out[idx + 1]
+                if key_lambda["kind"] == "lambda":
+                    left_key = eval_lambda_call(key_lambda, [out[idx]], functions)
+                    right_key = eval_lambda_call(key_lambda, [out[idx + 1]], functions)
+                if left_key["value"] > right_key["value"]:
+                    tmp = out[idx]
+                    out[idx] = out[idx + 1]
+                    out[idx + 1] = tmp
+                    changed = True
+                idx = idx + 1
+        return const_value("list", out)
+    if name in functions:
+        fn = functions[name]
+        local = {"__functions": functions}
+        idx = 0
+        while idx < len(fn["params"]):
+            p = fn["params"][idx]
+            pname = param_name(p)
+            if idx < len(args):
+                local[pname] = const_clone(args[idx])
+            elif pname in kwargs:
+                local[pname] = const_clone(kwargs[pname])
+            elif param_has_default(p):
+                local[pname] = eval_const_expr(p["default"], env, functions)
+            else:
+                fail("missing argument for " + name + ": " + pname)
+            idx = idx + 1
+        if len(args) > len(fn["params"]):
+            fail("argument count mismatch for " + name)
+        result = lower_statement_list(fn["body"], local)
+        if "__yield" in result["env"]:
+            return const_value("list", result["env"]["__yield"])
+        if result["signal"] == "return":
+            return result["value"]
+        if result["signal"] == "raise":
+            return const_value("raise", result["value"])
+        if result["signal"] != "":
+            fail("unsupported signal from function " + name + ": " + result["signal"])
+        return const_value("none", none)
+    fail("unknown function during compiler evaluation: " + name)
+
+def eval_method_call_expr(node, env, functions):
+    receiver = eval_const_expr(node["receiver"], env, functions)
+    args = []
+    idx = 0
+    while idx < len(node["args"]):
+        args = method_append(args, eval_const_expr(node["args"][idx], env, functions))
+        idx = idx + 1
+    name = node["name"]
+    if receiver["kind"] == "object":
+        method_name = receiver["value"]["klass"] + "." + name
+        if not (method_name in functions):
+            fail("unknown object method during compiler evaluation: " + method_name)
+        fn = functions[method_name]
+        local = {"__functions": functions}
+        if "__classes" in env:
+            local["__classes"] = env["__classes"]
+        local["self"] = receiver
+        param_idx = 0
+        if len(fn["params"]) > 0 and param_name(fn["params"][0]) == "self":
+            param_idx = 1
+        arg_idx = 0
+        while param_idx < len(fn["params"]):
+            p = fn["params"][param_idx]
+            pname = param_name(p)
+            if arg_idx < len(args):
+                local[pname] = const_clone(args[arg_idx])
+            elif param_has_default(p):
+                local[pname] = eval_const_expr(p["default"], env, functions)
+            else:
+                fail("missing method argument for " + method_name + ": " + pname)
+            param_idx = param_idx + 1
+            arg_idx = arg_idx + 1
+        if arg_idx < len(args):
+            fail("too many method args for " + method_name)
+        result = lower_statement_list(fn["body"], local)
+        if node["receiver"]["kind"] == "var":
+            env[node["receiver"]["value"]] = result["env"]["self"]
+        if result["signal"] == "return":
+            return result["value"]
+        if result["signal"] != "":
+            fail("unsupported method signal for " + method_name + ": " + result["signal"])
+        return const_value("none", none)
+    if receiver["kind"] == "file" and name == "read":
+        if len(args) == 0:
+            return const_value("string", receiver["value"].read())
+        if len(args) == 1:
+            return const_value("string", receiver["value"].read(args[0]["value"]))
+        fail("file.read expects zero or one arg")
+    if receiver["kind"] == "file" and name == "write" and len(args) == 1:
+        receiver["value"].write(args[0]["value"])
+        return const_value("none", none)
+    if receiver["kind"] == "file" and name == "flush" and len(args) == 0:
+        receiver["value"].flush()
+        return const_value("none", none)
+    if receiver["kind"] == "file" and name == "seek":
+        if len(args) == 1:
+            receiver["value"].seek(args[0]["value"])
+            return const_value("none", none)
+        if len(args) == 2:
+            receiver["value"].seek(args[0]["value"], args[1]["value"])
+            return const_value("none", none)
+        fail("file.seek expects one or two args")
+    if receiver["kind"] == "list" and name == "append" and len(args) == 1:
+        items = []
+        idx = 0
+        while idx < len(receiver["value"]):
+            items = method_append(items, const_clone(receiver["value"][idx]))
+            idx = idx + 1
+        items = method_append(items, const_clone(args[0]))
+        return const_value("list", items)
+    if receiver["kind"] == "list" and name == "remove" and len(args) == 1:
+        items = []
+        removed = False
+        idx = 0
+        while idx < len(receiver["value"]):
+            item = receiver["value"][idx]
+            if not removed and const_equal(item, args[0]):
+                removed = True
+            else:
+                items = method_append(items, const_clone(item))
+            idx = idx + 1
+        return const_value("list", items)
+    if (receiver["kind"] == "list" or receiver["kind"] == "set") and name == "add" and len(args) == 1:
+        items = []
+        found = False
+        idx = 0
+        while idx < len(receiver["value"]):
+            item = receiver["value"][idx]
+            if const_equal(item, args[0]):
+                found = True
+            items = method_append(items, const_clone(item))
+            idx = idx + 1
+        if not found:
+            items = method_append(items, const_clone(args[0]))
+        return const_value(receiver["kind"], items)
+    if receiver["kind"] == "string" and name == "strip" and len(args) == 0:
+        return const_value("string", receiver["value"].strip())
+    if receiver["kind"] == "string" and name == "split" and len(args) == 1:
+        parts = receiver["value"].split(args[0]["value"])
+        out = []
+        idx = 0
+        while idx < len(parts):
+            out = method_append(out, const_value("string", parts[idx]))
+            idx = idx + 1
+        return const_value("list", out)
+    if receiver["kind"] == "string" and name == "startswith" and len(args) == 1:
+        return const_value("bool", receiver["value"][0:len(args[0]["value"])] == args[0]["value"])
+    if receiver["kind"] == "string" and name == "endswith" and len(args) == 1:
+        suffix = args[0]["value"]
+        if len(suffix) > len(receiver["value"]):
+            return const_value("bool", False)
+        return const_value("bool", receiver["value"][len(receiver["value"]) - len(suffix):len(receiver["value"])] == suffix)
+    if receiver["kind"] == "dict" and name == "keys" and len(args) == 0:
+        keys = receiver["value"].keys()
+        out = []
+        idx = 0
+        while idx < len(keys):
+            out = method_append(out, const_value("string", keys[idx]))
+            idx = idx + 1
+        return const_value("list", out)
+    if receiver["kind"] == "dict" and name == "items" and len(args) == 0:
+        keys = receiver["value"].keys()
+        out = []
+        idx = 0
+        while idx < len(keys):
+            key = keys[idx]
+            out = method_append(out, const_value("list", [const_value("string", key), const_clone(receiver["value"][key])]))
+            idx = idx + 1
+        return const_value("list", out)
+    fail("unsupported method during compiler evaluation: " + receiver["kind"] + "." + name)
+
+def eval_const_expr(node, env, functions):
+    kind = node["kind"]
+    if kind == "string":
+        return const_value("string", node["value"])
+    if kind == "int":
+        return const_value("int", node["value"])
+    if kind == "float":
+        return const_value("float", node["value"])
+    if kind == "bool":
+        return const_value("bool", node["value"])
+    if kind == "none":
+        return const_value("none", none)
+    if kind == "var":
+        if node["value"] == "SEEK_SET":
+            return const_value("int", 0)
+        if node["value"] == "SEEK_CUR":
+            return const_value("int", 1)
+        if node["value"] == "SEEK_END":
+            return const_value("int", 2)
+        return env_get(env, node["value"])
+    if kind == "list" or kind == "tuple" or kind == "set":
+        items = []
+        idx = 0
+        while idx < len(node["items"]):
+            items = method_append(items, eval_const_expr(node["items"][idx], env, functions))
+            idx = idx + 1
+        return const_value(kind, items)
+    if kind == "dict":
+        out = {}
+        idx = 0
+        while idx < len(node["entries"]):
+            key = eval_const_expr(node["entries"][idx]["key"], env, functions)
+            value = eval_const_expr(node["entries"][idx]["value"], env, functions)
+            out[value_to_output(key)] = value
+            idx = idx + 1
+        return const_value("dict", out)
+    if kind == "call":
+        return eval_call_expr(node, env, functions)
+    if kind == "lambda":
+        return const_value("lambda", {"params": node["params"], "body": node["body"]})
+    if kind == "kwarg":
+        return eval_const_expr(node["value"], env, functions)
+    if kind == "method_call":
+        return eval_method_call_expr(node, env, functions)
+    if kind == "attr":
+        receiver = eval_const_expr(node["receiver"], env, functions)
+        if receiver["kind"] == "object":
+            if node["name"] in receiver["value"]["attrs"]:
+                return const_clone(receiver["value"]["attrs"][node["name"]])
+            fail("object attribute not defined during compiler evaluation: " + node["name"])
+        fail("unsupported attr receiver during compiler evaluation: " + receiver["kind"])
+    if kind == "index":
+        receiver = eval_const_expr(node["receiver"], env, functions)
+        index = eval_const_expr(node["index"], env, functions)
+        idx_value = index["value"]
+        if receiver["kind"] == "list" or receiver["kind"] == "tuple" or receiver["kind"] == "set":
+            if idx_value < 0:
+                idx_value = len(receiver["value"]) + idx_value
+            return const_clone(receiver["value"][idx_value])
+        if receiver["kind"] == "string":
+            if idx_value < 0:
+                idx_value = len(receiver["value"]) + idx_value
+            return const_value("string", receiver["value"][idx_value])
+        if receiver["kind"] == "dict":
+            return const_clone(receiver["value"][value_to_output(index)])
+        fail("unsupported index receiver during compiler evaluation: " + receiver["kind"])
+    if kind == "slice":
+        receiver = eval_const_expr(node["receiver"], env, functions)
+        start = 0
+        stop = 0
+        if node["start"]["kind"] != "none":
+            start = eval_const_expr(node["start"], env, functions)["value"]
+        if receiver["kind"] == "string":
+            stop = len(receiver["value"])
+            if node["stop"]["kind"] != "none":
+                stop = eval_const_expr(node["stop"], env, functions)["value"]
+            if start < 0:
+                start = len(receiver["value"]) + start
+            if stop < 0:
+                stop = len(receiver["value"]) + stop
+            return const_value("string", receiver["value"][start:stop])
+        if receiver["kind"] == "list" or receiver["kind"] == "tuple" or receiver["kind"] == "set":
+            stop = len(receiver["value"])
+            if node["stop"]["kind"] != "none":
+                stop = eval_const_expr(node["stop"], env, functions)["value"]
+            if start < 0:
+                start = len(receiver["value"]) + start
+            if stop < 0:
+                stop = len(receiver["value"]) + stop
+            out = []
+            idx = start
+            while idx < stop:
+                out = method_append(out, const_clone(receiver["value"][idx]))
+                idx = idx + 1
+            return const_value(receiver["kind"], out)
+        fail("unsupported slice receiver during compiler evaluation: " + receiver["kind"])
+    if kind == "comprehension":
+        iterable = eval_const_expr(node["iterable"], env, functions)
+        values = const_iter_values(iterable)
+        if node["out_kind"] == "list":
+            out = []
+            idx = 0
+            while idx < len(values):
+                env[node["target"]] = const_clone(values[idx])
+                if const_truthy(eval_const_expr(node["condition"], env, functions)):
+                    out = method_append(out, eval_const_expr(node["expr"], env, functions))
+                idx = idx + 1
+            return const_value("list", out)
+        out_dict = {}
+        idx = 0
+        while idx < len(values):
+            env[node["target"]] = const_clone(values[idx])
+            if const_truthy(eval_const_expr(node["condition"], env, functions)):
+                key = eval_const_expr(node["key"], env, functions)
+                value = eval_const_expr(node["value"], env, functions)
+                out_dict[value_to_output(key)] = value
+            idx = idx + 1
+        return const_value("dict", out_dict)
+    if kind == "unary":
+        value = eval_const_expr(node["value"], env, functions)
+        if node["op"] == "not":
+            return const_value("bool", not const_truthy(value))
+        fail("unsupported unary operator during compiler evaluation: " + node["op"])
+    if kind == "binary":
+        left = eval_const_expr(node["left"], env, functions)
+        op = node["op"]
+        if op == "and":
+            if const_truthy(left):
+                return eval_const_expr(node["right"], env, functions)
+            return left
+        if op == "or":
+            if const_truthy(left):
+                return left
+            return eval_const_expr(node["right"], env, functions)
+        right = eval_const_expr(node["right"], env, functions)
+        left_value = const_unbox(left)
+        right_value = const_unbox(right)
+        if op == "+":
+            if left["kind"] == "string" or right["kind"] == "string":
+                return const_value("string", str(left_value) + str(right_value))
+            return const_value(const_kind_for_number(left), left_value + right_value)
+        if op == "-":
+            return const_value(const_kind_for_number(left), left_value - right_value)
+        if op == "*":
+            return const_value(const_kind_for_number(left), left_value * right_value)
+        if op == "/":
+            return const_value("float", left_value / right_value)
+        if op == "%":
+            return const_value("int", left_value % right_value)
+        if op == "==":
+            return const_value("bool", const_equal(left, right))
+        if op == "!=":
+            return const_value("bool", not const_equal(left, right))
+        if op == "in":
+            if right["kind"] == "dict":
+                return const_value("bool", value_to_output(left) in right["value"])
+            if right["kind"] == "list":
+                idx = 0
+                while idx < len(right["value"]):
+                    if const_equal(left, right["value"][idx]):
+                        return const_value("bool", True)
+                    idx = idx + 1
+                return const_value("bool", False)
+            if right["kind"] == "string":
+                return const_value("bool", contains_text(right["value"], value_to_output(left)))
+            fail("unsupported in receiver during compiler evaluation: " + right["kind"])
+        if op == "<":
+            return const_value("bool", left_value < right_value)
+        if op == "<=":
+            return const_value("bool", left_value <= right_value)
+        if op == ">":
+            return const_value("bool", left_value > right_value)
+        if op == ">=":
+            return const_value("bool", left_value >= right_value)
+        fail("unsupported binary operator during compiler evaluation: " + op)
+    fail("unsupported expression during compiler evaluation: " + kind)

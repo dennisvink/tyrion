@@ -1,0 +1,12 @@
+path = "/tmp/tyrion_direct_native_runtime_io.txt"
+
+with open(path, "w") as f:
+    f.write("winter\nis\ncoming")
+    f.flush()
+
+with open(path, "r") as f:
+    prefix = f.read(6)
+    rest = f.read()
+
+parts = rest.strip().split("\n")
+print("io", prefix, parts[0], parts[1], len(rest))

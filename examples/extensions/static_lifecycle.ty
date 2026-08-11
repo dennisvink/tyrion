@@ -1,0 +1,21 @@
+def require(condition, message):
+    if not condition:
+        raise message
+
+
+first = __tyrion_native_host_load("foo")
+alias = first
+independent = __tyrion_native_host_load("foo")
+
+require(__tyrion_native_host_call(first, "foo.echo", "first") == "first", "first static call failed")
+require(__tyrion_native_host_call(alias, "foo.ping", "ignored") == "pong", "aliased static call failed")
+require(__tyrion_native_host_call(first, "foo.unknown", "ignored") == none, "unknown operation did not return none")
+
+require(__tyrion_native_host_unload(first), "first unload failed")
+require(__tyrion_native_host_call(alias, "foo.ping", "ignored") == none, "unload did not invalidate an alias")
+require(not __tyrion_native_host_unload(alias), "repeated alias unload was not idempotent")
+
+require(__tyrion_native_host_call(independent, "foo.ping", "ignored") == "pong", "independent handle was invalidated")
+require(__tyrion_native_host_unload(independent), "independent unload failed")
+
+print("static-extension-conformance-ok")

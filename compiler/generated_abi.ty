@@ -1,0 +1,891 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# Canonical generated compiler ABI. Keep physical layout constants here; native
+# emitters interpolate these values instead of maintaining private copies.
+def generated_abi_version():
+    return "tyrion-generated-abi-v1"
+
+
+def generated_token_vector_magic():
+    return 167
+
+
+def generated_token_vector_header_size():
+    return 32
+
+
+def generated_token_record_size():
+    return 40
+
+
+def generated_token_record_kind_offset():
+    return 0
+
+
+def generated_token_record_text_offset():
+    return 8
+
+
+def generated_token_record_text_length_offset():
+    return 16
+
+
+def generated_token_record_line_offset():
+    return 24
+
+
+def generated_token_record_column_offset():
+    return 32
+
+
+def generated_builder_token_record_size():
+    return 48
+
+
+def generated_builder_token_kind_offset():
+    return 0
+
+
+def generated_builder_token_kind_length_offset():
+    return 8
+
+
+def generated_builder_token_text_offset():
+    return 16
+
+
+def generated_builder_token_text_length_offset():
+    return 24
+
+
+def generated_builder_token_line_offset():
+    return 32
+
+
+def generated_builder_token_column_offset():
+    return 40
+
+
+def generated_token_kind_names():
+    return ["EOF", "NEWLINE", "INDENT", "DEDENT", "IDENTIFIER", "STRING", "INT", "FLOAT", "KW_DEF", "KW_CLASS", "KW_IF", "KW_ELIF", "KW_ELSE", "KW_WHILE", "KW_FOR", "KW_IN", "KW_RETURN", "KW_RAISE", "KW_TRY", "KW_EXCEPT", "KW_FINALLY", "KW_WITH", "KW_AS", "KW_AND", "KW_OR", "KW_NOT", "KW_TRUE", "KW_FALSE", "KW_NONE", "KW_BREAK", "KW_CONTINUE", "KW_UNLESS", "KW_LAMBDA", "KW_YIELD", "LPAREN", "RPAREN", "LBRACE", "RBRACE", "LBRACKET", "RBRACKET", "COMMA", "COLON", "DOT", "MINUS", "STAR", "SLASH", "PERCENT", "PLUS", "EQ", "UNKNOWN", "LT", "GT", "PLUSEQ", "EQEQ", "NE", "LE", "GE"]
+
+
+def generated_token_kind_id(name):
+    names = generated_token_kind_names()
+    idx = 0
+    while idx < len(names):
+        if names[idx] == name:
+            return idx + 1
+        idx = idx + 1
+    fail("generated ABI rejected unknown token kind: " + name)
+
+
+def generated_token_kind_identifier():
+    return generated_token_kind_id("IDENTIFIER")
+
+
+def generated_token_kind_string():
+    return generated_token_kind_id("STRING")
+
+
+def generated_token_kind_int():
+    return generated_token_kind_id("INT")
+
+
+def generated_token_kind_float():
+    return generated_token_kind_id("FLOAT")
+
+
+def generated_token_kind_minus():
+    return generated_token_kind_id("MINUS")
+
+
+def generated_token_kind_plus():
+    return generated_token_kind_id("PLUS")
+
+
+def generated_token_kind_not():
+    return generated_token_kind_id("KW_NOT")
+
+
+def generated_token_kind_true():
+    return generated_token_kind_id("KW_TRUE")
+
+
+def generated_token_kind_false():
+    return generated_token_kind_id("KW_FALSE")
+
+
+def generated_token_kind_none():
+    return generated_token_kind_id("KW_NONE")
+
+
+def generated_ast_arena_magic():
+    return 168
+
+
+def generated_ast_arena_header_size():
+    return 32
+
+
+def generated_ast_record_size():
+    return 64
+
+
+def generated_ast_record_kind_offset():
+    return 0
+
+
+def generated_ast_record_start_offset():
+    return 8
+
+
+def generated_ast_record_end_offset():
+    return 16
+
+
+def generated_ast_record_field0_offset():
+    return 24
+
+
+def generated_ast_record_field1_offset():
+    return 32
+
+
+def generated_ast_record_field2_offset():
+    return 40
+
+
+def generated_ast_record_field3_offset():
+    return 48
+
+
+def generated_ast_record_field4_offset():
+    return 56
+
+
+def generated_ast_handle_magic():
+    return 170
+
+
+def generated_ast_handle_size():
+    return 80
+
+
+def generated_ast_handle_magic_offset():
+    return 0
+
+
+def generated_ast_handle_refcount_offset():
+    return 8
+
+
+def generated_ast_handle_token_owner_offset():
+    return 16
+
+
+def generated_ast_handle_records_owner_offset():
+    return 24
+
+
+def generated_ast_handle_records_offset():
+    return 32
+
+
+def generated_ast_handle_record_count_offset():
+    return 40
+
+
+def generated_ast_handle_record_capacity_offset():
+    return 48
+
+
+def generated_ast_handle_root_offset():
+    return 56
+
+
+def generated_ast_handle_flags_offset():
+    return 64
+
+
+def generated_ast_handle_parent_offset():
+    return 72
+
+
+def generated_environment_magic():
+    return 171
+
+
+def generated_environment_header_size():
+    return 32
+
+
+def generated_environment_refcount_offset():
+    # Bytes 1..7 of the environment header follow the one-byte magic. Keep a
+    # 32-bit lexical-scope reference count in bytes 4..7 without changing the
+    # established 32-byte entry base.
+    return 4
+
+
+def generated_environment_entry_size():
+    return 144
+
+
+def generated_environment_count_offset():
+    return 8
+
+
+def generated_environment_capacity_offset():
+    return 16
+
+
+def generated_environment_parent_offset():
+    return 24
+
+
+def generated_environment_entry_name_offset():
+    return 0
+
+
+def generated_environment_entry_name_length_offset():
+    return 8
+
+
+def generated_environment_entry_value_offset():
+    return 16
+
+
+def generated_ast_kind_leaf():
+    return 1
+
+
+def generated_ast_kind_unary():
+    return 2
+
+
+def generated_ast_kind_binary():
+    return 3
+
+
+def generated_ast_kind_method_call():
+    return 4
+
+
+def generated_ast_kind_index():
+    return 5
+
+
+def generated_ast_kind_call():
+    return 6
+
+
+def generated_ast_kind_slice():
+    return 7
+
+
+def generated_ast_kind_argument_link():
+    return 8
+
+
+def generated_ast_kind_item_link():
+    return 9
+
+
+def generated_ast_kind_list():
+    return 10
+
+
+def generated_ast_kind_tuple():
+    return 11
+
+
+def generated_ast_kind_set():
+    return 12
+
+
+def generated_ast_kind_dict_item():
+    return 13
+
+
+def generated_ast_kind_dict():
+    return 14
+
+
+def generated_ast_kind_attr():
+    return 15
+
+
+def generated_ast_kind_comprehension():
+    return 16
+
+
+def generated_ast_kind_lambda():
+    return 17
+
+
+def generated_ast_kind_unpack_target():
+    return 20
+
+
+def generated_assignment_target_var():
+    return 301
+
+
+def generated_assignment_target_index():
+    return 302
+
+
+def generated_assignment_target_unpack():
+    return 303
+
+
+def generated_assignment_target_attr():
+    return 304
+
+
+def generated_stmt_kind_assign():
+    return 100
+
+
+def generated_stmt_kind_return():
+    return 101
+
+
+def generated_stmt_kind_print():
+    return 102
+
+
+def generated_stmt_kind_if():
+    return 103
+
+
+def generated_stmt_kind_while():
+    return 104
+
+
+def generated_stmt_kind_break():
+    return 105
+
+
+def generated_stmt_kind_continue():
+    return 106
+
+
+def generated_stmt_kind_function():
+    return 107
+
+
+def generated_stmt_kind_for():
+    return 108
+
+
+def generated_stmt_kind_expr():
+    return 109
+
+
+def generated_stmt_kind_child_link():
+    return 110
+
+
+def generated_stmt_kind_program():
+    return 111
+
+
+def generated_stmt_kind_block():
+    return 113
+
+
+def generated_stmt_kind_param():
+    return 114
+
+
+def generated_stmt_kind_branch():
+    return 115
+
+
+def generated_stmt_kind_with():
+    return 116
+
+
+def generated_stmt_kind_try():
+    return 117
+
+
+def generated_stmt_kind_except():
+    return 118
+
+
+def generated_stmt_kind_yield():
+    return 119
+
+
+def generated_stmt_kind_class():
+    return 120
+
+
+def generated_stmt_kind_raise():
+    return 121
+
+
+def generated_flow_failure():
+    return 0
+
+
+def generated_flow_normal():
+    return 1
+
+
+def generated_flow_return():
+    return 2
+
+
+def generated_flow_break():
+    return 3
+
+
+def generated_flow_continue():
+    return 4
+
+
+def generated_flow_raise():
+    return 5
+
+
+# Generated values occupy 128-byte slots. Byte 127 is the stable value tag and
+# byte 126 is the owner discriminator. Owner 0 is inline/borrowed, owner 1 owns
+# the pointer in byte 0, and owners 2/3 identify canonical typed aggregate
+# storage whose elements must be copied/released recursively. These tags are
+# shared by compiler execution and direct applications; they are not parser
+# statement-kind values.
+def generated_value_slot_size():
+    return 128
+
+
+def generated_value_tag_offset():
+    return 127
+
+
+def generated_value_owner_offset():
+    return 126
+
+
+def generated_value_owner_mem(reg):
+    out = lowered_function_label("[", reg)
+    out = lowered_function_label(out, ", #126]")
+    return out
+
+
+def generated_value_tag_mem(reg):
+    out = lowered_function_label("[", reg)
+    out = lowered_function_label(out, ", #127]")
+    return out
+
+
+def generated_value_tag_none():
+    # No payload and no ownership.
+    return 0
+
+
+def generated_value_tag_string_inline():
+    # NUL-terminated UTF-8 bytes live directly in bytes 0..120.
+    return 1
+
+
+def generated_value_tag_int():
+    # Signed 64-bit integer in bytes 0..7.
+    return 2
+
+
+def generated_value_tag_bool():
+    # Canonical 0/1 integer payload in bytes 0..7.
+    return 3
+
+
+def generated_value_tag_string_borrowed():
+    # Application literal/borrowed string: bytes 0/8 contain pointer/length.
+    # The slot does not own the pointed-to storage.
+    return 4
+
+
+def generated_value_tag_collection_inline():
+    # Compiler-internal compact collection payload stored in the slot. Direct
+    # applications normalize mutable/owned aggregates to tags 9, 10, or 20.
+    return 5
+
+
+def generated_value_tag_object():
+    # Direct application object descriptor pointer in byte 0. The descriptor
+    # owns a refcount and canonical field dictionary.
+    return 6
+
+
+def generated_object_refcount_offset():
+    return 0
+
+
+def generated_object_class_name_offset():
+    return 8
+
+
+def generated_object_class_name_length_offset():
+    return 16
+
+
+def generated_object_fields_offset():
+    return 24
+
+
+def generated_object_size():
+    return 32
+
+
+def generated_direct_object_class_id_offset():
+    # Native IR v2 uses the canonical object descriptor footprint without
+    # retaining class-name source text. Bytes 8/16/24 contain the immutable
+    # class ID, fixed attribute-slot count, and contiguous owned field slots.
+    return generated_object_class_name_offset()
+
+
+def generated_direct_object_field_count_offset():
+    return generated_object_class_name_length_offset()
+
+
+def generated_direct_object_fields_offset():
+    return generated_object_fields_offset()
+
+
+def generated_value_tag_alias():
+    # Non-owning compiler-internal alias. Byte 0 points at another live value
+    # slot; aliases must not escape the frame that owns the referent.
+    return 7
+
+
+def generated_value_tag_string_heap():
+    # Pointer and byte length in bytes 0/8. Owner 1 frees the byte allocation;
+    # owner 0 is a non-owning compiler-runtime view.
+    return 8
+
+
+def generated_value_tag_collection_heap():
+    # Owned list/tuple payload: bytes 0/8/16 contain the element pointer,
+    # logical length, and capacity. Elements are canonical 128-byte values.
+    return 9
+
+
+def generated_value_tag_dict_heap():
+    # Owned insertion-ordered dictionary payload. Bytes 0/8/16 contain the
+    # pair-record pointer, logical pair count, and capacity; every pair is two
+    # adjacent canonical value slots.
+    return 10
+
+
+def generated_value_tag_payload_heap():
+    # Compiler-internal opaque heap payload or typed token vector. Bytes 0/8
+    # hold pointer/length; application iterators are represented by retained
+    # iterable values and explicit index state rather than this tag.
+    return 11
+
+
+def generated_value_tag_file():
+    # Byte 0 points to a refcounted runtime file record containing FILE* and
+    # open/closed state. Copy retains; release closes only the final live owner.
+    return 12
+
+
+def generated_value_tag_tcp_socket():
+    # Byte 0 points to a refcounted socket record containing the descriptor and
+    # open/closed state. Copy retains; close is shared and idempotent.
+    return 13
+
+
+def generated_value_tag_ast_builder():
+    # Pointer in byte 0 to a refcounted compiler AST builder. The builder owns
+    # two canonical list slots (tokens and records). Copy retains the descriptor;
+    # release drops both lanes only when the final reference is released.
+    return 14
+
+
+def generated_value_tag_extension_handle():
+    # Pointer in bytes 0..7 to a refcounted 48-byte extension record:
+    # refcount, backend kind, registry index/library handle, call pointer,
+    # loaded state, and optional close pointer. Copies retain the record;
+    # aliases therefore observe shared unload state.
+    return 15
+
+
+# Tag 16 is reserved. It must not be assigned by target-local code; adding a
+# value kind requires a canonical ABI version and lifetime proof.
+def generated_value_tag_writer():
+    # Compiler-owned assembly writer pointer in byte 0. The writer record owns
+    # its growable byte buffer and is retained/released explicitly.
+    return 17
+
+
+def generated_value_tag_ast_handle():
+    # Pointer in byte 0 to the refcounted 80-byte AST handle described above.
+    # Sequence views retain their parent handle and encode projection flags.
+    return 18
+
+
+def generated_value_tag_float():
+    # Scalar IEEE-754 binary64 payload stored in bytes 0..7 of the value slot.
+    return 19
+
+
+def generated_value_tag_set_heap():
+    # Heap collection payload with uniqueness semantics; bytes 0/8/16 hold
+    # data pointer, logical length, and capacity respectively.
+    return 20
+
+
+def generated_value_tag_generator():
+    # Owned resumable generator state. Byte 0 points to the resume/state/local
+    # record used by the canonical iterator ABI.
+    return 21
+
+
+def generated_direct_generator_refcount_offset():
+    return 0
+
+
+def generated_direct_generator_resume_offset():
+    return 8
+
+
+def generated_direct_generator_state_offset():
+    return 16
+
+
+def generated_direct_generator_finished_offset():
+    return 24
+
+
+def generated_direct_generator_saved_count_offset():
+    return 32
+
+
+def generated_direct_generator_saved_slots_offset():
+    return 40
+
+
+def generated_direct_generator_cache_count_offset():
+    return 48
+
+
+def generated_direct_generator_cache_capacity_offset():
+    return 56
+
+
+def generated_direct_generator_cache_slots_offset():
+    return 64
+
+
+def generated_direct_generator_globals_offset():
+    return 72
+
+
+def generated_direct_generator_size():
+    return 80
+
+
+def generated_value_tag_closure():
+    # Owned closure descriptor containing a retained AST handle, lambda record
+    # index, and retained defining lexical environment.
+    return 22
+
+
+def generated_closure_refcount_offset():
+    return 0
+
+
+def generated_closure_ast_offset():
+    return 8
+
+
+def generated_closure_record_offset():
+    return 16
+
+
+def generated_closure_environment_offset():
+    return 24
+
+
+def generated_closure_size():
+    return 32
+
+
+def generated_direct_closure_function_id_offset():
+    # Native IR v2 reuses the canonical closure descriptor footprint without
+    # retaining parser AST state: bytes 8/16/24 hold the direct function ID,
+    # capture count, and contiguous canonical capture-slot array.
+    return generated_closure_ast_offset()
+
+
+def generated_direct_closure_capture_count_offset():
+    return generated_closure_record_offset()
+
+
+def generated_direct_closure_captures_offset():
+    return generated_closure_environment_offset()
+
+
+def generated_direct_closure_globals_offset():
+    return 32
+
+
+def generated_direct_closure_size():
+    return 40
+
+
+def generated_abi_contract_text():
+    out = lowered_function_label(generated_abi_version(), ":token=")
+    out = lowered_function_label(out, str(generated_token_vector_magic()))
+    out = lowered_function_label(out, ",")
+    out = lowered_function_label(out, str(generated_token_vector_header_size()))
+    out = lowered_function_label(out, ",")
+    out = lowered_function_label(out, str(generated_token_record_size()))
+    out = lowered_function_label(out, ":ast=")
+    out = lowered_function_label(out, str(generated_ast_arena_magic()))
+    out = lowered_function_label(out, ",")
+    out = lowered_function_label(out, str(generated_ast_record_size()))
+    out = lowered_function_label(out, ",")
+    out = lowered_function_label(out, str(generated_ast_handle_magic()))
+    out = lowered_function_label(out, ",")
+    out = lowered_function_label(out, str(generated_ast_handle_size()))
+    out = lowered_function_label(out, ":value=")
+    out = lowered_function_label(out, str(generated_value_slot_size()))
+    out = lowered_function_label(out, ",")
+    out = lowered_function_label(out, str(generated_value_tag_offset()))
+    out = lowered_function_label(out, ",")
+    out = lowered_function_label(out, str(generated_value_owner_offset()))
+    return out
+
+
+def generated_state_offset_asm_length():
+    return 2008
+
+
+def generated_state_offset_asm_capacity():
+    return 2016
+
+
+def generated_state_offset_active_stream():
+    return 2072
+
+
+def generated_state_offset_source_cursor():
+    return 2080
+
+
+def generated_state_offset_assignment_base():
+    return 2088
+
+
+def generated_state_offset_assignment_end():
+    return 2096
+
+
+def generated_state_offset_source_base():
+    return 2104
+
+
+def generated_state_offset_function_table():
+    return 2112
+
+
+def generated_state_offset_scope_floor():
+    return 2120
+
+
+def generated_abi_mem(reg, offset):
+    # Keep each append result in a named slot. Generated nested additive
+    # evaluation may otherwise retain an alias to an intermediate owned string
+    # while the following append grows or replaces its backing allocation.
+    out = lowered_function_label("[", reg)
+    out = lowered_function_label(out, ", #")
+    out = lowered_function_label(out, str(offset))
+    out = lowered_function_label(out, "]")
+    return out
+
+
+def generated_ast_handle_magic_mem(reg):
+    return generated_abi_mem(reg, generated_ast_handle_magic_offset())
+
+
+def generated_ast_handle_refcount_mem(reg):
+    return generated_abi_mem(reg, generated_ast_handle_refcount_offset())
+
+
+def generated_ast_handle_token_owner_mem(reg):
+    return generated_abi_mem(reg, generated_ast_handle_token_owner_offset())
+
+
+def generated_ast_handle_records_owner_mem(reg):
+    return generated_abi_mem(reg, generated_ast_handle_records_owner_offset())
+
+
+def generated_ast_handle_records_mem(reg):
+    return generated_abi_mem(reg, generated_ast_handle_records_offset())
+
+
+def generated_ast_handle_record_count_mem(reg):
+    return generated_abi_mem(reg, generated_ast_handle_record_count_offset())
+
+
+def generated_ast_handle_record_capacity_mem(reg):
+    return generated_abi_mem(reg, generated_ast_handle_record_capacity_offset())
+
+
+def generated_ast_handle_root_mem(reg):
+    return generated_abi_mem(reg, generated_ast_handle_root_offset())
+
+
+def generated_ast_handle_flags_mem(reg):
+    return generated_abi_mem(reg, generated_ast_handle_flags_offset())
+
+
+def generated_ast_handle_parent_mem(reg):
+    return generated_abi_mem(reg, generated_ast_handle_parent_offset())
+
+
+def generated_state_asm_length_mem(reg):
+    return generated_abi_mem(reg, generated_state_offset_asm_length())
+
+
+def generated_state_asm_capacity_mem(reg):
+    return generated_abi_mem(reg, generated_state_offset_asm_capacity())
+
+
+def generated_state_active_stream_mem(reg):
+    return generated_abi_mem(reg, generated_state_offset_active_stream())
+
+
+def generated_state_source_cursor_mem(reg):
+    return generated_abi_mem(reg, generated_state_offset_source_cursor())
+
+
+def generated_state_assignment_base_mem(reg):
+    return generated_abi_mem(reg, generated_state_offset_assignment_base())
+
+
+def generated_state_assignment_end_mem(reg):
+    return generated_abi_mem(reg, generated_state_offset_assignment_end())
+
+
+def generated_state_source_base_mem(reg):
+    return generated_abi_mem(reg, generated_state_offset_source_base())
+
+
+def generated_state_function_table_mem(reg):
+    return generated_abi_mem(reg, generated_state_offset_function_table())
+
+
+def generated_state_scope_floor_mem(reg):
+    return generated_abi_mem(reg, generated_state_offset_scope_floor())
+
+
+def generated_active_compiler_source_label():
+    return "L_active_compiler_source_ptr"

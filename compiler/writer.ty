@@ -1,0 +1,140 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# compiler / writer: responsibility-owned canonical compiler module.
+
+def asm_escape_string(text):
+    out = ""
+    backslash = "\\"
+    quote = "\""
+    newline = "\n"
+    tab = "\t"
+    carriage = "\r"
+    idx = 0
+    while idx < len(text):
+        ch = text[idx]
+        handled = 0
+        if ch == backslash:
+            out = out + "\\\\"
+            handled = 1
+        if ch == quote:
+            out = out + "\\\""
+            handled = 1
+        if ch == newline:
+            out = out + "\\n"
+            handled = 1
+        if ch == tab:
+            out = out + "\\t"
+            handled = 1
+        if ch == carriage:
+            out = out + "\\r"
+            handled = 1
+        if handled == 0:
+            out = out + ch
+        idx = idx + 1
+    return out
+
+def asm_line(out, text):
+    if asm_writer_is_x86(out):
+        fail("legacy semantic x86 writer removed; use the native x86 emitter")
+    out = asm_writer_append(out, "    ")
+    out = asm_writer_append(out, text)
+    out = asm_writer_append(out, "\n")
+    return out
+
+def asm_label(out, name):
+    out = asm_writer_append(out, name)
+    out = asm_writer_append(out, ":\n")
+    return out
+
+def asm_dir(out, text):
+    out = asm_writer_append(out, text)
+    out = asm_writer_append(out, "\n")
+    return out
+
+def asm_raw(out, text):
+    return asm_writer_append(out, text)
+
+def asm_cstr(out, label, value):
+    out = asm_label(out, label)
+    return asm_dir(out, ".asciz \"" + asm_escape_string(value) + "\"")
+
+def asm_darwin_addr(out, reg, label):
+    out = asm_line(out, "adrp " + reg + ", " + label + "@PAGE")
+    return asm_line(out, "add " + reg + ", " + reg + ", " + label + "@PAGEOFF")
+
+def asm_section(out, text):
+    out = asm_writer_append(out, text)
+    out = asm_writer_append(out, "\n")
+    return out
+
+def split_text_chunks(text, size):
+    chunks = []
+    idx = 0
+    while idx < len(text):
+        stop = idx + size
+        if stop > len(text):
+            stop = len(text)
+        chunks = method_append(chunks, text[idx:stop])
+        idx = stop
+    return chunks
+
+def asm_call_name(target, name):
+    symbol = name
+    if target["os"] == "linux" and name == "malloc_size":
+        symbol = "malloc_usable_size"
+    if target["backend"] == "darwin-aarch64":
+        return "_" + symbol
+    if target["backend"] == "linux-x86_64":
+        return symbol + "@PLT"
+    return symbol
+
+def asm_global_c_main(out, target):
+    if target["backend"] == "darwin-aarch64":
+        out = asm_dir(out, ".globl _main")
+        return asm_label(out, "_main")
+    out = asm_dir(out, ".globl main")
+    out = asm_label(out, "main")
+    if target["backend"] == "linux-x86_64":
+        fail("legacy semantic x86 entry writer removed; use the native x86 emitter")
+    return out
+
+def asm_addr(out, target, reg, label):
+    if target["backend"] == "darwin-aarch64":
+        return asm_darwin_addr(out, reg, label)
+    if target["backend"] == "linux-aarch64":
+        out = asm_line(out, "adrp " + reg + ", " + label)
+        return asm_line(out, "add " + reg + ", " + reg + ", :lo12:" + label)
+    if target["backend"] == "linux-x86_64":
+        fail("legacy semantic x86 address writer removed; use the native x86 emitter")
+    fail("unsupported address materialization target: " + target["triple"])
+
+def asm_writer_open(path):
+    return {"file": open(path, "w"), "backend": "", "bytes": 0}
+
+def asm_writer_open_memory():
+    fail("asm_writer_open_memory requires bootstrap execute mode")
+
+def asm_writer_close(writer):
+    writer["file"].close()
+    return True
+
+def asm_writer_text(writer):
+    fail("asm_writer_text requires bootstrap execute mode")
+
+def asm_writer_bytes(writer):
+    return writer["bytes"]
+
+def asm_writer_set_backend(writer, backend):
+    writer["backend"] = backend
+    return writer
+
+def asm_writer_is_x86(writer):
+    return writer["backend"] == "linux-x86_64"
+
+def asm_writer_append(writer, text):
+    writer["file"].write(text)
+    writer["bytes"] = writer["bytes"] + len(text)
+    return writer

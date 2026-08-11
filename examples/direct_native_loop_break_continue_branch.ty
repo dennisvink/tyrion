@@ -1,0 +1,13 @@
+i = 0
+total = 0
+while i < 6:
+    i = i + 1
+    if i == 2:
+        continue
+    if i == 5:
+        break
+    total = total + i
+if total == 8:
+    print("loop-break-continue-ok")
+else:
+    print("loop-break-continue-fail")

@@ -1,0 +1,2 @@
+result = __tyrion_run_tool("printf", ["capture-ok"])
+print(result["ok"], result["status"], result["stdout"], result["stderr"])

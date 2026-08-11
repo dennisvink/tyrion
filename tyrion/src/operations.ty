@@ -1,0 +1,171 @@
+# Scalar literal and binary operations shared by the explicit task-stack VM.
+
+
+def tyrion_eval_result(state, value):
+    return {"state": state, "value": value}
+
+
+def tyrion_numeric_text(text):
+    out = ""
+    index = 0
+    while index < len(text):
+        if text[index] != "_":
+            out = out + text[index]
+        index = index + 1
+    return out
+
+
+def tyrion_parse_float_text(float_text):
+    float_text = tyrion_numeric_text(float_text)
+    float_sign = 1
+    float_index = 0
+    if len(float_text) > 0:
+        if float_text[0] == "-":
+            float_sign = -1
+            float_index = 1
+        elif float_text[0] == "+":
+            float_index = 1
+    float_value = 0.0
+    float_fractional = False
+    float_scale = 1.0
+    while float_index < len(float_text):
+        float_ch = float_text[float_index]
+        if float_ch == ".":
+            if float_fractional:
+                raise "ValueError: invalid float " + float_text
+            float_fractional = True
+        else:
+            float_digit = int(float_ch)
+            if float_fractional:
+                float_scale = float_scale * 10
+                float_value = float_value + float_digit / float_scale
+            else:
+                float_value = float_value * 10 + float_digit
+        float_index = float_index + 1
+    float_result = float_sign * float_value
+    return float_result
+
+
+def tyrion_float_text(float_number):
+    float_prefix = ""
+    float_absolute = float_number
+    if float_absolute < 0.0:
+        float_prefix = "-"
+        float_absolute = 0.0 - float_absolute
+    float_whole = int(float_absolute)
+    float_fraction = float_absolute - float_whole
+    float_digits = ""
+    float_last_nonzero = 0
+    float_digit_index = 0
+    while float_digit_index < 8:
+        float_fraction = float_fraction * 10.0
+        float_digit_value = int(float_fraction)
+        float_digits = float_digits + str(float_digit_value)
+        if float_digit_value != 0:
+            float_last_nonzero = float_digit_index + 1
+        float_fraction = float_fraction - float_digit_value
+        float_digit_index = float_digit_index + 1
+    if float_last_nonzero == 0:
+        return float_prefix + str(float_whole) + ".0"
+    return float_prefix + str(float_whole) + "." + float_digits[:float_last_nonzero]
+
+
+def tyrion_eval_literal(state, node):
+    kind = node["value_kind"]
+    if kind == "none":
+        return tyrion_eval_result(state, tyrion_none())
+    if kind == "bool":
+        return tyrion_eval_result(state, tyrion_bool(node["text"] == "True"))
+    if kind == "int":
+        return tyrion_eval_result(state, tyrion_int(int(tyrion_numeric_text(node["text"]))))
+    if kind == "float":
+        return tyrion_eval_result(state, tyrion_float(tyrion_parse_float_text(node["text"])))
+    if kind == "string":
+        return tyrion_eval_result(state, tyrion_string(node["text"]))
+    raise "invalid literal kind " + kind
+
+
+def tyrion_numeric_result(left, value):
+    if left["kind"] == "float":
+        return tyrion_float(value)
+    return tyrion_int(value)
+
+
+def tyrion_binary_numeric_result(left, right, op):
+    if left["kind"] == "float" or right["kind"] == "float":
+        left_value = float(left["value"])
+        right_value = float(right["value"])
+        if op == "+":
+            return tyrion_float(left_value + right_value)
+        if op == "-":
+            return tyrion_float(left_value - right_value)
+        if op == "*":
+            return tyrion_float(left_value * right_value)
+        if op == "%":
+            return tyrion_float(left_value % right_value)
+    if op == "+":
+        return tyrion_int(left["value"] + right["value"])
+    if op == "-":
+        return tyrion_int(left["value"] - right["value"])
+    if op == "*":
+        return tyrion_int(left["value"] * right["value"])
+    return tyrion_int(left["value"] % right["value"])
+
+
+def tyrion_binary_contains(state, needle, haystack):
+    kind = haystack["kind"]
+    if kind == "string":
+        return tyrion_text_contains(haystack["value"], needle["value"])
+    if kind == "dict":
+        return tyrion_dict_find(state, haystack, needle) >= 0
+    items = tyrion_collection_items(state, haystack)
+    index = 0
+    while index < len(items):
+        if tyrion_value_equal(state, needle, items[index]):
+            return True
+        index = index + 1
+    return False
+
+
+def tyrion_eval_binary_values(state, op, left, right):
+    if op == "==":
+        return tyrion_eval_result(state, tyrion_bool(tyrion_value_equal(state, left, right)))
+    if op == "!=":
+        return tyrion_eval_result(state, tyrion_bool(not tyrion_value_equal(state, left, right)))
+    if op == "in" or op == "not in":
+        present = tyrion_binary_contains(state, left, right)
+        if op == "not in":
+            present = not present
+        return tyrion_eval_result(state, tyrion_bool(present))
+    if op == "+":
+        if left["kind"] == "bytes" and right["kind"] == "bytes":
+            segments = left["value"]["segments"] + right["value"]["segments"]
+            length = tyrion_bytes_length(left) + tyrion_bytes_length(right)
+            return tyrion_eval_result(state, tyrion_bytes_from_segments(segments, length))
+        if left["kind"] == "string" and right["kind"] == "string":
+            return tyrion_eval_result(state, tyrion_string(left["value"] + right["value"]))
+        if left["kind"] == "list" and right["kind"] == "list":
+            items = tyrion_collection_items(state, left) + tyrion_collection_items(state, right)
+            return tyrion_heap_alloc(state, "list", items)
+        return tyrion_eval_result(state, tyrion_binary_numeric_result(left, right, "+"))
+    if op == "-":
+        return tyrion_eval_result(state, tyrion_binary_numeric_result(left, right, "-"))
+    if op == "*":
+        return tyrion_eval_result(state, tyrion_binary_numeric_result(left, right, "*"))
+    if (op == "/" or op == "//" or op == "%") and right["value"] == 0:
+        raise "ZeroDivisionError: division by zero"
+    if op == "/":
+        return tyrion_eval_result(state, tyrion_float(float(left["value"]) / float(right["value"])))
+    if op == "//":
+        return tyrion_eval_result(state, tyrion_int(int(left["value"] / right["value"])))
+    if op == "%":
+        return tyrion_eval_result(state, tyrion_binary_numeric_result(left, right, "%"))
+    if op == "<":
+        return tyrion_eval_result(state, tyrion_bool(left["value"] < right["value"]))
+    if op == "<=":
+        return tyrion_eval_result(state, tyrion_bool(left["value"] <= right["value"]))
+    if op == ">":
+        return tyrion_eval_result(state, tyrion_bool(left["value"] > right["value"]))
+    if op == ">=":
+        return tyrion_eval_result(state, tyrion_bool(left["value"] >= right["value"]))
+    raise "unsupported binary operator " + op

@@ -1,0 +1,816 @@
+# Explicit task-stack evaluator. Guest recursion never recurses through native
+# Tyrion user-function frames.
+
+
+def tyrion_vm_task(kind):
+    return {"kind": kind}
+
+
+def tyrion_vm_stack_new():
+    return {"items": [], "top": 0}
+
+
+def tyrion_vm_stack_len(stack):
+    return stack["top"]
+
+
+def tyrion_vm_push(stack, value):
+    items = stack["items"]
+    top = stack["top"]
+    if top < len(items):
+        items[top] = value
+    else:
+        items.append(value)
+    stack["items"] = items
+    stack["top"] = top + 1
+    return stack
+
+
+def tyrion_vm_pop(stack):
+    top = stack["top"] - 1
+    if top < 0:
+        raise "internal interpreter error: empty VM stack"
+    value = stack["items"][top]
+    stack["top"] = top
+    return {"items": stack, "value": value}
+
+
+def tyrion_vm_schedule_expression(tasks, environment, node):
+    tasks = tyrion_vm_push(tasks, {"kind": "eval", "environment": environment, "node": node})
+    return tasks
+
+
+def tyrion_vm_schedule_block(tasks, environment, body):
+    tasks = tyrion_vm_push(tasks, {"kind": "block", "environment": environment, "body": body, "index": 0})
+    return tasks
+
+
+def tyrion_vm_materialize_literal(state, node):
+    return tyrion_eval_literal(state, node)
+
+
+def tyrion_vm_continue_signal(nodes, state, tasks, values, signal, signal_value):
+    while tyrion_vm_stack_len(tasks) > 0:
+        popped = tyrion_vm_pop(tasks)
+        tasks = popped["items"]
+        task = popped["value"]
+        if task["kind"] == "try_boundary":
+            if signal == "raise" and task["has_except"]:
+                if task["except_binding"] != "":
+                    state = tyrion_env_assign(state, task["environment"], task["except_binding"], signal_value)
+                tasks = tyrion_vm_push(tasks, {"kind": "try_boundary", "environment": task["environment"], "has_except": False, "except_binding": "", "except_body": task["except_body"], "finally_body": task["finally_body"]})
+                tasks = tyrion_vm_schedule_block(tasks, task["environment"], nodes[task["except_body"]]["body"])
+                return {"state": state, "tasks": tasks, "values": values}
+            tasks = tyrion_vm_push(tasks, {"kind": "resume_signal", "signal": signal, "value": signal_value})
+            tasks = tyrion_vm_schedule_block(tasks, task["environment"], nodes[task["finally_body"]]["body"])
+            return {"state": state, "tasks": tasks, "values": values}
+        if task["kind"] == "call_boundary" or task["kind"] == "lambda_boundary":
+            state = tyrion_env_release(state, task["environment"])
+            if signal == "return" and task["kind"] == "call_boundary":
+                values = tyrion_vm_push(values, signal_value)
+                return {"state": state, "tasks": tasks, "values": values}
+            if signal != "raise":
+                raise "control flow escaped a function: " + signal
+        elif (signal == "break" or signal == "continue") and task["kind"] == "loop_boundary":
+            if signal == "continue":
+                tasks = tyrion_vm_push(tasks, task["continue_task"])
+            return {"state": state, "tasks": tasks, "values": values}
+    if signal == "raise":
+        raise tyrion_value_text(state, signal_value)
+    raise "control flow escaped its boundary: " + signal
+
+
+def tyrion_vm_schedule_call(tasks, environment, node):
+    keyword_names = []
+    keyword_index = 0
+    while keyword_index < len(node["kwargs"]):
+        keyword_names.append(node["kwargs"][keyword_index]["name"])
+        keyword_index = keyword_index + 1
+    tasks = tyrion_vm_push(tasks, {"kind": "call_apply", "environment": environment, "argc": len(node["args"]), "keyword_names": keyword_names})
+    index = len(node["kwargs"]) - 1
+    while index >= 0:
+        tasks = tyrion_vm_schedule_expression(tasks, environment, node["kwargs"][index]["value"])
+        index = index - 1
+    index = len(node["args"]) - 1
+    while index >= 0:
+        tasks = tyrion_vm_schedule_expression(tasks, environment, node["args"][index])
+        index = index - 1
+    return tyrion_vm_schedule_expression(tasks, environment, node["callee"])
+
+
+def tyrion_vm_schedule_collection(tasks, environment, node):
+    tasks = tyrion_vm_push(tasks, {"kind": "collection_apply", "collection_kind": node["kind"], "count": len(node["items"])})
+    index = len(node["items"]) - 1
+    while index >= 0:
+        tasks = tyrion_vm_schedule_expression(tasks, environment, node["items"][index])
+        index = index - 1
+    return tasks
+
+
+def tyrion_vm_schedule_dict(tasks, environment, node):
+    tasks = tyrion_vm_push(tasks, {"kind": "dict_apply", "count": len(node["entries"])})
+    index = len(node["entries"]) - 1
+    while index >= 0:
+        tasks = tyrion_vm_schedule_expression(tasks, environment, node["entries"][index]["value"])
+        tasks = tyrion_vm_schedule_expression(tasks, environment, node["entries"][index]["key"])
+        index = index - 1
+    return tasks
+
+
+def tyrion_vm_schedule_comp_produce(tasks, task):
+    if task["comp_kind"] == "list_comp":
+        tasks = tyrion_vm_push(tasks, {"kind": "comp_list_append", "next_task": task["next_task"], "out": task["out"]})
+        return tyrion_vm_schedule_expression(tasks, task["environment"], task["expr"])
+    tasks = tyrion_vm_push(tasks, {"kind": "comp_dict_append", "next_task": task["next_task"], "out": task["out"]})
+    tasks = tyrion_vm_schedule_expression(tasks, task["environment"], task["value"])
+    return tyrion_vm_schedule_expression(tasks, task["environment"], task["key"])
+
+
+def tyrion_vm_schedule_eval(nodes, tasks, environment, node):
+    kind = node["kind"]
+    if kind == "unary":
+        tasks = tyrion_vm_push(tasks, {"kind": "unary_apply", "op": node["op"]})
+        return tyrion_vm_schedule_expression(tasks, environment, node["value"])
+    if kind == "binary":
+        if node["op"] == "and" or node["op"] == "or":
+            tasks = tyrion_vm_push(tasks, {"kind": "short_apply", "environment": environment, "op": node["op"], "right": node["right"]})
+            return tyrion_vm_schedule_expression(tasks, environment, node["left"])
+        tasks = tyrion_vm_push(tasks, {"kind": "binary_apply", "op": node["op"]})
+        tasks = tyrion_vm_schedule_expression(tasks, environment, node["right"])
+        return tyrion_vm_schedule_expression(tasks, environment, node["left"])
+    if kind == "list" or kind == "tuple" or kind == "set":
+        return tyrion_vm_schedule_collection(tasks, environment, node)
+    if kind == "dict":
+        return tyrion_vm_schedule_dict(tasks, environment, node)
+    if kind == "list_comp" or kind == "dict_comp":
+        tasks = tyrion_vm_push(tasks, {"kind": "comp_start", "environment": environment, "node": node})
+        return tyrion_vm_schedule_expression(tasks, environment, node["iterable"])
+    if kind == "index":
+        tasks = tyrion_vm_push(tasks, tyrion_vm_task("index_apply"))
+        tasks = tyrion_vm_schedule_expression(tasks, environment, node["index"])
+        return tyrion_vm_schedule_expression(tasks, environment, node["receiver"])
+    if kind == "slice":
+        tasks = tyrion_vm_push(tasks, tyrion_vm_task("slice_apply"))
+        tasks = tyrion_vm_schedule_expression(tasks, environment, node["stop"])
+        tasks = tyrion_vm_schedule_expression(tasks, environment, node["start"])
+        return tyrion_vm_schedule_expression(tasks, environment, node["receiver"])
+    if kind == "attr":
+        tasks = tyrion_vm_push(tasks, {"kind": "attr_apply", "name": node["name"]})
+        return tyrion_vm_schedule_expression(tasks, environment, node["receiver"])
+    if kind == "call":
+        return tyrion_vm_schedule_call(tasks, environment, node)
+    return tasks
+
+
+def tyrion_vm_values_tail(values, count):
+    out = []
+    start = values["top"] - count
+    index = start
+    while index < values["top"]:
+        out.append(values["items"][index])
+        index = index + 1
+    values["top"] = start
+    return {"values": values, "tail": out}
+
+
+def tyrion_vm_start_function_call(nodes, state, tasks, function_value, args, kwargs):
+    function_data = function_value["value"]
+    node = nodes[function_data["node"]["id"]]
+    if len(args) > len(node["params"]):
+        raise "TypeError: too many positional arguments for " + node["name"]
+    keyword_index = 0
+    while keyword_index < len(kwargs):
+        found_name = False
+        param_index = 0
+        while param_index < len(node["params"]):
+            if kwargs[keyword_index]["name"] == node["params"][param_index]["name"]:
+                found_name = True
+            param_index = param_index + 1
+        if not found_name:
+            raise "TypeError: unexpected keyword argument " + kwargs[keyword_index]["name"]
+        keyword_index = keyword_index + 1
+    environment_result = tyrion_env_new(state, function_data["environment"])
+    state = environment_result["state"]
+    environment = environment_result["environment"]
+    state = tyrion_env_set(state, environment, "__tyrion_yield_values", tyrion_none())
+    tasks = tyrion_vm_push(tasks, {"kind": "call_boundary", "environment": environment})
+    tasks = tyrion_vm_push(tasks, {"kind": "bind_params", "environment": environment, "function": function_data["node"]["id"], "args": args, "kwargs": kwargs, "index": 0})
+    return {"state": state, "tasks": tasks}
+
+
+def tyrion_vm_start_lambda_call(nodes, state, tasks, lambda_value, args, kwargs):
+    lambda_data = lambda_value["value"]
+    node = nodes[lambda_data["node"]["id"]]
+    if len(args) > 1 or (len(args) == 0 and len(kwargs) == 0):
+        raise "TypeError: lambda expects one argument"
+    argument = tyrion_none()
+    found = False
+    if len(args) == 1:
+        argument = args[0]
+        found = True
+    keyword_index = 0
+    while keyword_index < len(kwargs):
+        if kwargs[keyword_index]["name"] != node["param"]:
+            raise "TypeError: unexpected lambda keyword " + kwargs[keyword_index]["name"]
+        if found:
+            raise "TypeError: multiple values for lambda argument " + node["param"]
+        argument = kwargs[keyword_index]["value"]
+        found = True
+        keyword_index = keyword_index + 1
+    environment_result = tyrion_env_new(state, lambda_data["environment"])
+    state = environment_result["state"]
+    environment = environment_result["environment"]
+    state = tyrion_env_set(state, environment, node["param"], argument)
+    tasks = tyrion_vm_push(tasks, {"kind": "lambda_boundary", "environment": environment})
+    tasks = tyrion_vm_schedule_expression(tasks, environment, node["body"])
+    return {"state": state, "tasks": tasks}
+
+
+def tyrion_vm_apply_call(nodes, state, tasks, values, task):
+    total = task["argc"] + len(task["keyword_names"]) + 1
+    tail_result = tyrion_vm_values_tail(values, total)
+    values = tail_result["values"]
+    call_values = tail_result["tail"]
+    callee = call_values[0]
+    args = []
+    index = 0
+    while index < task["argc"]:
+        args.append(call_values[index + 1])
+        index = index + 1
+    kwargs = []
+    index = 0
+    while index < len(task["keyword_names"]):
+        kwargs.append({"name": task["keyword_names"][index], "value": call_values[1 + task["argc"] + index]})
+        index = index + 1
+    if callee["kind"] == "function":
+        started = tyrion_vm_start_function_call(nodes, state, tasks, callee, args, kwargs)
+        return {"state": started["state"], "tasks": started["tasks"], "values": values}
+    if callee["kind"] == "lambda":
+        started = tyrion_vm_start_lambda_call(nodes, state, tasks, callee, args, kwargs)
+        return {"state": started["state"], "tasks": started["tasks"], "values": values}
+    if callee["kind"] == "object_method":
+        method_args = [callee["value"]["receiver"]]
+        index = 0
+        while index < len(args):
+            method_args.append(args[index])
+            index = index + 1
+        started = tyrion_vm_start_function_call(nodes, state, tasks, callee["value"]["function"], method_args, kwargs)
+        return {"state": started["state"], "tasks": started["tasks"], "values": values}
+    if callee["kind"] == "class":
+        allocated = tyrion_heap_alloc(state, "object", {"class": callee, "attrs": []})
+        state = allocated["state"]
+        object_value = allocated["value"]
+        initializer_index = tyrion_class_find_method(callee, "__init__")
+        if initializer_index < 0:
+            if len(args) > 0 or len(kwargs) > 0:
+                raise "TypeError: " + callee["value"]["name"] + " takes no arguments"
+            values = tyrion_vm_push(values, object_value)
+            return {"state": state, "tasks": tasks, "values": values}
+        initializer = callee["value"]["methods"][initializer_index]
+        function_node = {"id": initializer["node"], "name": callee["value"]["name"] + ".__init__"}
+        function = tyrion_function(function_node, callee["value"]["environment"])
+        initializer_args = [object_value]
+        index = 0
+        while index < len(args):
+            initializer_args.append(args[index])
+            index = index + 1
+        tasks = tyrion_vm_push(tasks, {"kind": "class_init_complete", "object": object_value})
+        started = tyrion_vm_start_function_call(nodes, state, tasks, function, initializer_args, kwargs)
+        return {"state": started["state"], "tasks": started["tasks"], "values": values}
+    if callee["kind"] == "builtin":
+        if callee["value"] == "sorted" and (len(args) == 2 or len(kwargs) > 0):
+            if len(args) < 1 or args[0]["kind"] != "list":
+                raise "TypeError: sorted expects a list"
+            key_value = tyrion_none()
+            if len(args) == 2:
+                key_value = args[1]
+            keyword_index = 0
+            while keyword_index < len(kwargs):
+                if kwargs[keyword_index]["name"] == "key":
+                    key_value = kwargs[keyword_index]["value"]
+                keyword_index = keyword_index + 1
+            if key_value["kind"] != "lambda":
+                raise "TypeError: sorted key must be a lambda"
+            source = tyrion_collection_items(state, args[0])
+            tasks = tyrion_vm_push(tasks, {"kind": "sorted_key_iter", "items": source, "index": 0, "key": key_value, "decorated": []})
+            return {"state": state, "tasks": tasks, "values": values}
+        result = tyrion_call_builtin(state, callee["value"], args, kwargs)
+    elif callee["kind"] == "bound_method":
+        result = tyrion_call_method(state, callee["value"]["receiver"], callee["value"]["name"], args)
+    else:
+        raise "TypeError: value is not callable: " + callee["kind"]
+    values = tyrion_vm_push(values, result["value"])
+    return {"state": result["state"], "tasks": tasks, "values": values}
+
+
+def tyrion_vm_schedule_statement(nodes, tasks, environment, statement):
+    kind = statement["kind"]
+    if kind == "expr":
+        tasks = tyrion_vm_push(tasks, tyrion_vm_task("discard"))
+        return tyrion_vm_schedule_expression(tasks, environment, statement["value"])
+    if kind == "assign":
+        tasks = tyrion_vm_push(tasks, {"kind": "assign_apply", "environment": environment, "target": statement["target"], "op": statement["op"]})
+        return tyrion_vm_schedule_expression(tasks, environment, statement["value"])
+    if kind == "return" or kind == "raise":
+        tasks = tyrion_vm_push(tasks, {"kind": "signal_apply", "signal": kind})
+        return tyrion_vm_schedule_expression(tasks, environment, statement["value"])
+    if kind == "yield":
+        tasks = tyrion_vm_push(tasks, {"kind": "yield_apply", "environment": environment})
+        return tyrion_vm_schedule_expression(tasks, environment, statement["value"])
+    if kind == "if":
+        tasks = tyrion_vm_push(tasks, {"kind": "if_next", "environment": environment, "branches": statement["branches"], "else_body": statement["else_body"], "index": 0})
+        return tasks
+    if kind == "while":
+        tasks = tyrion_vm_push(tasks, {"kind": "while_check", "environment": environment, "condition": statement["condition"], "body": statement["body"]})
+        return tasks
+    if kind == "for":
+        tasks = tyrion_vm_push(tasks, {"kind": "for_start", "environment": environment, "names": statement["names"], "body": statement["body"]})
+        return tyrion_vm_schedule_expression(tasks, environment, statement["iterable"])
+    if kind == "with":
+        tasks = tyrion_vm_push(tasks, {"kind": "with_start", "environment": environment, "name": statement["name"], "body": statement["body"]})
+        return tyrion_vm_schedule_expression(tasks, environment, statement["resource"])
+    if kind == "try":
+        tasks = tyrion_vm_push(tasks, {"kind": "try_boundary", "environment": environment, "has_except": statement["has_except"], "except_binding": statement["except_binding"], "except_body": statement["except_body"], "finally_body": statement["finally_body"]})
+        return tyrion_vm_schedule_block(tasks, environment, nodes[statement["body"]]["body"])
+    return tasks
+
+
+def tyrion_vm_assign(nodes, state, tasks, values, task):
+    popped = tyrion_vm_pop(values)
+    values = popped["items"]
+    value = popped["value"]
+    target = nodes[task["target"]]
+    if task["op"] != "=":
+        if target["kind"] == "attr":
+            tasks = tyrion_vm_push(tasks, {"kind": "attr_set_apply", "name": target["name"], "op": task["op"], "value": value})
+            tasks = tyrion_vm_schedule_expression(tasks, task["environment"], target["receiver"])
+            return {"state": state, "tasks": tasks, "values": values}
+        if target["kind"] == "index":
+            tasks = tyrion_vm_push(tasks, {"kind": "index_aug_set_apply", "op": task["op"], "value": value})
+            tasks = tyrion_vm_schedule_expression(tasks, task["environment"], target["index"])
+            tasks = tyrion_vm_schedule_expression(tasks, task["environment"], target["receiver"])
+            return {"state": state, "tasks": tasks, "values": values}
+        if target["kind"] != "var":
+            raise "augmented assignment currently requires a variable target"
+        old = tyrion_env_get(state, task["environment"], target["name"])
+        result = tyrion_eval_binary_values(state, task["op"][0], old, value)
+        state = result["state"]
+        value = result["value"]
+    if target["kind"] == "var":
+        state = tyrion_env_assign(state, task["environment"], target["name"], value)
+    elif target["kind"] == "index":
+        tasks = tyrion_vm_push(tasks, {"kind": "index_set_apply", "value": value})
+        tasks = tyrion_vm_schedule_expression(tasks, task["environment"], target["index"])
+        tasks = tyrion_vm_schedule_expression(tasks, task["environment"], target["receiver"])
+    elif target["kind"] == "attr":
+        tasks = tyrion_vm_push(tasks, {"kind": "attr_set_apply", "name": target["name"], "op": "=", "value": value})
+        tasks = tyrion_vm_schedule_expression(tasks, task["environment"], target["receiver"])
+    elif target["kind"] == "unpack":
+        source = tyrion_collection_items(state, value)
+        starred = -1
+        target_index = 0
+        while target_index < len(target["targets"]):
+            if target["targets"][target_index]["star"]:
+                if starred >= 0:
+                    raise "ValueError: multiple starred assignment targets"
+                starred = target_index
+            target_index = target_index + 1
+        if starred < 0 and len(source) != len(target["targets"]):
+            raise "ValueError: unpack length mismatch"
+        if starred >= 0 and len(source) + 1 < len(target["targets"]):
+            raise "ValueError: not enough values to unpack"
+        source_index = 0
+        target_index = 0
+        while target_index < len(target["targets"]):
+            target_value = tyrion_none()
+            if target_index == starred:
+                tail_count = len(target["targets"]) - target_index - 1
+                star_count = len(source) - source_index - tail_count
+                rest = []
+                rest_index = 0
+                while rest_index < star_count:
+                    rest.append(source[source_index + rest_index])
+                    rest_index = rest_index + 1
+                allocated = tyrion_heap_alloc(state, "list", rest)
+                state = allocated["state"]
+                target_value = allocated["value"]
+                source_index = source_index + star_count
+            else:
+                target_value = source[source_index]
+                source_index = source_index + 1
+            state = tyrion_env_assign(state, task["environment"], target["targets"][target_index]["name"], target_value)
+            target_index = target_index + 1
+    else:
+        raise "unsupported assignment target " + target["kind"]
+    return {"state": state, "tasks": tasks, "values": values}
+
+
+def tyrion_execute_vm(program, path, args):
+    nodes = program["nodes"]
+    program_node = nodes[program["root"]]
+    state = tyrion_runtime_state(args)
+    environment_result = tyrion_env_new(state, -1)
+    state = environment_result["state"]
+    environment = environment_result["environment"]
+    state = tyrion_env_set(state, environment, "__file__", tyrion_string(path))
+    tasks = tyrion_vm_stack_new()
+    values = tyrion_vm_stack_new()
+    tasks = tyrion_vm_schedule_block(tasks, environment, nodes[program_node["body"]]["body"])
+    while tyrion_vm_stack_len(tasks) > 0:
+        state = tyrion_runtime_step(state)
+        popped_task = tyrion_vm_pop(tasks)
+        tasks = popped_task["items"]
+        task = popped_task["value"]
+        kind = task["kind"]
+        if kind == "block":
+            if task["index"] < len(task["body"]):
+                tasks = tyrion_vm_push(tasks, {"kind": "block", "environment": task["environment"], "body": task["body"], "index": task["index"] + 1})
+                statement_id = task["body"][task["index"]]
+                statement = nodes[statement_id]
+                if statement["kind"] == "function":
+                    function_node = {"id": statement_id, "name": statement["name"]}
+                    state = tyrion_env_set(state, task["environment"], statement["name"], tyrion_function(function_node, task["environment"]))
+                elif statement["kind"] == "class":
+                    methods = []
+                    class_body = nodes[statement["body"]]["body"]
+                    method_index = 0
+                    while method_index < len(class_body):
+                        method = nodes[class_body[method_index]]
+                        if method["kind"] == "function":
+                            methods.append({"name": method["name"], "node": class_body[method_index]})
+                        elif method["kind"] != "pass":
+                            raise "unsupported class body statement " + method["kind"]
+                        method_index = method_index + 1
+                    state = tyrion_env_set(state, task["environment"], statement["name"], tyrion_class(statement["name"], methods, task["environment"]))
+                elif statement["kind"] == "pass":
+                    state = state
+                elif statement["kind"] == "break" or statement["kind"] == "continue":
+                    signal_result = tyrion_vm_continue_signal(nodes, state, tasks, values, statement["kind"], tyrion_none())
+                    state = signal_result["state"]
+                    tasks = signal_result["tasks"]
+                    values = signal_result["values"]
+                else:
+                    tasks = tyrion_vm_schedule_statement(nodes, tasks, task["environment"], statement)
+        elif kind == "eval":
+            node = nodes[task["node"]]
+            node_kind = node["kind"]
+            if node_kind == "literal":
+                result = tyrion_vm_materialize_literal(state, node)
+                state = result["state"]
+                values = tyrion_vm_push(values, result["value"])
+            elif node_kind == "var":
+                values = tyrion_vm_push(values, tyrion_env_get(state, task["environment"], node["name"]))
+            elif node_kind == "lambda":
+                lambda_node = {"id": task["node"], "param": node["param"]}
+                values = tyrion_vm_push(values, tyrion_lambda(lambda_node, 0))
+            else:
+                tasks = tyrion_vm_schedule_eval(nodes, tasks, task["environment"], node)
+        elif kind == "discard":
+            popped = tyrion_vm_pop(values)
+            values = popped["items"]
+        elif kind == "unary_apply":
+            popped = tyrion_vm_pop(values)
+            values = popped["items"]
+            value = popped["value"]
+            if task["op"] == "not":
+                values = tyrion_vm_push(values, tyrion_bool(not tyrion_truthy(state, value)))
+            elif task["op"] == "-":
+                values = tyrion_vm_push(values, tyrion_numeric_result(value, 0 - value["value"]))
+            else:
+                values = tyrion_vm_push(values, value)
+        elif kind == "binary_apply":
+            right_pop = tyrion_vm_pop(values)
+            left_pop = tyrion_vm_pop(right_pop["items"])
+            values = left_pop["items"]
+            result = tyrion_eval_binary_values(state, task["op"], left_pop["value"], right_pop["value"])
+            state = result["state"]
+            values = tyrion_vm_push(values, result["value"])
+        elif kind == "short_apply":
+            left_pop = tyrion_vm_pop(values)
+            values = left_pop["items"]
+            left = left_pop["value"]
+            take_right = task["op"] == "and" and tyrion_truthy(state, left)
+            if task["op"] == "or" and not tyrion_truthy(state, left):
+                take_right = True
+            if take_right:
+                tasks = tyrion_vm_schedule_expression(tasks, task["environment"], task["right"])
+            else:
+                values = tyrion_vm_push(values, left)
+        elif kind == "collection_apply":
+            tail = tyrion_vm_values_tail(values, task["count"])
+            values = tail["values"]
+            result = tyrion_heap_alloc(state, task["collection_kind"], tail["tail"])
+            state = result["state"]
+            values = tyrion_vm_push(values, result["value"])
+        elif kind == "dict_apply":
+            tail = tyrion_vm_values_tail(values, task["count"] * 2)
+            values = tail["values"]
+            entries = []
+            index = 0
+            while index < len(tail["tail"]):
+                entries.append({"key": tail["tail"][index], "value": tail["tail"][index + 1]})
+                index = index + 2
+            result = tyrion_heap_alloc(state, "dict", entries)
+            state = result["state"]
+            values = tyrion_vm_push(values, result["value"])
+        elif kind == "comp_start":
+            iterable_pop = tyrion_vm_pop(values)
+            values = iterable_pop["items"]
+            comp_node = task["node"]
+            comp_items = tyrion_collection_items(state, iterable_pop["value"])
+            comp_task = {"kind": "comp_iter", "comp_kind": comp_node["kind"], "environment": task["environment"], "name": comp_node["name"], "expr": -1, "key": -1, "value": -1, "condition": comp_node["condition"], "items": comp_items, "index": 0, "out": []}
+            if comp_node["kind"] == "list_comp":
+                comp_task["expr"] = comp_node["expr"]
+            else:
+                comp_task["key"] = comp_node["key"]
+                comp_task["value"] = comp_node["value"]
+            tasks = tyrion_vm_push(tasks, comp_task)
+        elif kind == "comp_iter":
+            if task["index"] >= len(task["items"]):
+                result_kind = "list"
+                if task["comp_kind"] == "dict_comp":
+                    result_kind = "dict"
+                result = tyrion_heap_alloc(state, result_kind, task["out"])
+                state = result["state"]
+                values = tyrion_vm_push(values, result["value"])
+            else:
+                state = tyrion_env_assign(state, task["environment"], task["name"], task["items"][task["index"]])
+                next_task = {"kind": "comp_iter", "comp_kind": task["comp_kind"], "environment": task["environment"], "name": task["name"], "expr": task["expr"], "key": task["key"], "value": task["value"], "condition": task["condition"], "items": task["items"], "index": task["index"] + 1, "out": task["out"]}
+                produce_task = {"comp_kind": task["comp_kind"], "environment": task["environment"], "expr": task["expr"], "key": task["key"], "value": task["value"], "next_task": next_task, "out": task["out"]}
+                if task["condition"] >= 0:
+                    tasks = tyrion_vm_push(tasks, {"kind": "comp_condition", "produce_task": produce_task})
+                    tasks = tyrion_vm_schedule_expression(tasks, task["environment"], task["condition"])
+                else:
+                    tasks = tyrion_vm_schedule_comp_produce(tasks, produce_task)
+        elif kind == "comp_condition":
+            condition_pop = tyrion_vm_pop(values)
+            values = condition_pop["items"]
+            if tyrion_truthy(state, condition_pop["value"]):
+                tasks = tyrion_vm_schedule_comp_produce(tasks, task["produce_task"])
+            else:
+                tasks = tyrion_vm_push(tasks, task["produce_task"]["next_task"])
+        elif kind == "comp_list_append":
+            item_pop = tyrion_vm_pop(values)
+            values = item_pop["items"]
+            comp_out = task["out"]
+            comp_out.append(item_pop["value"])
+            next_task = task["next_task"]
+            next_task["out"] = comp_out
+            tasks = tyrion_vm_push(tasks, next_task)
+        elif kind == "comp_dict_append":
+            value_pop = tyrion_vm_pop(values)
+            key_pop = tyrion_vm_pop(value_pop["items"])
+            values = key_pop["items"]
+            comp_out = task["out"]
+            comp_out.append({"key": key_pop["value"], "value": value_pop["value"]})
+            next_task = task["next_task"]
+            next_task["out"] = comp_out
+            tasks = tyrion_vm_push(tasks, next_task)
+        elif kind == "sorted_key_iter":
+            if task["index"] >= len(task["items"]):
+                decorated = task["decorated"]
+                left = 0
+                while left < len(decorated):
+                    right = left + 1
+                    while right < len(decorated):
+                        if decorated[right]["key"]["value"] < decorated[left]["key"]["value"]:
+                            swap = decorated[left]
+                            decorated[left] = decorated[right]
+                            decorated[right] = swap
+                        right = right + 1
+                    left = left + 1
+                sorted_items = []
+                index = 0
+                while index < len(decorated):
+                    sorted_items.append(decorated[index]["item"])
+                    index = index + 1
+                result = tyrion_heap_alloc(state, "list", sorted_items)
+                state = result["state"]
+                values = tyrion_vm_push(values, result["value"])
+            else:
+                next_task = {"kind": "sorted_key_iter", "items": task["items"], "index": task["index"] + 1, "key": task["key"], "decorated": task["decorated"]}
+                tasks = tyrion_vm_push(tasks, {"kind": "sorted_key_collect", "item": task["items"][task["index"]], "next_task": next_task})
+                started = tyrion_vm_start_lambda_call(nodes, state, tasks, task["key"], [task["items"][task["index"]]], [])
+                state = started["state"]
+                tasks = started["tasks"]
+        elif kind == "sorted_key_collect":
+            key_pop = tyrion_vm_pop(values)
+            values = key_pop["items"]
+            next_task = task["next_task"]
+            decorated = next_task["decorated"]
+            decorated.append({"item": task["item"], "key": key_pop["value"]})
+            next_task["decorated"] = decorated
+            tasks = tyrion_vm_push(tasks, next_task)
+        elif kind == "index_apply":
+            index_pop = tyrion_vm_pop(values)
+            receiver_pop = tyrion_vm_pop(index_pop["items"])
+            values = receiver_pop["items"]
+            values = tyrion_vm_push(values, tyrion_index_get(state, receiver_pop["value"], index_pop["value"]))
+        elif kind == "index_set_apply":
+            index_pop = tyrion_vm_pop(values)
+            receiver_pop = tyrion_vm_pop(index_pop["items"])
+            values = receiver_pop["items"]
+            state = tyrion_index_set(state, receiver_pop["value"], index_pop["value"], task["value"])
+        elif kind == "index_aug_set_apply":
+            index_pop = tyrion_vm_pop(values)
+            receiver_pop = tyrion_vm_pop(index_pop["items"])
+            values = receiver_pop["items"]
+            old_value = tyrion_index_get(state, receiver_pop["value"], index_pop["value"])
+            result = tyrion_eval_binary_values(state, task["op"][0], old_value, task["value"])
+            state = result["state"]
+            state = tyrion_index_set(state, receiver_pop["value"], index_pop["value"], result["value"])
+        elif kind == "attr_apply":
+            receiver_pop = tyrion_vm_pop(values)
+            values = receiver_pop["items"]
+            if receiver_pop["value"]["kind"] == "object":
+                values = tyrion_vm_push(values, tyrion_object_get_attr(state, receiver_pop["value"], task["name"]))
+            else:
+                values = tyrion_vm_push(values, tyrion_bound_method(receiver_pop["value"], task["name"]))
+        elif kind == "attr_set_apply":
+            receiver_pop = tyrion_vm_pop(values)
+            values = receiver_pop["items"]
+            receiver = receiver_pop["value"]
+            if receiver["kind"] != "object":
+                raise "TypeError: cannot set attribute on " + receiver["kind"]
+            attribute_value = task["value"]
+            if task["op"] != "=":
+                old_value = tyrion_object_get_attr(state, receiver, task["name"])
+                result = tyrion_eval_binary_values(state, task["op"][0], old_value, attribute_value)
+                state = result["state"]
+                attribute_value = result["value"]
+            state = tyrion_object_set_attr(state, receiver, task["name"], attribute_value)
+        elif kind == "call_apply":
+            call_result = tyrion_vm_apply_call(nodes, state, tasks, values, task)
+            state = call_result["state"]
+            tasks = call_result["tasks"]
+            values = call_result["values"]
+        elif kind == "bind_params":
+            function_node = nodes[task["function"]]
+            if task["index"] >= len(function_node["params"]):
+                tasks = tyrion_vm_schedule_block(tasks, task["environment"], nodes[function_node["body"]]["body"])
+            else:
+                param = function_node["params"][task["index"]]
+                found = False
+                value = tyrion_none()
+                if task["index"] < len(task["args"]):
+                    value = task["args"][task["index"]]
+                    found = True
+                keyword_index = 0
+                while keyword_index < len(task["kwargs"]):
+                    if task["kwargs"][keyword_index]["name"] == param["name"]:
+                        if found:
+                            raise "TypeError: multiple values for argument " + param["name"]
+                        value = task["kwargs"][keyword_index]["value"]
+                        found = True
+                    keyword_index = keyword_index + 1
+                next_task = {"kind": "bind_params", "environment": task["environment"], "function": task["function"], "args": task["args"], "kwargs": task["kwargs"], "index": task["index"] + 1}
+                if found:
+                    state = tyrion_env_set(state, task["environment"], param["name"], value)
+                    tasks = tyrion_vm_push(tasks, next_task)
+                else:
+                    default_node = nodes[param["default"]]
+                    missing = False
+                    if default_node["kind"] == "literal":
+                        missing = default_node["value_kind"] == "missing"
+                    if missing:
+                        raise "TypeError: missing argument " + param["name"]
+                    tasks = tyrion_vm_push(tasks, {"kind": "bind_default_apply", "environment": task["environment"], "name": param["name"], "next_task": next_task})
+                    tasks = tyrion_vm_schedule_expression(tasks, task["environment"], param["default"])
+        elif kind == "bind_default_apply":
+            default_pop = tyrion_vm_pop(values)
+            values = default_pop["items"]
+            state = tyrion_env_set(state, task["environment"], task["name"], default_pop["value"])
+            tasks = tyrion_vm_push(tasks, task["next_task"])
+        elif kind == "yield_apply":
+            yielded_pop = tyrion_vm_pop(values)
+            values = yielded_pop["items"]
+            yielded = tyrion_env_get(state, task["environment"], "__tyrion_yield_values")
+            if yielded["kind"] == "none":
+                allocated = tyrion_heap_alloc(state, "list", [])
+                state = allocated["state"]
+                yielded = allocated["value"]
+                state = tyrion_env_set(state, task["environment"], "__tyrion_yield_values", yielded)
+            yielded_record = tyrion_heap_get(state, yielded)
+            yielded_items = yielded_record["items"]
+            yielded_items.append(yielded_pop["value"])
+            yielded_record["items"] = yielded_items
+            state = tyrion_heap_set(state, yielded, yielded_record)
+        elif kind == "call_boundary":
+            yielded = tyrion_env_get(state, task["environment"], "__tyrion_yield_values")
+            state = tyrion_env_release(state, task["environment"])
+            values = tyrion_vm_push(values, yielded)
+        elif kind == "class_init_complete":
+            ignored = tyrion_vm_pop(values)
+            values = ignored["items"]
+            values = tyrion_vm_push(values, task["object"])
+        elif kind == "lambda_boundary":
+            state = tyrion_env_release(state, task["environment"])
+        elif kind == "assign_apply":
+            assignment = tyrion_vm_assign(nodes, state, tasks, values, task)
+            state = assignment["state"]
+            tasks = assignment["tasks"]
+            values = assignment["values"]
+        elif kind == "signal_apply":
+            value_pop = tyrion_vm_pop(values)
+            values = value_pop["items"]
+            signal_result = tyrion_vm_continue_signal(nodes, state, tasks, values, task["signal"], value_pop["value"])
+            state = signal_result["state"]
+            tasks = signal_result["tasks"]
+            values = signal_result["values"]
+        elif kind == "resume_signal":
+            signal_result = tyrion_vm_continue_signal(nodes, state, tasks, values, task["signal"], task["value"])
+            state = signal_result["state"]
+            tasks = signal_result["tasks"]
+            values = signal_result["values"]
+        elif kind == "try_boundary":
+            tasks = tyrion_vm_schedule_block(tasks, task["environment"], nodes[task["finally_body"]]["body"])
+        elif kind == "if_next":
+            if task["index"] >= len(task["branches"]):
+                tasks = tyrion_vm_schedule_block(tasks, task["environment"], nodes[task["else_body"]]["body"])
+            else:
+                branch = task["branches"][task["index"]]
+                tasks = tyrion_vm_push(tasks, {"kind": "if_apply", "environment": task["environment"], "branches": task["branches"], "else_body": task["else_body"], "index": task["index"], "body": branch["body"]})
+                tasks = tyrion_vm_schedule_expression(tasks, task["environment"], branch["condition"])
+        elif kind == "if_apply":
+            condition_pop = tyrion_vm_pop(values)
+            values = condition_pop["items"]
+            if tyrion_truthy(state, condition_pop["value"]):
+                tasks = tyrion_vm_schedule_block(tasks, task["environment"], nodes[task["body"]]["body"])
+            else:
+                tasks = tyrion_vm_push(tasks, {"kind": "if_next", "environment": task["environment"], "branches": task["branches"], "else_body": task["else_body"], "index": task["index"] + 1})
+        elif kind == "while_check":
+            tasks = tyrion_vm_push(tasks, {"kind": "while_apply", "environment": task["environment"], "condition": task["condition"], "body": task["body"]})
+            tasks = tyrion_vm_schedule_expression(tasks, task["environment"], task["condition"])
+        elif kind == "while_apply":
+            condition_pop = tyrion_vm_pop(values)
+            values = condition_pop["items"]
+            if tyrion_truthy(state, condition_pop["value"]):
+                next_task = {"kind": "while_check", "environment": task["environment"], "condition": task["condition"], "body": task["body"]}
+                tasks = tyrion_vm_push(tasks, {"kind": "loop_boundary", "continue_task": next_task})
+                tasks = tyrion_vm_schedule_block(tasks, task["environment"], nodes[task["body"]]["body"])
+        elif kind == "for_start":
+            iterable_pop = tyrion_vm_pop(values)
+            values = iterable_pop["items"]
+            items = tyrion_collection_items(state, iterable_pop["value"])
+            tasks = tyrion_vm_push(tasks, {"kind": "for_iter", "environment": task["environment"], "names": task["names"], "body": task["body"], "items": items, "index": 0})
+        elif kind == "with_start":
+            resource_pop = tyrion_vm_pop(values)
+            values = resource_pop["items"]
+            state = tyrion_env_assign(state, task["environment"], task["name"], resource_pop["value"])
+            tasks = tyrion_vm_schedule_block(tasks, task["environment"], nodes[task["body"]]["body"])
+        elif kind == "for_iter":
+            if task["index"] < len(task["items"]):
+                iteration_value = task["items"][task["index"]]
+                if len(task["names"]) == 1:
+                    state = tyrion_env_assign(state, task["environment"], task["names"][0], iteration_value)
+                else:
+                    iteration_items = tyrion_collection_items(state, iteration_value)
+                    if len(iteration_items) < len(task["names"]):
+                        raise "ValueError: for unpack length mismatch"
+                    bind_index = 0
+                    while bind_index < len(task["names"]):
+                        state = tyrion_env_assign(state, task["environment"], task["names"][bind_index], iteration_items[bind_index])
+                        bind_index = bind_index + 1
+                next_task = {"kind": "for_iter", "environment": task["environment"], "names": task["names"], "body": task["body"], "items": task["items"], "index": task["index"] + 1}
+                tasks = tyrion_vm_push(tasks, {"kind": "loop_boundary", "continue_task": next_task})
+                tasks = tyrion_vm_schedule_block(tasks, task["environment"], nodes[task["body"]]["body"])
+        elif kind == "loop_boundary":
+            tasks = tyrion_vm_push(tasks, task["continue_task"])
+        elif kind == "slice_apply":
+            stop_pop = tyrion_vm_pop(values)
+            start_pop = tyrion_vm_pop(stop_pop["items"])
+            receiver_pop = tyrion_vm_pop(start_pop["items"])
+            values = receiver_pop["items"]
+            receiver = receiver_pop["value"]
+            start = 0
+            if start_pop["value"]["kind"] != "none":
+                start = start_pop["value"]["value"]
+            length = 0
+            if receiver["kind"] == "string":
+                length = len(receiver["value"])
+            elif receiver["kind"] == "bytes":
+                length = tyrion_bytes_length(receiver)
+            else:
+                length = len(tyrion_collection_items(state, receiver))
+            stop = length
+            if stop_pop["value"]["kind"] != "none":
+                stop = stop_pop["value"]["value"]
+            start = tyrion_index_normalize(length, start)
+            stop = tyrion_index_normalize(length, stop)
+            if receiver["kind"] == "string":
+                values = tyrion_vm_push(values, tyrion_string(receiver["value"][start:stop]))
+            elif receiver["kind"] == "bytes":
+                values = tyrion_vm_push(values, tyrion_bytes_slice(receiver, start, stop))
+            else:
+                source_items = tyrion_collection_items(state, receiver)
+                sliced = []
+                index = start
+                while index < stop:
+                    sliced.append(source_items[index])
+                    index = index + 1
+                result = tyrion_heap_alloc(state, receiver["kind"], sliced)
+                state = result["state"]
+                values = tyrion_vm_push(values, result["value"])
+        else:
+            raise "unknown VM task " + kind
+    return 0

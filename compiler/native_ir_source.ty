@@ -1,0 +1,668 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# Frontend AST to canonical generated-ABI records.
+
+def native_source_state():
+    return __tyrion_native_ast_builder_create()
+
+
+def native_source_add_token(state, kind, text):
+    index = __tyrion_native_ast_builder_len(state, 0)
+    __tyrion_native_ast_builder_append(state, 0, {"kind": kind, "text": text, "line": 1, "column": index + 1})
+    return {"state": state, "token": index}
+
+
+def native_source_add_record(state, kind, field0, field1, field2, field3, field4):
+    index = __tyrion_native_ast_builder_len(state, 1) + 1
+    __tyrion_native_ast_builder_append(state, 1, {"kind": kind, "start": 0, "end": 0, "field0": field0, "field1": field1, "field2": field2, "field3": field3, "field4": field4})
+    return {"state": state, "record": index}
+
+
+def native_source_add_record_metadata(state, kind, start, end, field0, field1, field2, field3, field4):
+    index = __tyrion_native_ast_builder_len(state, 1) + 1
+    __tyrion_native_ast_builder_append(state, 1, {"kind": kind, "start": start, "end": end, "field0": field0, "field1": field1, "field2": field2, "field3": field3, "field4": field4})
+    return {"state": state, "record": index}
+
+
+def native_source_operator_code(op):
+    if op == "or":
+        return 0
+    if op == "and":
+        return 1
+    if op == "==":
+        return 2
+    if op == "!=":
+        return 3
+    if op == "<":
+        return 4
+    if op == "<=":
+        return 5
+    if op == ">":
+        return 6
+    if op == ">=":
+        return 7
+    if op == "in":
+        return 8
+    if op == "+":
+        return 9
+    if op == "-":
+        return 10
+    if op == "*":
+        return 11
+    if op == "/":
+        return 12
+    if op == "%":
+        return 13
+    fail("native source lowering rejected operator: " + op)
+
+
+def native_source_operator_token_kind(op):
+    if op == "or":
+        return generated_token_kind_id("KW_OR")
+    if op == "and":
+        return generated_token_kind_id("KW_AND")
+    if op == "==":
+        return generated_token_kind_id("EQEQ")
+    if op == "!=":
+        return generated_token_kind_id("NE")
+    if op == "<":
+        return generated_token_kind_id("LT")
+    if op == "<=":
+        return generated_token_kind_id("LE")
+    if op == ">":
+        return generated_token_kind_id("GT")
+    if op == ">=":
+        return generated_token_kind_id("GE")
+    if op == "in":
+        return generated_token_kind_id("KW_IN")
+    if op == "+":
+        return generated_token_kind_plus()
+    if op == "-":
+        return generated_token_kind_minus()
+    if op == "*":
+        return generated_token_kind_id("STAR")
+    if op == "/":
+        return generated_token_kind_id("SLASH")
+    if op == "%":
+        return generated_token_kind_id("PERCENT")
+    fail("native source lowering rejected operator token: " + op)
+
+
+def native_source_leaf_token(state, node):
+    kind = node["kind"]
+    if kind == "var":
+        return native_source_add_token(state, generated_token_kind_identifier(), node["value"])
+    if kind == "int":
+        return native_source_add_token(state, generated_token_kind_int(), str(node["value"]))
+    if kind == "float":
+        return native_source_add_token(state, generated_token_kind_float(), str(node["value"]))
+    if kind == "string":
+        return native_source_add_token(state, generated_token_kind_string(), native_source_string_token_text(node["value"]))
+    if kind == "bool":
+        if node["value"]:
+            return native_source_add_token(state, generated_token_kind_true(), "True")
+        return native_source_add_token(state, generated_token_kind_false(), "False")
+    if kind == "none":
+        return native_source_add_token(state, generated_token_kind_none(), "none")
+    fail("native source lowering rejected leaf kind: " + kind)
+
+
+def native_source_string_token_text(value):
+    out = "\""
+    idx = 0
+    while idx < len(value):
+        ch = value[idx]
+        if ch == "\\":
+            out = out + "\\\\"
+        elif ch == "\"":
+            out = out + "\\\""
+        elif ch == "\n":
+            out = out + "\\n"
+        elif ch == "\r":
+            out = out + "\\r"
+        elif ch == "\t":
+            out = out + "\\t"
+        else:
+            out = out + ch
+        idx = idx + 1
+    return out + "\""
+
+
+def native_source_expression(state, node):
+    kind = node["kind"]
+    if kind == "var" or kind == "int" or kind == "float" or kind == "string" or kind == "bool" or kind == "none":
+        token_result = native_source_leaf_token(state, node)
+        state = token_result["state"]
+        token_index = token_result["token"]
+        return native_source_add_record(state, generated_ast_kind_leaf(), token_index, -1, token_index, 0, 0)
+    if kind == "unary":
+        value_result = native_source_expression(state, node["value"])
+        state = value_result["state"]
+        op = node["op"]
+        op_kind = generated_token_kind_not()
+        if op == "+":
+            op_kind = generated_token_kind_plus()
+        elif op == "-":
+            op_kind = generated_token_kind_minus()
+        elif op != "not":
+            fail("native source lowering rejected unary operator: " + op)
+        token_result = native_source_add_token(state, op_kind, op)
+        return native_source_add_record(token_result["state"], generated_ast_kind_unary(), value_result["record"], -1, token_result["token"], 0, 0)
+    if kind == "binary":
+        left_result = native_source_expression(state, node["left"])
+        right_result = native_source_expression(left_result["state"], node["right"])
+        op = node["op"]
+        token_result = native_source_add_token(right_result["state"], native_source_operator_token_kind(op), op)
+        return native_source_add_record(token_result["state"], generated_ast_kind_binary(), left_result["record"], right_result["record"], token_result["token"], native_source_operator_code(op), 0)
+    if kind == "list" or kind == "tuple" or kind == "set":
+        head = -1
+        idx = 0
+        while idx < len(node["items"]):
+            item_result = native_source_expression(state, node["items"][idx])
+            link_result = native_source_add_record(item_result["state"], generated_ast_kind_item_link(), item_result["record"], head, idx, 0, 0)
+            state = link_result["state"]
+            head = link_result["record"]
+            idx = idx + 1
+        aggregate_kind = generated_ast_kind_list()
+        if kind == "tuple":
+            aggregate_kind = generated_ast_kind_tuple()
+        elif kind == "set":
+            aggregate_kind = generated_ast_kind_set()
+        return native_source_add_record(state, aggregate_kind, head, len(node["items"]), 0, 0, 0)
+    if kind == "dict":
+        head = -1
+        idx = 0
+        while idx < len(node["entries"]):
+            entry = node["entries"][idx]
+            key_result = native_source_expression(state, entry["key"])
+            value_result = native_source_expression(key_result["state"], entry["value"])
+            link_result = native_source_add_record(value_result["state"], generated_ast_kind_dict_item(), key_result["record"], value_result["record"], head, idx, 0)
+            state = link_result["state"]
+            head = link_result["record"]
+            idx = idx + 1
+        return native_source_add_record(state, generated_ast_kind_dict(), head, len(node["entries"]), 0, 0, 0)
+    if kind == "index":
+        receiver_result = native_source_expression(state, node["receiver"])
+        index_result = native_source_expression(receiver_result["state"], node["index"])
+        return native_source_add_record(index_result["state"], generated_ast_kind_index(), receiver_result["record"], index_result["record"], 0, 0, 0)
+    if kind == "slice":
+        receiver_result = native_source_expression(state, node["receiver"])
+        state = receiver_result["state"]
+        start_record = -1
+        stop_record = -1
+        if node["start"]["kind"] != "none":
+            start_result = native_source_expression(state, node["start"])
+            state = start_result["state"]
+            start_record = start_result["record"]
+        if node["stop"]["kind"] != "none":
+            stop_result = native_source_expression(state, node["stop"])
+            state = stop_result["state"]
+            stop_record = stop_result["record"]
+        return native_source_add_record(state, generated_ast_kind_slice(), receiver_result["record"], start_record, stop_record, 0, 0)
+    if kind == "call":
+        callee_result = native_source_expression(state, node["callee"])
+        state = callee_result["state"]
+        head = -1
+        idx = 0
+        while idx < len(node["args"]):
+            argument = node["args"][idx]
+            keyword_token = -1
+            if argument["kind"] == "kwarg":
+                value_result = native_source_expression(state, argument["value"])
+                token_result = native_source_add_token(value_result["state"], generated_token_kind_identifier(), argument["name"])
+                state = token_result["state"]
+                keyword_token = token_result["token"]
+            else:
+                value_result = native_source_expression(state, argument)
+                state = value_result["state"]
+            link_result = native_source_add_record(state, generated_ast_kind_argument_link(), value_result["record"], head, idx, keyword_token, 0)
+            state = link_result["state"]
+            head = link_result["record"]
+            idx = idx + 1
+        return native_source_add_record(state, generated_ast_kind_call(), callee_result["record"], head, len(node["args"]), 0, 0)
+    if kind == "method_call":
+        receiver_result = native_source_expression(state, node["receiver"])
+        token_result = native_source_add_token(receiver_result["state"], generated_token_kind_identifier(), node["name"])
+        state = token_result["state"]
+        head = -1
+        idx = 0
+        while idx < len(node["args"]):
+            argument = node["args"][idx]
+            if argument["kind"] == "kwarg":
+                fail("native source lowering rejected keyword method argument: " + argument["name"])
+            value_result = native_source_expression(state, argument)
+            link_result = native_source_add_record(value_result["state"], generated_ast_kind_argument_link(), value_result["record"], head, idx, -1, 0)
+            state = link_result["state"]
+            head = link_result["record"]
+            idx = idx + 1
+        return native_source_add_record(state, generated_ast_kind_method_call(), receiver_result["record"], token_result["token"], head, len(node["args"]), 0)
+    if kind == "attr":
+        receiver_result = native_source_expression(state, node["receiver"])
+        token_result = native_source_add_token(receiver_result["state"], generated_token_kind_identifier(), node["name"])
+        return native_source_add_record(token_result["state"], generated_ast_kind_attr(), receiver_result["record"], token_result["token"], 0, 0, 0)
+    if kind == "lambda":
+        param_head = -1
+        idx = 0
+        while idx < len(node["params"]):
+            token_result = native_source_add_token(state, generated_token_kind_identifier(), node["params"][idx])
+            param_result = native_source_add_record(token_result["state"], generated_stmt_kind_param(), token_result["token"], -1, param_head, idx, 0)
+            state = param_result["state"]
+            param_head = param_result["record"]
+            idx = idx + 1
+        body_result = native_source_expression(state, node["body"])
+        return native_source_add_record(body_result["state"], generated_ast_kind_lambda(), param_head, len(node["params"]), body_result["record"], 0, 0)
+    if kind == "comprehension":
+        target_result = native_source_add_token(state, generated_token_kind_identifier(), node["target"])
+        iterable_result = native_source_expression(target_result["state"], node["iterable"])
+        state = iterable_result["state"]
+        primary_record = -1
+        value_record = -1
+        out_kind = 1
+        if node["out_kind"] == "dict":
+            out_kind = 2
+            key_result = native_source_expression(state, node["key"])
+            value_result = native_source_expression(key_result["state"], node["value"])
+            state = value_result["state"]
+            primary_record = key_result["record"]
+            value_record = value_result["record"]
+        else:
+            item_result = native_source_expression(state, node["expr"])
+            state = item_result["state"]
+            primary_record = item_result["record"]
+        condition_record = -1
+        if node["condition"]["kind"] != "none":
+            condition_result = native_source_expression(state, node["condition"])
+            state = condition_result["state"]
+            condition_record = condition_result["record"]
+        descriptor_result = native_source_add_record(state, generated_ast_kind_item_link(), primary_record, value_record, condition_record, out_kind, target_result["token"])
+        return native_source_add_record(descriptor_result["state"], generated_ast_kind_comprehension(), iterable_result["record"], descriptor_result["record"], 0, 0, 0)
+    fail("native source lowering rejected expression kind: " + kind)
+
+
+def native_source_print_statement(state, call):
+    head = -1
+    idx = 0
+    while idx < len(call["args"]):
+        argument = call["args"][idx]
+        if argument["kind"] == "kwarg":
+            fail("native source lowering rejected keyword print argument")
+        value_result = native_source_expression(state, argument)
+        link_result = native_source_add_record(value_result["state"], generated_ast_kind_argument_link(), value_result["record"], head, idx, -1, 0)
+        state = link_result["state"]
+        head = link_result["record"]
+        idx = idx + 1
+    return native_source_add_record(state, generated_stmt_kind_print(), head, len(call["args"]), 0, 0, 0)
+
+
+def native_source_block(state, items, block_kind):
+    head = -1
+    idx = 0
+    while idx < len(items):
+        statement_result = native_source_statement(state, items[idx])
+        link_result = native_source_add_record(statement_result["state"], generated_stmt_kind_child_link(), statement_result["record"], head, idx, 0, 0)
+        state = link_result["state"]
+        head = link_result["record"]
+        idx = idx + 1
+    return native_source_add_record(state, block_kind, head, len(items), 0, 0, 0)
+
+
+def native_source_binding_budget_items(items):
+    budget = 0
+    idx = 0
+    while idx < len(items):
+        node = items[idx]
+        kind = node["kind"]
+        if kind == "assign":
+            target = node["target"]
+            if target["kind"] == "var":
+                budget = budget + 1
+            elif target["kind"] == "unpack":
+                budget = budget + len(target["targets"])
+        elif kind == "while":
+            budget = budget + native_source_binding_budget_items(node["body"])
+        elif kind == "if":
+            budget = budget + native_source_binding_budget_items(node["body"])
+            branch_idx = 0
+            while branch_idx < len(node["elifs"]):
+                budget = budget + native_source_binding_budget_items(node["elifs"][branch_idx]["body"])
+                branch_idx = branch_idx + 1
+            budget = budget + native_source_binding_budget_items(node["else_body"])
+        elif kind == "for":
+            budget = budget + len(node["targets"])
+            budget = budget + native_source_binding_budget_items(node["body"])
+        elif kind == "with":
+            budget = budget + 1
+            budget = budget + native_source_binding_budget_items(node["body"])
+        elif kind == "try":
+            budget = budget + native_source_binding_budget_items(node["body"])
+            budget = budget + native_source_binding_budget_items(node["except_body"])
+            if node["except_binding"] != "":
+                budget = budget + 1
+            budget = budget + native_source_binding_budget_items(node["finally_body"])
+        elif kind == "class":
+            budget = budget + 1
+        idx = idx + 1
+    return budget
+
+
+def native_source_items_have_yield(items):
+    idx = 0
+    while idx < len(items):
+        node = items[idx]
+        kind = node["kind"]
+        if kind == "yield":
+            return True
+        if kind == "while" or kind == "for" or kind == "with":
+            if native_source_items_have_yield(node["body"]):
+                return True
+        elif kind == "if":
+            if native_source_items_have_yield(node["body"]):
+                return True
+            branch_idx = 0
+            while branch_idx < len(node["elifs"]):
+                if native_source_items_have_yield(node["elifs"][branch_idx]["body"]):
+                    return True
+                branch_idx = branch_idx + 1
+            if native_source_items_have_yield(node["else_body"]):
+                return True
+        elif kind == "try":
+            if native_source_items_have_yield(node["body"]):
+                return True
+            if native_source_items_have_yield(node["except_body"]):
+                return True
+            if native_source_items_have_yield(node["finally_body"]):
+                return True
+        # A nested function owns its own generator context.
+        idx = idx + 1
+    return False
+
+
+def native_source_statement(state, node):
+    kind = node["kind"]
+    if kind == "assign":
+        target = node["target"]
+        if target["kind"] == "var":
+            token_result = native_source_add_token(state, generated_token_kind_identifier(), target["value"])
+            value_result = native_source_expression(token_result["state"], node["value"])
+            return native_source_add_record(value_result["state"], generated_stmt_kind_assign(), token_result["token"], value_result["record"], 0, 0, generated_assignment_target_var())
+        if target["kind"] == "index":
+            target_result = native_source_expression(state, target)
+            value_result = native_source_expression(target_result["state"], node["value"])
+            return native_source_add_record(value_result["state"], generated_stmt_kind_assign(), target_result["record"], value_result["record"], 0, 0, generated_assignment_target_index())
+        if target["kind"] == "attr":
+            target_result = native_source_expression(state, target)
+            value_result = native_source_expression(target_result["state"], node["value"])
+            return native_source_add_record(value_result["state"], generated_stmt_kind_assign(), target_result["record"], value_result["record"], 0, 0, generated_assignment_target_attr())
+        if target["kind"] == "unpack":
+            head = -1
+            idx = 0
+            while idx < len(target["targets"]):
+                item = target["targets"][idx]
+                token_result = native_source_add_token(state, generated_token_kind_identifier(), item["name"])
+                star = 0
+                if item["star"]:
+                    star = 1
+                link_result = native_source_add_record(token_result["state"], generated_ast_kind_unpack_target(), token_result["token"], head, idx, star, 0)
+                state = link_result["state"]
+                head = link_result["record"]
+                idx = idx + 1
+            value_result = native_source_expression(state, node["value"])
+            return native_source_add_record(value_result["state"], generated_stmt_kind_assign(), head, value_result["record"], len(target["targets"]), 0, generated_assignment_target_unpack())
+        fail("native source lowering rejected assignment target: " + target["kind"])
+    if kind == "expr":
+        expression = node["value"]
+        if expression["kind"] == "call" and expression["callee"]["kind"] == "var" and expression["callee"]["value"] == "print":
+            return native_source_print_statement(state, expression)
+        expression_result = native_source_expression(state, expression)
+        return native_source_add_record(expression_result["state"], generated_stmt_kind_expr(), expression_result["record"], 0, 0, 0, 0)
+    if kind == "return":
+        value_result = native_source_expression(state, node["value"])
+        return native_source_add_record(value_result["state"], generated_stmt_kind_return(), value_result["record"], 0, 0, 0, 0)
+    if kind == "break":
+        return native_source_add_record(state, generated_stmt_kind_break(), 0, 0, 0, 0, 0)
+    if kind == "continue":
+        return native_source_add_record(state, generated_stmt_kind_continue(), 0, 0, 0, 0, 0)
+    if kind == "while":
+        condition_result = native_source_expression(state, node["condition"])
+        body_result = native_source_block(condition_result["state"], node["body"], generated_stmt_kind_block())
+        return native_source_add_record(body_result["state"], generated_stmt_kind_while(), condition_result["record"], body_result["record"], 0, 0, 0)
+    if kind == "if":
+        condition_result = native_source_expression(state, node["condition"])
+        body_result = native_source_block(condition_result["state"], node["body"], generated_stmt_kind_block())
+        state = body_result["state"]
+        branch_head = -1
+        branch_count = 0
+        if len(node["else_body"]) > 0:
+            else_result = native_source_block(state, node["else_body"], generated_stmt_kind_block())
+            branch_result = native_source_add_record(else_result["state"], generated_stmt_kind_branch(), -1, else_result["record"], branch_head, 0, 0)
+            state = branch_result["state"]
+            branch_head = branch_result["record"]
+            branch_count = branch_count + 1
+        idx = len(node["elifs"])
+        while idx > 0:
+            idx = idx - 1
+            branch = node["elifs"][idx]
+            branch_condition = native_source_expression(state, branch["condition"])
+            branch_body = native_source_block(branch_condition["state"], branch["body"], generated_stmt_kind_block())
+            branch_result = native_source_add_record(branch_body["state"], generated_stmt_kind_branch(), branch_condition["record"], branch_body["record"], branch_head, 0, 0)
+            state = branch_result["state"]
+            branch_head = branch_result["record"]
+            branch_count = branch_count + 1
+        return native_source_add_record(state, generated_stmt_kind_if(), condition_result["record"], body_result["record"], branch_head, branch_count, 0)
+    if kind == "for":
+        if len(node["targets"]) == 0:
+            fail("native source lowering rejected empty for target")
+        target_ref = -1
+        target_kind = generated_assignment_target_var()
+        if len(node["targets"]) == 1:
+            token_result = native_source_add_token(state, generated_token_kind_identifier(), node["targets"][0])
+            state = token_result["state"]
+            target_ref = token_result["token"]
+        else:
+            target_kind = generated_assignment_target_unpack()
+            idx = 0
+            while idx < len(node["targets"]):
+                token_result = native_source_add_token(state, generated_token_kind_identifier(), node["targets"][idx])
+                link_result = native_source_add_record(token_result["state"], generated_ast_kind_unpack_target(), token_result["token"], target_ref, idx, 0, 0)
+                state = link_result["state"]
+                target_ref = link_result["record"]
+                idx = idx + 1
+        iterable_result = native_source_expression(state, node["iterable"])
+        body_result = native_source_block(iterable_result["state"], node["body"], generated_stmt_kind_block())
+        return native_source_add_record(body_result["state"], generated_stmt_kind_for(), target_ref, iterable_result["record"], body_result["record"], len(node["targets"]), target_kind)
+    if kind == "with":
+        resource_result = native_source_expression(state, node["resource"])
+        token_result = native_source_add_token(resource_result["state"], generated_token_kind_identifier(), node["name"])
+        body_result = native_source_block(token_result["state"], node["body"], generated_stmt_kind_block())
+        return native_source_add_record(body_result["state"], generated_stmt_kind_with(), resource_result["record"], token_result["token"], body_result["record"], 0, 0)
+    if kind == "raise":
+        value_result = native_source_expression(state, node["value"])
+        return native_source_add_record(value_result["state"], generated_stmt_kind_raise(), value_result["record"], 0, 0, 0, 0)
+    if kind == "yield":
+        accumulator_result = native_source_add_token(state, generated_token_kind_identifier(), "__tyrion_generator_accumulator")
+        value_result = native_source_expression(accumulator_result["state"], node["value"])
+        return native_source_add_record(value_result["state"], generated_stmt_kind_yield(), value_result["record"], accumulator_result["token"], 0, 0, 0)
+    if kind == "try":
+        try_result = native_source_block(state, node["body"], generated_stmt_kind_block())
+        state = try_result["state"]
+        except_body_record = -1
+        except_clause = -1
+        if len(node["except_body"]) > 0:
+            except_result = native_source_block(state, node["except_body"], generated_stmt_kind_block())
+            state = except_result["state"]
+            except_body_record = except_result["record"]
+            name_token = -1
+            binding_token = -1
+            if node["except_name"] != "":
+                name_result = native_source_add_token(state, generated_token_kind_identifier(), node["except_name"])
+                state = name_result["state"]
+                name_token = name_result["token"]
+            if node["except_binding"] != "":
+                binding_result = native_source_add_token(state, generated_token_kind_identifier(), node["except_binding"])
+                state = binding_result["state"]
+                binding_token = binding_result["token"]
+            clause_result = native_source_add_record(state, generated_stmt_kind_except(), name_token, binding_token, 0, 0, 0)
+            state = clause_result["state"]
+            except_clause = clause_result["record"]
+        finally_record = -1
+        if len(node["finally_body"]) > 0:
+            finally_result = native_source_block(state, node["finally_body"], generated_stmt_kind_block())
+            state = finally_result["state"]
+            finally_record = finally_result["record"]
+        return native_source_add_record(state, generated_stmt_kind_try(), try_result["record"], except_body_record, finally_record, except_clause, 0)
+    if kind == "function":
+        param_head = -1
+        idx = 0
+        while idx < len(node["params"]):
+            param = node["params"][idx]
+            name_result = native_source_add_token(state, generated_token_kind_identifier(), param["name"])
+            state = name_result["state"]
+            default_record = -1
+            has_default = 0
+            if param["has_default"]:
+                default_result = native_source_expression(state, param["default"])
+                state = default_result["state"]
+                default_record = default_result["record"]
+                has_default = 1
+            param_result = native_source_add_record(state, generated_stmt_kind_param(), name_result["token"], default_record, param_head, idx, has_default)
+            state = param_result["state"]
+            param_head = param_result["record"]
+            idx = idx + 1
+        generator_token = -1
+        if native_source_items_have_yield(node["body"]):
+            generator_result = native_source_add_token(state, generated_token_kind_identifier(), "__tyrion_generator_accumulator")
+            state = generator_result["state"]
+            generator_token = generator_result["token"]
+        body_result = native_source_block(state, node["body"], generated_stmt_kind_block())
+        name_result = native_source_add_token(body_result["state"], generated_token_kind_identifier(), node["name"])
+        binding_budget = len(node["params"]) + 8 + native_source_binding_budget_items(node["body"])
+        if binding_budget > 65536:
+            fail("native source lowering rejected function environment budget")
+        return native_source_add_record_metadata(name_result["state"], generated_stmt_kind_function(), generator_token, 0, name_result["token"], param_head, body_result["record"], len(node["params"]), binding_budget)
+    if kind == "class":
+        body_result = native_source_block(state, node["body"], generated_stmt_kind_block())
+        name_result = native_source_add_token(body_result["state"], generated_token_kind_identifier(), node["name"])
+        return native_source_add_record(name_result["state"], generated_stmt_kind_class(), name_result["token"], body_result["record"], 0, 0, 0)
+    fail("native source lowering rejected statement kind: " + kind)
+
+
+def native_source_program_records_from_program(program):
+    block_result = native_source_block(native_source_state(), program["items"], generated_stmt_kind_program())
+    return {"builder": block_result["state"], "root": block_result["record"]}
+
+
+def native_source_program_records(source):
+    return native_source_program_records_from_program(parse_program(lex(source)))
+
+
+def native_static_program_token_count(item):
+    if "builder" in item:
+        return __tyrion_native_ast_builder_len(item["builder"], 0)
+    return len(item["tokens"])
+
+
+def native_static_program_record_count(item):
+    if "builder" in item:
+        return __tyrion_native_ast_builder_len(item["builder"], 1)
+    return len(item["records"])
+
+
+def native_static_program_token(item, index):
+    if "builder" in item:
+        return __tyrion_native_ast_builder_get(item["builder"], 0, index)
+    return item["tokens"][index]
+
+
+def native_static_program_record(item, index):
+    if "builder" in item:
+        count = __tyrion_native_ast_builder_len(item["builder"], 1)
+        if index == 0:
+            return __tyrion_native_ast_builder_get(item["builder"], 1, count - 1)
+        return __tyrion_native_ast_builder_get(item["builder"], 1, index - 1)
+    return item["records"][index]
+
+
+def native_source_bridge_probe(source, stage):
+    program = parse_program(lex(source))
+    if stage == "parse":
+        return program["kind"] + ":" + str(len(program["items"]))
+    if stage == "statement":
+        result = native_source_statement(native_source_state(), program["items"][0])
+        return str(result["record"]) + ":" + str(__tyrion_native_ast_builder_len(result["state"], 0)) + ":" + str(__tyrion_native_ast_builder_len(result["state"], 1))
+    lowered = native_source_program_records(source)
+    return str(lowered["root"]) + ":" + str(__tyrion_native_ast_builder_len(lowered["builder"], 0)) + ":" + str(__tyrion_native_ast_builder_len(lowered["builder"], 1))
+
+
+def native_source_module_from_program_with_extensions(program, extensions):
+    lowered = native_source_program_records_from_program(program)
+    builder = lowered["builder"]
+    token_count = __tyrion_native_ast_builder_len(builder, 0)
+    record_count = __tyrion_native_ast_builder_len(builder, 1)
+    if record_count == 0:
+        fail("native source lowering produced no program record")
+    root_record = __tyrion_native_ast_builder_get(builder, 1, record_count - 1)
+    if root_record["kind"] != generated_stmt_kind_program():
+        fail("native source lowering produced a non-program root")
+    static_program = {"id": 0, "kind": "static_program", "builder": builder, "token_count": token_count, "record_count": record_count, "root": 0}
+    instructions = []
+    instructions.append({"result": 0, "op": "ast_from_static", "type": "ast_handle_ptr", "fields": {"table_id": 0, "token_count": token_count, "record_count": record_count, "root": 0}})
+    ast_id = 0
+    next_id = 1
+    instructions.append(native_ir_operation(next_id, "environment_null", "environment_ptr", []))
+    instructions.append(native_ir_const_int(next_id + 1, 64, "usize"))
+    environment_id = next_id + 2
+    instructions.append(native_ir_operation(environment_id, "environment_create", "environment_ptr", [next_id + 1, next_id]))
+    instructions.append(native_ir_const_int(next_id + 3, 0, "usize"))
+    return_slot_id = next_id + 4
+    instructions.append(native_ir_operation(return_slot_id, "slot_alloc", "slot_ptr", []))
+    instructions.append(native_ir_operation(next_id + 5, "slot_zero", "slot_ptr", [return_slot_id]))
+    exception_slot_id = next_id + 6
+    instructions.append(native_ir_operation(exception_slot_id, "slot_alloc", "slot_ptr", []))
+    instructions.append(native_ir_operation(next_id + 7, "slot_zero", "slot_ptr", [exception_slot_id]))
+    execute_id = next_id + 8
+    instructions.append(native_ir_operation(execute_id, "statement_execute_exception", "i32", [ast_id, next_id + 3, environment_id, return_slot_id, exception_slot_id]))
+    instructions.append(native_ir_const_int(next_id + 9, generated_flow_normal(), "i32"))
+    status_id = next_id + 10
+    instructions.append(native_ir_operation(status_id, "sub", "i32", [execute_id, next_id + 9]))
+    instructions.append(native_ir_operation(next_id + 11, "slot_write_stderr", "i32", [exception_slot_id]))
+    instructions.append(native_ir_operation(next_id + 12, "slot_release", "i32", [return_slot_id]))
+    instructions.append(native_ir_operation(next_id + 13, "slot_release", "i32", [exception_slot_id]))
+    instructions.append(native_ir_operation(next_id + 14, "environment_release", "i32", [environment_id]))
+    instructions.append(native_ir_operation(next_id + 15, "ast_release", "i32", [ast_id]))
+    block = native_ir_block(0, instructions, native_ir_return(status_id))
+    function = native_ir_function("main", "i32", [block])
+    return {"contract": "tyrion-native-ir-v1", "target_independent_abi_version": 1, "functions": [function], "globals": [static_program], "constants": [], "externals": [], "dispatch_tables": [], "extensions": extensions, "capabilities": ["core", "token-records", "ast-handles", "value-slots", "lexical-environments", "expression-eval", "statement-execution"], "ownership_manifest": "parsed-source-static-token-ast-environment"}
+
+
+def native_source_module_from_program(program):
+    return native_source_module_from_program_with_extensions(program, [])
+
+
+def native_source_module(source):
+    return native_source_module_from_program(parse_program(lex(source)))
+
+
+def native_source_path_module(path):
+    return native_source_module(read_module_graph(path))
+
+
+def native_source_path_pressure(path):
+    return native_source_module_pressure(verify_native_ir(native_source_path_module(path)))
+
+
+def native_source_module_pressure(module):
+    return "tokens=" + str(native_static_program_token_count(module["globals"][0])) + ";records=" + str(native_static_program_record_count(module["globals"][0])) + ";instructions=" + str(len(module["functions"][0]["blocks"][0]["instructions"]))
+
+
+def native_source_path_flatten_pressure(path):
+    source = read_module_graph(path)
+    return "source=" + str(len(source))
+
+
+def native_source_path_record_pressure(path):
+    source = read_module_graph(path)
+    lowered = native_source_program_records(source)
+    return "source=" + str(len(source)) + ";tokens=" + str(__tyrion_native_ast_builder_len(lowered["builder"], 0)) + ";records=" + str(__tyrion_native_ast_builder_len(lowered["builder"], 1))

@@ -1,0 +1,18 @@
+def evens(limit, step=2):
+    i = 0
+    while i < limit:
+        yield i
+        i += step
+
+values = [v + 1 for v in evens(8, step=3)]
+total = 0
+for n in values:
+    total += n
+print("gen", len(values), values[0], values[1], values[2], total)
+
+def squares(count):
+    for n in range(count):
+        yield n * n
+
+parts = squares(4)
+print("squares", len(parts), parts[0], parts[3])

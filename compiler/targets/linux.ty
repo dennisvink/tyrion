@@ -1,0 +1,371 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# compiler / targets / linux: responsibility-owned canonical compiler module.
+
+def emit_linux_aarch64_constant_asm(payload, target):
+    payload_len = len(payload)
+    out = "# tyrionc-bootstrap-asm v0 target=" + target["triple"] + "\n"
+    out = out + "; linux aarch64 constant-output bootstrap path\n"
+    out = asm_section(out, target["text_section"])
+    out = asm_dir(out, ".globl " + target["entry_symbol"])
+    out = asm_label(out, target["entry_symbol"])
+    out = asm_line(out, "mov x8, #64")
+    out = asm_line(out, "mov x0, #1")
+    out = asm_line(out, "adrp x1, __tyrion_payload_0")
+    out = asm_line(out, "add x1, x1, :lo12:__tyrion_payload_0")
+    out = asm_line(out, "mov x2, #" + str(payload_len))
+    out = asm_line(out, "svc #0")
+    out = asm_line(out, "mov x8, #93")
+    out = asm_line(out, "mov x0, #0")
+    out = asm_line(out, "svc #0")
+    out = asm_section(out, target["rodata_section"])
+    out = asm_label(out, "__tyrion_payload_0")
+    out = out + ".asciz \"" + asm_escape_string(payload) + "\"\n"
+    return out
+
+def emit_linux_x86_64_constant_asm(payload, target):
+    target_validate(target)
+    if target["backend"] != "linux-x86_64":
+        fail("x86-native rejected code=target-mismatch;target=" + target["backend"])
+    return emit_linux_x86_64_native_literal_asm(payload)
+
+def emit_aarch64_write_literal(out, target, label, length):
+    if length == 0:
+        return out
+    out = asm_line(out, "mov x0, #1")
+    out = asm_addr(out, target, "x1", label)
+    out = asm_line(out, "mov x2, #" + str(length))
+    return asm_line(out, "bl " + asm_call_name(target, "write"))
+
+def emit_aarch64_write_data(out, target):
+    out = asm_line(out, "mov x0, #1")
+    out = asm_line(out, "mov x1, x20")
+    out = asm_line(out, "mov x2, x19")
+    return asm_line(out, "bl " + asm_call_name(target, "write"))
+
+def emit_aarch64_runtime_file_parts(out, target, parts, prefix):
+    idx = 0
+    while idx < len(parts):
+        if idx > 0:
+            out = emit_aarch64_write_literal(out, target, "__tyrion_rt_space", 1)
+        part = parts[idx]
+        if part["kind"] == "data":
+            out = emit_aarch64_write_data(out, target)
+        else:
+            out = emit_aarch64_write_literal(out, target, runtime_file_prefixed_literal_label(prefix, idx), len(part["value"]))
+        idx = idx + 1
+    return emit_aarch64_write_literal(out, target, "__tyrion_rt_newline", 1)
+
+def emit_aarch64_runtime_file_branch(out, target, plan):
+    out = asm_line(out, "cmp x19, #" + str(len(plan["compare_value"])))
+    if plan["compare_op"] == "==":
+        out = asm_line(out, "b.ne __tyrion_rt_false")
+    else:
+        out = asm_line(out, "b.ne __tyrion_rt_true")
+    out = asm_line(out, "mov x0, x20")
+    out = asm_addr(out, target, "x1", "__tyrion_rt_compare")
+    out = asm_line(out, "mov x2, #" + str(len(plan["compare_value"])))
+    out = asm_line(out, "bl " + asm_call_name(target, "memcmp"))
+    out = asm_line(out, "cbz w0, __tyrion_rt_equal")
+    if plan["compare_op"] == "==":
+        out = asm_line(out, "b __tyrion_rt_false")
+    else:
+        out = asm_line(out, "b __tyrion_rt_true")
+    out = asm_label(out, "__tyrion_rt_equal")
+    if plan["compare_op"] == "==":
+        out = asm_line(out, "b __tyrion_rt_true")
+    else:
+        out = asm_line(out, "b __tyrion_rt_false")
+    out = asm_label(out, "__tyrion_rt_true")
+    out = emit_aarch64_runtime_file_parts(out, target, plan["true_parts"], "__tyrion_rt_true_lit_")
+    out = asm_line(out, "b __tyrion_rt_success")
+    out = asm_label(out, "__tyrion_rt_false")
+    out = emit_aarch64_runtime_file_parts(out, target, plan["false_parts"], "__tyrion_rt_false_lit_")
+    return out
+
+def emit_aarch64_runtime_file_nonempty_branch(out, target, plan):
+    if plan["true_when_nonempty"]:
+        out = asm_line(out, "cbz x19, __tyrion_rt_false")
+    else:
+        out = asm_line(out, "cbz x19, __tyrion_rt_true")
+        out = asm_line(out, "b __tyrion_rt_false")
+    out = asm_label(out, "__tyrion_rt_true")
+    out = emit_aarch64_runtime_file_parts(out, target, plan["true_parts"], "__tyrion_rt_true_lit_")
+    out = asm_line(out, "b __tyrion_rt_success")
+    out = asm_label(out, "__tyrion_rt_false")
+    out = emit_aarch64_runtime_file_parts(out, target, plan["false_parts"], "__tyrion_rt_false_lit_")
+    return out
+
+def emit_aarch64_runtime_file_loop(out, target, plan):
+    out = asm_label(out, "__tyrion_rt_loop")
+    out = asm_line(out, "mov x0, x20")
+    out = asm_line(out, "mov x1, #1")
+    out = asm_line(out, "mov x2, #" + str(plan["read_len"]))
+    out = asm_line(out, "mov x3, x21")
+    out = asm_line(out, "bl " + asm_call_name(target, "fread"))
+    out = asm_line(out, "mov x19, x0")
+    out = asm_line(out, "cbz x19, __tyrion_rt_close_success")
+    out = emit_aarch64_runtime_file_parts(out, target, plan["loop_parts"], "__tyrion_rt_loop_lit_")
+    return asm_line(out, "b __tyrion_rt_loop")
+
+def emit_aarch64_runtime_file_read_asm(plan, target):
+    out = "# tyrionc-bootstrap-asm v0 target=" + target["triple"] + "\n"
+    out = out + "; aarch64 runtime file read path\n"
+    out = asm_section(out, target["text_section"])
+    out = asm_global_c_main(out, target)
+    out = asm_line(out, "stp x29, x30, [sp, #-48]!")
+    out = asm_line(out, "mov x29, sp")
+    out = asm_line(out, "stp x19, x20, [sp, #16]")
+    out = asm_line(out, "stp x21, x22, [sp, #32]")
+    out = asm_line(out, "sub sp, sp, #4096")
+    out = asm_line(out, "sub sp, sp, #4096")
+    out = asm_line(out, "mov x20, sp")
+    out = asm_addr(out, target, "x0", "__tyrion_rt_path")
+    out = asm_addr(out, target, "x1", "__tyrion_rt_mode")
+    out = asm_line(out, "bl " + asm_call_name(target, "fopen"))
+    out = asm_line(out, "cbz x0, __tyrion_rt_fail")
+    out = asm_line(out, "mov x21, x0")
+    if plan["mode"] == "while_read_chunks":
+        out = emit_aarch64_runtime_file_loop(out, target, plan)
+    else:
+        out = asm_line(out, "mov x0, x20")
+        out = asm_line(out, "mov x1, #1")
+        out = asm_line(out, "mov x2, #" + str(plan["read_len"]))
+        out = asm_line(out, "mov x3, x21")
+        out = asm_line(out, "bl " + asm_call_name(target, "fread"))
+        out = asm_line(out, "mov x19, x0")
+        out = asm_line(out, "mov x0, x21")
+        out = asm_line(out, "bl " + asm_call_name(target, "fclose"))
+        if plan["mode"] == "if_string_compare":
+            out = emit_aarch64_runtime_file_branch(out, target, plan)
+        elif plan["mode"] == "if_data_nonempty":
+            out = emit_aarch64_runtime_file_nonempty_branch(out, target, plan)
+        else:
+            out = emit_aarch64_runtime_file_parts(out, target, plan["parts"], "__tyrion_rt_lit_")
+    if plan["mode"] == "while_read_chunks":
+        out = asm_label(out, "__tyrion_rt_close_success")
+        out = asm_line(out, "mov x0, x21")
+        out = asm_line(out, "bl " + asm_call_name(target, "fclose"))
+    out = asm_label(out, "__tyrion_rt_success")
+    out = asm_line(out, "mov w0, #0")
+    out = asm_label(out, "__tyrion_rt_return")
+    out = asm_line(out, "add sp, sp, #4096")
+    out = asm_line(out, "add sp, sp, #4096")
+    out = asm_line(out, "ldp x21, x22, [sp, #32]")
+    out = asm_line(out, "ldp x19, x20, [sp, #16]")
+    out = asm_line(out, "ldp x29, x30, [sp], #48")
+    out = asm_line(out, "ret")
+    out = asm_label(out, "__tyrion_rt_fail")
+    out = asm_line(out, "mov w0, #1")
+    out = asm_line(out, "b __tyrion_rt_return")
+    out = asm_section(out, target["rodata_section"])
+    out = asm_cstr(out, "__tyrion_rt_path", plan["path"])
+    out = asm_cstr(out, "__tyrion_rt_mode", "rb")
+    out = asm_cstr(out, "__tyrion_rt_space", " ")
+    out = asm_cstr(out, "__tyrion_rt_newline", "\n")
+    if plan["mode"] == "if_string_compare":
+        out = asm_cstr(out, "__tyrion_rt_compare", plan["compare_value"])
+    idx = 0
+    while idx < len(plan["parts"]):
+        part = plan["parts"][idx]
+        if part["kind"] == "literal":
+            out = asm_cstr(out, runtime_file_literal_label(idx), part["value"])
+        idx = idx + 1
+    idx = 0
+    while idx < len(plan["true_parts"]):
+        part = plan["true_parts"][idx]
+        if part["kind"] == "literal":
+            out = asm_cstr(out, runtime_file_prefixed_literal_label("__tyrion_rt_true_lit_", idx), part["value"])
+        idx = idx + 1
+    idx = 0
+    while idx < len(plan["false_parts"]):
+        part = plan["false_parts"][idx]
+        if part["kind"] == "literal":
+            out = asm_cstr(out, runtime_file_prefixed_literal_label("__tyrion_rt_false_lit_", idx), part["value"])
+        idx = idx + 1
+    idx = 0
+    while idx < len(plan["loop_parts"]):
+        part = plan["loop_parts"][idx]
+        if part["kind"] == "literal":
+            out = asm_cstr(out, runtime_file_prefixed_literal_label("__tyrion_rt_loop_lit_", idx), part["value"])
+        idx = idx + 1
+    return out
+
+def emit_x86_64_write_literal(out, target, label, length):
+    if length == 0:
+        return out
+    out = asm_line(out, "mov $1, %edi")
+    out = asm_addr(out, target, "%rsi", label)
+    out = asm_line(out, "mov $" + str(length) + ", %edx")
+    return asm_line(out, "call write@PLT")
+
+def emit_x86_64_write_data(out, target):
+    out = asm_line(out, "mov $1, %edi")
+    out = asm_line(out, "mov %r12, %rsi")
+    out = asm_line(out, "mov %rbx, %rdx")
+    return asm_line(out, "call write@PLT")
+
+def emit_x86_64_runtime_file_parts(out, target, parts, prefix):
+    idx = 0
+    while idx < len(parts):
+        if idx > 0:
+            out = emit_x86_64_write_literal(out, target, "__tyrion_rt_space", 1)
+        part = parts[idx]
+        if part["kind"] == "data":
+            out = emit_x86_64_write_data(out, target)
+        else:
+            out = emit_x86_64_write_literal(out, target, runtime_file_prefixed_literal_label(prefix, idx), len(part["value"]))
+        idx = idx + 1
+    return emit_x86_64_write_literal(out, target, "__tyrion_rt_newline", 1)
+
+def emit_x86_64_runtime_file_branch(out, target, plan):
+    out = asm_line(out, "cmp $" + str(len(plan["compare_value"])) + ", %rbx")
+    if plan["compare_op"] == "==":
+        out = asm_line(out, "jne __tyrion_rt_false")
+    else:
+        out = asm_line(out, "jne __tyrion_rt_true")
+    out = asm_line(out, "mov %r12, %rdi")
+    out = asm_line(out, "lea __tyrion_rt_compare(%rip), %rsi")
+    out = asm_line(out, "mov $" + str(len(plan["compare_value"])) + ", %edx")
+    out = asm_line(out, "call memcmp@PLT")
+    out = asm_line(out, "test %eax, %eax")
+    out = asm_line(out, "je __tyrion_rt_equal")
+    if plan["compare_op"] == "==":
+        out = asm_line(out, "jmp __tyrion_rt_false")
+    else:
+        out = asm_line(out, "jmp __tyrion_rt_true")
+    out = asm_label(out, "__tyrion_rt_equal")
+    if plan["compare_op"] == "==":
+        out = asm_line(out, "jmp __tyrion_rt_true")
+    else:
+        out = asm_line(out, "jmp __tyrion_rt_false")
+    out = asm_label(out, "__tyrion_rt_true")
+    out = emit_x86_64_runtime_file_parts(out, target, plan["true_parts"], "__tyrion_rt_true_lit_")
+    out = asm_line(out, "jmp __tyrion_rt_success")
+    out = asm_label(out, "__tyrion_rt_false")
+    out = emit_x86_64_runtime_file_parts(out, target, plan["false_parts"], "__tyrion_rt_false_lit_")
+    return out
+
+def emit_x86_64_runtime_file_nonempty_branch(out, target, plan):
+    out = asm_line(out, "test %rbx, %rbx")
+    if plan["true_when_nonempty"]:
+        out = asm_line(out, "je __tyrion_rt_false")
+    else:
+        out = asm_line(out, "je __tyrion_rt_true")
+        out = asm_line(out, "jmp __tyrion_rt_false")
+    out = asm_label(out, "__tyrion_rt_true")
+    out = emit_x86_64_runtime_file_parts(out, target, plan["true_parts"], "__tyrion_rt_true_lit_")
+    out = asm_line(out, "jmp __tyrion_rt_success")
+    out = asm_label(out, "__tyrion_rt_false")
+    out = emit_x86_64_runtime_file_parts(out, target, plan["false_parts"], "__tyrion_rt_false_lit_")
+    return out
+
+def emit_x86_64_runtime_file_loop(out, target, plan):
+    out = asm_label(out, "__tyrion_rt_loop")
+    out = asm_line(out, "mov %r12, %rdi")
+    out = asm_line(out, "mov $1, %esi")
+    out = asm_line(out, "mov $" + str(plan["read_len"]) + ", %edx")
+    out = asm_line(out, "mov %r13, %rcx")
+    out = asm_line(out, "call fread@PLT")
+    out = asm_line(out, "mov %rax, %rbx")
+    out = asm_line(out, "test %rbx, %rbx")
+    out = asm_line(out, "je __tyrion_rt_close_success")
+    out = emit_x86_64_runtime_file_parts(out, target, plan["loop_parts"], "__tyrion_rt_loop_lit_")
+    return asm_line(out, "jmp __tyrion_rt_loop")
+
+def emit_linux_x86_64_runtime_file_read_asm(plan, target):
+    out = "# tyrionc-bootstrap-asm v0 target=" + target["triple"] + "\n"
+    out = out + "; linux x86_64 runtime file read path\n"
+    out = asm_section(out, target["text_section"])
+    out = asm_dir(out, ".globl main")
+    out = asm_label(out, "main")
+    out = asm_line(out, "push %rbp")
+    out = asm_line(out, "mov %rsp, %rbp")
+    out = asm_line(out, "push %rbx")
+    out = asm_line(out, "push %r12")
+    out = asm_line(out, "push %r13")
+    out = asm_line(out, "sub $8200, %rsp")
+    out = asm_line(out, "mov %rsp, %r12")
+    out = asm_line(out, "lea __tyrion_rt_path(%rip), %rdi")
+    out = asm_line(out, "lea __tyrion_rt_mode(%rip), %rsi")
+    out = asm_line(out, "call fopen@PLT")
+    out = asm_line(out, "test %rax, %rax")
+    out = asm_line(out, "je __tyrion_rt_fail")
+    out = asm_line(out, "mov %rax, %r13")
+    if plan["mode"] == "while_read_chunks":
+        out = emit_x86_64_runtime_file_loop(out, target, plan)
+    else:
+        out = asm_line(out, "mov %r12, %rdi")
+        out = asm_line(out, "mov $1, %esi")
+        out = asm_line(out, "mov $" + str(plan["read_len"]) + ", %edx")
+        out = asm_line(out, "mov %r13, %rcx")
+        out = asm_line(out, "call fread@PLT")
+        out = asm_line(out, "mov %rax, %rbx")
+        out = asm_line(out, "mov %r13, %rdi")
+        out = asm_line(out, "call fclose@PLT")
+        if plan["mode"] == "if_string_compare":
+            out = emit_x86_64_runtime_file_branch(out, target, plan)
+        elif plan["mode"] == "if_data_nonempty":
+            out = emit_x86_64_runtime_file_nonempty_branch(out, target, plan)
+        else:
+            out = emit_x86_64_runtime_file_parts(out, target, plan["parts"], "__tyrion_rt_lit_")
+    if plan["mode"] == "while_read_chunks":
+        out = asm_label(out, "__tyrion_rt_close_success")
+        out = asm_line(out, "mov %r13, %rdi")
+        out = asm_line(out, "call fclose@PLT")
+    out = asm_label(out, "__tyrion_rt_success")
+    out = asm_line(out, "mov $0, %eax")
+    out = asm_label(out, "__tyrion_rt_return")
+    out = asm_line(out, "add $8200, %rsp")
+    out = asm_line(out, "pop %r13")
+    out = asm_line(out, "pop %r12")
+    out = asm_line(out, "pop %rbx")
+    out = asm_line(out, "pop %rbp")
+    out = asm_line(out, "ret")
+    out = asm_label(out, "__tyrion_rt_fail")
+    out = asm_line(out, "mov $1, %eax")
+    out = asm_line(out, "jmp __tyrion_rt_return")
+    out = asm_section(out, target["rodata_section"])
+    out = asm_cstr(out, "__tyrion_rt_path", plan["path"])
+    out = asm_cstr(out, "__tyrion_rt_mode", "rb")
+    out = asm_cstr(out, "__tyrion_rt_space", " ")
+    out = asm_cstr(out, "__tyrion_rt_newline", "\n")
+    if plan["mode"] == "if_string_compare":
+        out = asm_cstr(out, "__tyrion_rt_compare", plan["compare_value"])
+    idx = 0
+    while idx < len(plan["parts"]):
+        part = plan["parts"][idx]
+        if part["kind"] == "literal":
+            out = asm_cstr(out, runtime_file_literal_label(idx), part["value"])
+        idx = idx + 1
+    idx = 0
+    while idx < len(plan["true_parts"]):
+        part = plan["true_parts"][idx]
+        if part["kind"] == "literal":
+            out = asm_cstr(out, runtime_file_prefixed_literal_label("__tyrion_rt_true_lit_", idx), part["value"])
+        idx = idx + 1
+    idx = 0
+    while idx < len(plan["false_parts"]):
+        part = plan["false_parts"][idx]
+        if part["kind"] == "literal":
+            out = asm_cstr(out, runtime_file_prefixed_literal_label("__tyrion_rt_false_lit_", idx), part["value"])
+        idx = idx + 1
+    idx = 0
+    while idx < len(plan["loop_parts"]):
+        part = plan["loop_parts"][idx]
+        if part["kind"] == "literal":
+            out = asm_cstr(out, runtime_file_prefixed_literal_label("__tyrion_rt_loop_lit_", idx), part["value"])
+        idx = idx + 1
+    return out
+
+def emit_linux_aarch64_compiler_cli_asm_into(out, target, usage_text, version_text, spec):
+    plan = collect_compiler_asm_section_plan(target, spec)
+    out = emit_compiler_asm_section_plan(out, plan, target, spec)
+    out = emit_darwin_aarch64_compiler_cli_data_sections(out, target, usage_text, version_text, spec)
+    return out
+
+def emit_linux_x86_64_compiler_cli_asm_into(out, target, usage_text, version_text, spec):
+    fail("x86-native rejected code=compatibility-compiler-cli-disabled")

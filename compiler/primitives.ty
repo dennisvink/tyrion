@@ -1,0 +1,562 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# Canonical primitive ABI schema.
+#
+# Rows are intentionally scalar and deterministic so the C seed and every
+# generated compiler consume the same representation without host objects.
+# Fields:
+# id|public|symbol|min|max|keywords|args|result|ownership|effects|capability|impl|dispatch
+
+def primitive_schema_count():
+    return 54
+
+def primitive_schema_public_name(index):
+    if index < 12:
+        if index == 0:
+            return "len"
+        if index == 1:
+            return "int"
+        if index == 2:
+            return "str"
+        if index == 3:
+            return "range"
+        if index == 4:
+            return "open"
+        if index == 5:
+            return "read_key"
+        if index == 6:
+            return "ansi_escape"
+        if index == 7:
+            return "__tyrion_native_wall_time"
+        if index == 8:
+            return "__tyrion_native_tcp_connect"
+        if index == 9:
+            return "std_io_tcp_connect"
+        if index == 10:
+            return "__tyrion_native_tcp_write"
+        if index == 11:
+            return "std_io_tcp_write"
+        fail("primitive schema public name index out of range")
+    else:
+        index = index - 12
+        if index == 0:
+            return "__tyrion_native_tcp_read"
+        if index == 1:
+            return "std_io_tcp_read"
+        if index == 2:
+            return "__tyrion_native_tcp_close"
+        if index == 3:
+            return "std_io_tcp_close"
+        if index == 4:
+            return "read_text_file"
+        if index == 5:
+            return "read_module_graph"
+        if index == 6:
+            return "write_text_file"
+        if index == 7:
+            return "run_tool"
+        if index == 8:
+            return "asm_writer_open"
+        if index == 9:
+            return "asm_writer_append"
+        if index == 10:
+            return "asm_writer_close"
+        if index == 11:
+            return "asm_writer_bytes"
+        if index == 12:
+            return "asm_writer_set_backend"
+        if index == 13:
+            return "asm_writer_is_x86"
+        if index == 14:
+            return "float"
+        if index == 15:
+            return "enumerate"
+        if index == 16:
+            return "bool"
+        if index == 17:
+            return "zip"
+        if index == 18:
+            return "sum"
+        if index == 19:
+            return "min"
+        if index == 20:
+            return "max"
+        if index == 21:
+            return "any"
+        if index == 22:
+            return "all"
+        if index == 23:
+            return "sorted"
+        if index == 24:
+            return "time"
+        if index == 25:
+            return "__tyrion_native_host_load"
+        if index == 26:
+            return "__tyrion_native_host_call"
+        if index == 27:
+            return "__tyrion_native_host_unload"
+        if index == 28:
+            return "__tyrion_native_ast_builder_create"
+        if index == 29:
+            return "__tyrion_native_ast_builder_len"
+        if index == 30:
+            return "__tyrion_native_ast_builder_append"
+        if index == 31:
+            return "__tyrion_native_ast_builder_finish"
+        if index == 32:
+            return "__tyrion_native_ast_builder_get"
+        if index == 33:
+            return "__tyrion_native_token_builder_count"
+        if index == 34:
+            return "__tyrion_native_token_builder_append"
+        if index == 35:
+            return "__tyrion_native_token_builder_field"
+        if index == 36:
+            return "__tyrion_run_tool"
+        if index == 37:
+            return "lex"
+        if index == 38:
+            return "program_has_function"
+        if index == 39:
+            return "__tyrion_native_tls_write"
+        if index == 40:
+            return "__tyrion_native_tls_read"
+        if index == 41:
+            return "__tyrion_native_ascii_text"
+        fail("primitive schema public name index out of range")
+
+def primitive_schema_row(index):
+    if index < 12:
+        if index == 0:
+            return "1|len|-|1|1|-|value|int|borrow|pure|core|len|2"
+        if index == 1:
+            return "2|int|-|1|1|-|value|int|borrow|pure|core|int|2"
+        if index == 2:
+            return "3|str|-|1|1|-|value|string|owned|pure|core|str|2"
+        if index == 3:
+            return "4|range|-|1|3|-|int,int,int|range|owned|pure|collections|range|4"
+        if index == 4:
+            return "5|open|-|1|2|-|string,string|file|owned|file|file|file_open|3"
+        if index == 5:
+            return "6|read_key|-|0|0|-|none|dict|owned|terminal|terminal|terminal_read_key|1"
+        if index == 6:
+            return "7|ansi_escape|-|0|0|-|none|string|owned|pure|terminal|ansi_escape|1"
+        if index == 7:
+            return "8|__tyrion_native_wall_time|-|0|0|-|none|float|borrow|clock|clock|wall_time|1"
+        if index == 8:
+            return "9|__tyrion_native_tcp_connect|-|3|3|-|string,int,int|handle|owned|network|tcp|tcp_connect|4"
+        if index == 9:
+            return "10|std_io_tcp_connect|__tyrion_native_tcp_connect|3|3|-|string,int,int|handle|owned|network|tcp|tcp_connect|4"
+        if index == 10:
+            return "11|__tyrion_native_tcp_write|-|3|3|-|handle,bytes,int|int|borrow|network|tcp|tcp_write|4"
+        if index == 11:
+            return "12|std_io_tcp_write|__tyrion_native_tcp_write|3|3|-|handle,bytes,int|int|borrow|network|tcp|tcp_write|4"
+        fail("primitive schema row index out of range")
+    else:
+        index = index - 12
+        if index == 0:
+            return "13|__tyrion_native_tcp_read|-|3|3|-|handle,int,int|bytes-or-none|owned|network|tcp|tcp_read|4"
+        if index == 1:
+            return "14|std_io_tcp_read|__tyrion_native_tcp_read|3|3|-|handle,int,int|bytes-or-none|owned|network|tcp|tcp_read|4"
+        if index == 2:
+            return "15|__tyrion_native_tcp_close|-|1|1|-|handle|bool|move|network|tcp|tcp_close|2"
+        if index == 3:
+            return "16|std_io_tcp_close|__tyrion_native_tcp_close|1|1|-|handle|bool|move|network|tcp|tcp_close|2"
+        if index == 4:
+            return "17|read_text_file|-|1|1|-|string|string|owned|file|compiler-file|read_text_file|2"
+        if index == 5:
+            return "18|read_module_graph|-|1|1|-|string|string|owned|file|compiler-file|read_module_graph|2"
+        if index == 6:
+            return "19|write_text_file|-|2|2|-|string,string|bool|borrow|file|compiler-file|write_text_file|2"
+        if index == 7:
+            return "20|run_tool|-|4|4|-|string,string,string,string|bool|borrow|process|process|run_tool|5"
+        if index == 8:
+            return "21|asm_writer_open|-|1|1|-|string|writer|owned|file|compiler-writer|writer_open|2"
+        if index == 9:
+            return "22|asm_writer_append|-|2|2|-|writer,string|writer|retain|file|compiler-writer|writer_append|3"
+        if index == 10:
+            return "23|asm_writer_close|-|1|1|-|writer|bool|borrow|file|compiler-writer|writer_close|2"
+        if index == 11:
+            return "24|asm_writer_bytes|-|1|1|-|writer|int|borrow|pure|compiler-writer|writer_bytes|2"
+        if index == 12:
+            return "25|asm_writer_set_backend|-|2|2|-|writer,string|writer|retain|file|compiler-writer|writer_set_backend|3"
+        if index == 13:
+            return "26|asm_writer_is_x86|-|1|1|-|writer|bool|borrow|pure|compiler-writer|writer_is_x86|2"
+        if index == 14:
+            return "27|float|-|1|1|-|value|float|borrow|pure|core|float|2"
+        if index == 15:
+            return "28|enumerate|-|1|2|start|value,int|list|owned|pure|collections|enumerate|3"
+        if index == 16:
+            return "29|bool|-|1|1|-|value|bool|borrow|pure|core|bool|2"
+        if index == 17:
+            return "30|zip|-|1|8|-|value|list|owned|pure|collections|zip|3"
+        if index == 18:
+            return "31|sum|-|1|2|start|value,value|value|owned|pure|collections|sum|3"
+        if index == 19:
+            return "32|min|-|1|64|-|value|value|owned|pure|collections|min|2"
+        if index == 20:
+            return "33|max|-|1|64|-|value|value|owned|pure|collections|max|2"
+        if index == 21:
+            return "34|any|-|1|1|-|value|bool|borrow|pure|collections|any|2"
+        if index == 22:
+            return "35|all|-|1|1|-|value|bool|borrow|pure|collections|all|2"
+        if index == 23:
+            return "36|sorted|-|1|2|key|value,callable|list|owned|pure|collections|sorted|3"
+        if index == 24:
+            return "37|time|-|0|0|-|none|float|borrow|clock|clock|wall_time|1"
+        if index == 25:
+            return "38|__tyrion_native_host_load|-|1|1|-|string|handle|owned|extension|host-extension|host_load|2"
+        if index == 26:
+            return "39|__tyrion_native_host_call|-|3|3|-|handle,string,string|string-or-none|owned|extension|host-extension|host_call|4"
+        if index == 27:
+            return "40|__tyrion_native_host_unload|-|1|1|-|handle|bool|move|extension|host-extension|host_unload|2"
+        if index == 28:
+            return "41|__tyrion_native_ast_builder_create|-|0|0|-|none|ast-builder|owned|allocation|compiler-ast|ast_builder_create|1"
+        if index == 29:
+            return "42|__tyrion_native_ast_builder_len|-|2|2|-|ast-builder,int|int|borrow|pure|compiler-ast|ast_builder_len|3"
+        if index == 30:
+            return "43|__tyrion_native_ast_builder_append|-|3|3|-|ast-builder,int,value|none|borrow|mutation|compiler-ast|ast_builder_append|4"
+        if index == 31:
+            return "44|__tyrion_native_ast_builder_finish|-|1|1|-|ast-builder|list|owned|allocation|compiler-ast|ast_builder_finish|2"
+        if index == 32:
+            return "45|__tyrion_native_ast_builder_get|-|3|3|-|ast-builder,int,int|value|owned|pure|compiler-ast|ast_builder_get|4"
+        if index == 33:
+            return "46|__tyrion_native_token_builder_count|-|1|1|-|token-stream|int|borrow|pure|compiler-ast|token_builder_count|2"
+        if index == 34:
+            return "47|__tyrion_native_token_builder_append|-|5|5|-|ast-builder,string,string,int,int|none|borrow|mutation|compiler-ast|token_builder_append|6"
+        if index == 35:
+            return "48|__tyrion_native_token_builder_field|-|3|3|-|token-stream,int,string|value|borrow|pure|compiler-ast|token_builder_field|4"
+        if index == 36:
+            return "49|__tyrion_run_tool|-|2|2|-|string,list|dict|owned|process|process|run_tool_capture|3"
+        if index == 37:
+            return "50|lex|-|1|1|-|string|token-stream|owned|allocation|compiler-ast|lex|2"
+        if index == 38:
+            return "51|program_has_function|-|2|2|-|dict,string|bool|borrow|pure|compiler-ast|program_has_function|3"
+        if index == 39:
+            return "52|__tyrion_native_tls_write|-|3|3|-|int,bytes,int|int|borrow|network|host-extension|tls_write|4"
+        if index == 40:
+            return "53|__tyrion_native_tls_read|-|3|3|-|int,int,int|bytes-or-none|owned|network|host-extension|tls_read|4"
+        if index == 41:
+            return "54|__tyrion_native_ascii_text|-|1|1|-|bytes|string-or-none|owned|pure|core|ascii_text|2"
+        fail("primitive schema row index out of range")
+
+def primitive_schema_rows():
+    rows = []
+    idx = 0
+    count = primitive_schema_count()
+    while idx < count:
+        rows = method_append(rows, primitive_schema_row(idx))
+        idx = idx + 1
+    return rows
+
+def primitive_schema_text():
+    out = ""
+    idx = 0
+    count = primitive_schema_count()
+    while idx < count:
+        out = out + primitive_schema_row(idx) + "\n"
+        idx = idx + 1
+    return out
+
+def primitive_schema_fields(row):
+    fields = split_inventory_text(row, "|")
+    if len(fields) != 13:
+        fail("invalid primitive schema row")
+    return fields
+
+def primitive_schema_index_page_0(page_0_name):
+    if page_0_name == "len":
+        return 0
+    if page_0_name == "int":
+        return 1
+    if page_0_name == "str":
+        return 2
+    if page_0_name == "range":
+        return 3
+    if page_0_name == "open":
+        return 4
+    if page_0_name == "read_key":
+        return 5
+    if page_0_name == "ansi_escape":
+        return 6
+    if page_0_name == "__tyrion_native_wall_time":
+        return 7
+    if page_0_name == "__tyrion_native_tcp_connect":
+        return 8
+    if page_0_name == "std_io_tcp_connect":
+        return 9
+    if page_0_name == "__tyrion_native_tcp_write":
+        return 10
+    if page_0_name == "std_io_tcp_write":
+        return 11
+    return -1
+
+def primitive_schema_index_page_1(page_1_name):
+    if page_1_name == "__tyrion_native_tcp_read":
+        return 12
+    if page_1_name == "std_io_tcp_read":
+        return 13
+    if page_1_name == "__tyrion_native_tcp_close":
+        return 14
+    if page_1_name == "std_io_tcp_close":
+        return 15
+    if page_1_name == "enumerate":
+        return 27
+    if page_1_name == "read_text_file":
+        return 16
+    if page_1_name == "read_module_graph":
+        return 17
+    if page_1_name == "write_text_file":
+        return 18
+    if page_1_name == "run_tool":
+        return 19
+    if page_1_name == "asm_writer_open":
+        return 20
+    if page_1_name == "asm_writer_append":
+        return 21
+    if page_1_name == "asm_writer_close":
+        return 22
+    if page_1_name == "asm_writer_bytes":
+        return 23
+    if page_1_name == "asm_writer_set_backend":
+        return 24
+    if page_1_name == "asm_writer_is_x86":
+        return 25
+    if page_1_name == "float":
+        return 26
+    if page_1_name == "bool":
+        return 28
+    if page_1_name == "zip":
+        return 29
+    if page_1_name == "sum":
+        return 30
+    if page_1_name == "min":
+        return 31
+    if page_1_name == "max":
+        return 32
+    if page_1_name == "any":
+        return 33
+    if page_1_name == "all":
+        return 34
+    if page_1_name == "sorted":
+        return 35
+    if page_1_name == "time":
+        return 36
+    if page_1_name == "__tyrion_native_host_load":
+        return 37
+    if page_1_name == "__tyrion_native_host_call":
+        return 38
+    if page_1_name == "__tyrion_native_host_unload":
+        return 39
+    if page_1_name == "__tyrion_native_ast_builder_create":
+        return 40
+    if page_1_name == "__tyrion_native_ast_builder_len":
+        return 41
+    if page_1_name == "__tyrion_native_ast_builder_append":
+        return 42
+    if page_1_name == "__tyrion_native_ast_builder_finish":
+        return 43
+    if page_1_name == "__tyrion_native_ast_builder_get":
+        return 44
+    if page_1_name == "__tyrion_native_token_builder_count":
+        return 45
+    if page_1_name == "__tyrion_native_token_builder_append":
+        return 46
+    if page_1_name == "__tyrion_native_token_builder_field":
+        return 47
+    if page_1_name == "__tyrion_run_tool":
+        return 48
+    if page_1_name == "lex":
+        return 49
+    if page_1_name == "program_has_function":
+        return 50
+    if page_1_name == "__tyrion_native_tls_write":
+        return 51
+    if page_1_name == "__tyrion_native_tls_read":
+        return 52
+    if page_1_name == "__tyrion_native_ascii_text":
+        return 53
+    return -1
+
+def primitive_schema_index(index_name):
+    row_index = primitive_schema_index_page_0(index_name)
+    if row_index == -1:
+        return primitive_schema_index_page_1(index_name)
+    return row_index
+
+def primitive_schema_find(search_name):
+    row_index = primitive_schema_index(search_name)
+    if row_index == -1:
+        return []
+    return primitive_schema_fields(primitive_schema_row(row_index))
+
+def primitive_schema_has(has_name):
+    return len(primitive_schema_find(has_name)) != 0
+
+def primitive_schema_id(id_name):
+    fields = primitive_schema_find(id_name)
+    if len(fields) == 0:
+        return -1
+    return int(fields[0])
+
+def primitive_schema_find_id(primitive_id):
+    if primitive_id < 1 or primitive_id > primitive_schema_count():
+        return []
+    return primitive_schema_fields(primitive_schema_row(primitive_id - 1))
+
+def primitive_schema_name_for_id(primitive_id):
+    fields = primitive_schema_find_id(primitive_id)
+    if len(fields) != 13:
+        return ""
+    return fields[1]
+
+def primitive_schema_ownership_for_id(primitive_id):
+    fields = primitive_schema_find_id(primitive_id)
+    if len(fields) != 13:
+        return ""
+    return fields[8]
+
+def primitive_schema_effect_for_id(primitive_id):
+    fields = primitive_schema_find_id(primitive_id)
+    if len(fields) != 13:
+        return ""
+    return fields[9]
+
+def primitive_schema_capability_for_id(primitive_id):
+    fields = primitive_schema_find_id(primitive_id)
+    if len(fields) != 13:
+        return ""
+    return fields[10]
+
+def primitive_schema_implementation_for_id(primitive_id):
+    fields = primitive_schema_find_id(primitive_id)
+    if len(fields) != 13:
+        return ""
+    return fields[11]
+
+def primitive_schema_symbol(symbol_name):
+    fields = primitive_schema_find(symbol_name)
+    if len(fields) == 0:
+        return ""
+    if fields[2] == "-":
+        return fields[1]
+    return fields[2]
+
+def primitive_schema_capability(capability_name):
+    fields = primitive_schema_find(capability_name)
+    if len(fields) == 0:
+        return ""
+    return fields[10]
+
+def primitive_schema_impl_key(implementation_name):
+    fields = primitive_schema_find(implementation_name)
+    if len(fields) == 0:
+        return ""
+    return fields[11]
+
+def primitive_schema_accepts_arity(arity_name, argc):
+    fields = primitive_schema_find(arity_name)
+    if len(fields) == 0:
+        return False
+    return argc >= int(fields[3]) and argc <= int(fields[4])
+
+def primitive_schema_runtime_visible(visibility_name):
+    fields = primitive_schema_find(visibility_name)
+    if len(fields) == 0:
+        return False
+    capability = fields[10]
+    return capability == "core" or capability == "collections" or capability == "file" or capability == "terminal" or capability == "clock" or capability == "tcp" or capability == "host-extension"
+
+def primitive_schema_runtime_operations():
+    out = []
+    idx = 0
+    count = primitive_schema_count()
+    while idx < count:
+        fields = primitive_schema_fields(primitive_schema_row(idx))
+        capability = fields[10]
+        if capability == "file" or capability == "terminal" or capability == "clock" or capability == "tcp" or capability == "host-extension":
+            out = method_append(out, fields)
+        idx = idx + 1
+    return out
+
+def primitive_schema_lowered_fixed(fixed_name):
+    implementation = primitive_schema_impl_key(fixed_name)
+    fixed = ["len", "tcp_connect", "tcp_write", "tcp_read", "tcp_close", "read_text_file", "read_module_graph", "write_text_file", "run_tool", "writer_open", "writer_append", "writer_close", "writer_bytes", "writer_set_backend", "writer_is_x86", "ast_builder_create", "ast_builder_len", "ast_builder_append", "ast_builder_finish", "ast_builder_get", "token_builder_count", "token_builder_append", "token_builder_field", "lex"]
+    idx = 0
+    while idx < len(fixed):
+        if fixed[idx] == implementation:
+            return True
+        idx = idx + 1
+    return False
+
+
+def primitive_schema_direct_source_body(source_name):
+    # These operations already have complete Tyrion implementations. Keep
+    # those implementations in the ordinary AArch64 application call graph.
+    # The x86 backend implements the same public primitive ABI directly for
+    # bounded compiler-generation time; this is target capability selection,
+    # not compiler-program recognition.
+    source_bodies = ["read_text_file", "read_module_graph", "write_text_file", "lex", "program_has_function", "asm_writer_open", "asm_writer_append", "asm_writer_close", "asm_writer_bytes", "asm_writer_set_backend", "asm_writer_is_x86"]
+    idx = 0
+    while idx < len(source_bodies):
+        if source_bodies[idx] == source_name:
+            if host_target()["backend"] == "linux-x86_64":
+                return False
+            return True
+        idx = idx + 1
+    return False
+
+
+def primitive_schema_lowered_side_effect(effect_name):
+    fields = primitive_schema_find(effect_name)
+    if len(fields) == 0 or not primitive_schema_lowered_fixed(effect_name):
+        return False
+    return fields[9] != "pure"
+
+def primitive_schema_dispatch_arg_count(dispatch_name):
+    fields = primitive_schema_find(dispatch_name)
+    if len(fields) == 0:
+        return 0
+    return int(fields[12])
+
+def primitive_schema_lowered_plan_kind(plan_name):
+    implementation = primitive_schema_impl_key(plan_name)
+    if implementation == "len":
+        return "native_len_body"
+    if implementation == "read_text_file":
+        return "native_read_text_file_body"
+    if implementation == "read_module_graph":
+        return "native_read_module_graph_body"
+    if implementation == "lex":
+        return "native_lex_body"
+    if implementation == "write_text_file":
+        return "native_write_text_file_body"
+    if implementation == "run_tool":
+        return "native_run_tool_body"
+    if implementation == "tcp_connect" or implementation == "tcp_write" or implementation == "tcp_read" or implementation == "tcp_close":
+        return "native_" + implementation + "_body"
+    if implementation == "writer_open" or implementation == "writer_append" or implementation == "writer_close" or implementation == "writer_bytes" or implementation == "writer_set_backend" or implementation == "writer_is_x86":
+        return "native_asm_" + implementation + "_body"
+    return ""
+
+def primitive_schema_require_target(required_name, target):
+    capability = primitive_schema_capability(required_name)
+    if capability == "":
+        fail("unknown primitive: " + required_name)
+    if not target_has_capability(target, capability):
+        fail("primitive target implementation missing: " + required_name + ":" + target["backend"])
+    implementation = primitive_schema_impl_key(required_name)
+    if not backend_has_primitive_implementation(target, implementation):
+        fail("primitive target implementation missing: " + required_name + ":" + target["backend"])
+    return True
+
+def primitive_schema_target_probe(probe_name, os_name, arch):
+    target = target_spec(os_name, arch)
+    primitive_schema_require_target(probe_name, target)
+    return primitive_schema_id(probe_name)
+
+def primitive_schema_manifest():
+    return "tyrion-primitive-abi-v1\n" + primitive_schema_text()

@@ -1,0 +1,4 @@
+name = "toolchain"
+abi = "tyrion-host-ext/v1"
+call_symbol = "tyext_toolchain_call_v1"
+sources = ["src/toolchain.c", "build/payload.S"]

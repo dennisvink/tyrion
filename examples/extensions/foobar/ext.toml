@@ -1,0 +1,6 @@
+name = "foobar"
+abi = "tyrion-host-ext/v1"
+call_symbol = "tyext_foobar_call_v1"
+sources = ["src/foobar.c"]
+host_call_eval_default = "literal"
+host_call_eval_runtime_ops = ["foobar.randomcase"]

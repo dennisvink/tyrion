@@ -1,0 +1,2384 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# compiler / lowering: responsibility-owned canonical compiler module.
+
+def lowered_function_entry_payload_seed(program, build_plan, name):
+    fn = program_find_function_or_none(program, name)
+    if name == "render_compiler_cli_artifact":
+        return {"name": name, "name_label": lowered_function_label("L_fn_", name), "handler_label": lowered_function_label("L_clcf_", name), "exec_label": lowered_function_label("L_exec_fn_", name), "dispatch_arg_count": lowered_function_dispatch_arg_count(name), "force_success": lowered_function_force_success(name), "plan_kind": lowered_function_plan_kind(name), "body_plan": {"chunks": minimal_compiler_cli_artifact_chunks()}, "signature_params": [], "source_params": [], "source_body": []}
+    if fn == none:
+        return lowered_function_entry(program, build_plan, name)
+    return lowered_function_entry(program, build_plan, name)
+
+def lowered_function_append_compiler_component_sources(program, names):
+    component_names = ["collect_compiler_asm_section_plan", "emit_compiler_asm_section_plan", "emit_compiler_asm_section", "emit_darwin_aarch64_statement_mutation_component", "emit_darwin_aarch64_control_flow_component", "emit_darwin_aarch64_function_registry_component", "emit_darwin_aarch64_function_calls_component", "emit_darwin_aarch64_expression_eval_component", "emit_darwin_aarch64_expression_ast_component", "emit_darwin_aarch64_atom_core_component", "emit_darwin_aarch64_builtin_atoms_component", "emit_darwin_aarch64_indexing_component", "emit_darwin_aarch64_methods_objects_component", "emit_darwin_aarch64_slots_ownership_component", "emit_darwin_aarch64_assignment_mutation_component", "emit_darwin_aarch64_scalar_formatting_component"]
+    idx = 0
+    while idx < len(component_names):
+        names = lowered_function_append_source_if_present(program, names, component_names[idx])
+        idx = idx + 1
+    return names
+
+def collect_lowered_function_table_plan_payload_seed(program, build_plan):
+    names = []
+    names = lowered_function_append_name(names, "asm_writer_open")
+    names = lowered_function_append_name(names, "asm_writer_append")
+    names = lowered_function_append_name(names, "asm_writer_close")
+    names = lowered_function_append_name(names, "asm_writer_bytes")
+    names = lowered_function_append_name(names, "asm_writer_set_backend")
+    names = lowered_function_append_name(names, "asm_writer_is_x86")
+    names = lowered_function_append_name(names, "runtime_native_linux_aarch64_asm_text")
+    names = lowered_function_append_source_if_present(program, names, "emit_darwin_aarch64_compiler_cli_asm_into")
+    names = lowered_function_append_source_if_present(program, names, "emit_linux_aarch64_compiler_cli_asm_into")
+    names = lowered_function_append_source_if_present(program, names, "emit_linux_x86_64_compiler_cli_asm_into")
+    if program_has_function(program, "usage"):
+        names = lowered_function_append_name(names, "usage")
+    if program_has_function(program, "version"):
+        names = lowered_function_append_name(names, "version")
+    names = lowered_function_append_name(names, "len")
+    # Generic record execution references the native append ABI even when a
+    # reduced compiler fixture omits the documenting Tyrion helper.
+    names = lowered_function_append_name(names, "method_append")
+    names = lowered_function_append_name(names, "build_native")
+    names = lowered_function_append_source_if_present(program, names, "build_compiler_cli_native")
+    if build_plan["shape_ok"] and build_plan["diagnostic"] != "":
+        names = lowered_function_append_known_direct_calls(program, names, "build_native")
+    names = lowered_function_append_name(names, "read_text_file")
+    names = lowered_function_append_name(names, "write_text_file")
+    names = lowered_function_append_name(names, "host_target")
+    names = lowered_function_append_source_if_present(program, names, "generated_value_owner_mem")
+    names = lowered_function_append_source_if_present(program, names, "generated_value_tag_mem")
+    names = lowered_function_append_name(names, "__tyrion_native_tcp_connect")
+    names = lowered_function_append_name(names, "__tyrion_native_tcp_write")
+    names = lowered_function_append_name(names, "__tyrion_native_tcp_read")
+    names = lowered_function_append_name(names, "__tyrion_native_tcp_close")
+    names = lowered_function_append_name(names, "std_io_tcp_connect")
+    names = lowered_function_append_name(names, "std_io_tcp_write")
+    names = lowered_function_append_name(names, "std_io_tcp_read")
+    names = lowered_function_append_name(names, "std_io_tcp_close")
+    if program_has_function(program, "token_kind_at"):
+        names = lowered_function_append_name(names, "token_kind_at")
+    if program_has_function(program, "token_text_at"):
+        names = lowered_function_append_name(names, "token_text_at")
+    if program_has_function(program, "token_value_at"):
+        names = lowered_function_append_name(names, "token_value_at")
+    if program_has_function(program, "asm_line"):
+        names = lowered_function_append_name(names, "asm_line")
+    if program_has_function(program, "asm_label"):
+        names = lowered_function_append_name(names, "asm_label")
+    if program_has_function(program, "asm_dir"):
+        names = lowered_function_append_name(names, "asm_dir")
+    if program_has_function(program, "asm_raw"):
+        names = lowered_function_append_name(names, "asm_raw")
+    if program_has_function(program, "asm_section"):
+        names = lowered_function_append_name(names, "asm_section")
+    if program_has_function(program, "asm_cstr"):
+        names = lowered_function_append_name(names, "asm_cstr")
+    if program_has_function(program, "asm_escape_string"):
+        names = lowered_function_append_name(names, "asm_escape_string")
+    names = lowered_function_append_source_if_present(program, names, "source_indent")
+    names = lowered_function_append_compiler_component_sources(program, names)
+    if not build_plan["shape_ok"]:
+        names = lowered_function_append_source_if_present(program, names, "fail")
+        names = lowered_function_append_source_if_present(program, names, "method_append")
+        names = lowered_function_append_source_if_present(program, names, "token")
+        names = lowered_function_append_source_if_present(program, names, "lex")
+        names = lowered_function_append_source_if_present(program, names, "parse_program")
+        names = lowered_function_append_source_if_present(program, names, "parse_program_items")
+        names = lowered_function_append_source_if_present(program, names, "host_target")
+        names = lowered_function_append_source_if_present(program, names, "lower_program_to_constant_payload")
+        names = lowered_function_append_source_if_present(program, names, "lower_statement_list")
+        names = lowered_function_append_source_if_present(program, names, "emit_constant_asm")
+        names = lowered_function_append_source_if_present(program, names, "render_native_artifact")
+    names = lowered_function_expand_reachable_sources(program, names)
+    entries_builder = __tyrion_native_ast_builder_create()
+    idx = 0
+    while idx < len(names):
+        if lowered_function_can_emit(program, names[idx]):
+            __tyrion_native_ast_builder_append(entries_builder, 0, lowered_function_entry_payload_seed(program, build_plan, names[idx]))
+        idx = idx + 1
+    entries_lanes = __tyrion_native_ast_builder_finish(entries_builder)
+    return entries_lanes[0]
+
+def program_has_function(program, name):
+    items = program["items"]
+    idx = 0
+    while idx < len(items):
+        stmt = items[idx]
+        if stmt["kind"] == "function":
+            if stmt["name"] == name:
+                return True
+        idx = idx + 1
+    return False
+
+def program_find_function(program, name):
+    items = program["items"]
+    idx = 0
+    while idx < len(items):
+        stmt = items[idx]
+        if stmt["name"] == name:
+            return stmt
+        idx = idx + 1
+    if len(items) == 0:
+        fail("required function not found for native lowering: empty program items")
+    fail("required function not found for native lowering: non-empty program items")
+
+def program_find_function_or_none(program, name):
+    items = program["items"]
+    idx = 0
+    while idx < len(items):
+        stmt = items[idx]
+        if stmt["kind"] == "function":
+            if stmt["name"] == name:
+                return stmt
+        idx = idx + 1
+    return none
+
+def lower_print_arg_literal(expr):
+    kind = expr["kind"]
+    if kind == "string":
+        return expr["value"]
+    if kind == "int":
+        return str(expr["value"])
+    if kind == "float":
+        return str(expr["value"])
+    if kind == "bool":
+        if expr["value"]:
+            return "True"
+        return "False"
+    if kind == "none":
+        return "none"
+    fail("native function print lowering requires literal print args, got: " + kind)
+
+def expr_is_args_len_call(expr):
+    return expr["kind"] == "call" and expr["callee"]["kind"] == "var" and expr["callee"]["value"] == "len" and len(expr["args"]) == 1 and expr["args"][0]["kind"] == "var" and expr["args"][0]["value"] == "args"
+
+def expr_is_args_index(expr):
+    return expr["kind"] == "index" and expr["receiver"]["kind"] == "var" and expr["receiver"]["value"] == "args" and expr["index"]["kind"] == "int"
+
+def expr_call_name(expr):
+    if expr["kind"] == "call" and expr["callee"]["kind"] == "var":
+        return expr["callee"]["value"]
+    return ""
+
+def expr_var_name(expr):
+    if expr["kind"] == "var":
+        return expr["value"]
+    return ""
+
+def stmt_assign_call_info(stmt):
+    if stmt["kind"] != "assign":
+        return {"target": "", "call": "", "arg0": "", "arg1": ""}
+    expr = stmt["value"]
+    if expr["kind"] != "call":
+        return {"target": "", "call": "", "arg0": "", "arg1": ""}
+    arg0 = ""
+    arg1 = ""
+    if len(expr["args"]) > 0:
+        arg0 = expr_var_name(expr["args"][0])
+    if len(expr["args"]) > 1:
+        arg1 = expr_var_name(expr["args"][1])
+    return {"target": stmt["name"], "call": expr_call_name(expr), "arg0": arg0, "arg1": arg1}
+
+def stmt_expr_call_info(stmt):
+    if stmt["kind"] != "expr":
+        return {"call": "", "arg0": "", "arg1": ""}
+    expr = stmt["value"]
+    if expr["kind"] != "call":
+        return {"call": "", "arg0": "", "arg1": ""}
+    arg0 = ""
+    arg1 = ""
+    if len(expr["args"]) > 0:
+        arg0 = expr_var_name(expr["args"][0])
+    if len(expr["args"]) > 1:
+        arg1 = expr_var_name(expr["args"][1])
+    return {"call": expr_call_name(expr), "arg0": arg0, "arg1": arg1}
+
+def expr_source_simple(expr):
+    kind = expr["kind"]
+    if kind == "var":
+        return expr["value"]
+    if kind == "string":
+        return "\"" + asm_escape_string(expr["value"]) + "\""
+    if kind == "int":
+        return str(expr["value"])
+    if kind == "float":
+        return str(expr["value"])
+    if kind == "bool":
+        if expr["value"]:
+            return "True"
+        return "False"
+    if kind == "none":
+        return "none"
+    if kind == "binary":
+        left = expr_source_simple(expr["left"])
+        right = expr_source_simple(expr["right"])
+        if left == "" or right == "":
+            return ""
+        return left + " " + expr["op"] + " " + right
+    if kind == "unary":
+        value = expr_source_simple(expr["value"])
+        if value == "":
+            return ""
+        return expr["op"] + " " + value
+    if kind == "call":
+        out = expr_source_simple(expr["callee"]) + "("
+        idx = 0
+        while idx < len(expr["args"]):
+            if idx > 0:
+                out = out + ", "
+            out = out + expr_source_simple(expr["args"][idx])
+            idx = idx + 1
+        return out + ")"
+    if kind == "method_call":
+        receiver = expr_source_simple(expr["receiver"])
+        if receiver == "":
+            return ""
+        out = receiver + "." + expr["name"] + "("
+        idx = 0
+        while idx < len(expr["args"]):
+            if idx > 0:
+                out = out + ", "
+            out = out + expr_source_simple(expr["args"][idx])
+            idx = idx + 1
+        return out + ")"
+    if kind == "attr":
+        receiver = expr_source_simple(expr["receiver"])
+        if receiver == "":
+            return ""
+        return receiver + "." + expr["name"]
+    if kind == "index":
+        receiver = expr_source_simple(expr["receiver"])
+        index = expr_source_simple(expr["index"])
+        if receiver == "" or index == "":
+            return ""
+        return receiver + "[" + index + "]"
+    if kind == "slice":
+        receiver = expr_source_simple(expr["receiver"])
+        start = ""
+        stop = ""
+        if expr["start"]["kind"] != "none":
+            start = expr_source_simple(expr["start"])
+        if expr["stop"]["kind"] != "none":
+            stop = expr_source_simple(expr["stop"])
+        if receiver == "":
+            return ""
+        return receiver + "[" + start + ":" + stop + "]"
+    if kind == "kwarg":
+        value = expr_source_simple(expr["value"])
+        if value == "":
+            return ""
+        return expr["name"] + "=" + value
+    if kind == "list" or kind == "tuple" or kind == "set":
+        open_text = "["
+        close_text = "]"
+        if kind == "tuple":
+            open_text = "("
+            close_text = ")"
+        if kind == "set":
+            open_text = "{"
+            close_text = "}"
+        out = open_text
+        idx = 0
+        while idx < len(expr["items"]):
+            if idx > 0:
+                out = out + ", "
+            item = expr_source_simple(expr["items"][idx])
+            if item == "":
+                return ""
+            out = out + item
+            idx = idx + 1
+        return out + close_text
+    if kind == "dict":
+        out = "{"
+        idx = 0
+        while idx < len(expr["entries"]):
+            if idx > 0:
+                out = out + ", "
+            key = expr_source_simple(expr["entries"][idx]["key"])
+            value = expr_source_simple(expr["entries"][idx]["value"])
+            if key == "" or value == "":
+                return ""
+            out = out + key + ": " + value
+            idx = idx + 1
+        return out + "}"
+    return ""
+
+def target_source_simple(target):
+    if target["kind"] == "var":
+        return target["value"]
+    if target["kind"] == "index":
+        return expr_source_simple(target)
+    if target["kind"] == "attr":
+        return expr_source_simple(target)
+    if target["kind"] == "unpack":
+        out = ""
+        idx = 0
+        while idx < len(target["targets"]):
+            if idx > 0:
+                out = out + ", "
+            if target["targets"][idx]["star"]:
+                out = out + "*"
+            out = out + target["targets"][idx]["name"]
+            idx = idx + 1
+        return out
+    return ""
+
+def source_indent(depth):
+    out = ""
+    idx = 0
+    while idx < depth:
+        out = out + "  "
+        idx = idx + 1
+    return out
+
+def block_source_simple(body, depth):
+    out = ""
+    idx = 0
+    while idx < len(body):
+        line = stmt_source_simple_depth(body[idx], depth)
+        if line == "":
+            return ""
+        out = out + line
+        idx = idx + 1
+    if out == "":
+        return source_indent(depth) + "pass\n"
+    return out
+
+def param_source_simple(param):
+    if "name" in param:
+        if param["has_default"]:
+            value = expr_source_simple(param["default"])
+            if value == "":
+                return ""
+            return param["name"] + "=" + value
+        return param["name"]
+    return param
+
+def params_source_simple(params):
+    out = ""
+    idx = 0
+    while idx < len(params):
+        if idx > 0:
+            out = out + ", "
+        param = param_source_simple(params[idx])
+        if param == "":
+            return ""
+        out = out + param
+        idx = idx + 1
+    return out
+
+def stmt_source_simple_depth(stmt, depth):
+    indent = source_indent(depth)
+    kind = stmt["kind"]
+    if kind == "assign":
+        target = target_source_simple(stmt["target"])
+        value = expr_source_simple(stmt["value"])
+        if target != "" and value != "":
+            return indent + target + " = " + value + "\n"
+    if kind == "return":
+        value = expr_source_simple(stmt["value"])
+        if value != "":
+            if value == "none":
+                return indent + "return\n"
+            return indent + "return " + value + "\n"
+    if kind == "expr":
+        value = expr_source_simple(stmt["value"])
+        if value != "":
+            return indent + value + "\n"
+    if kind == "raise":
+        value = expr_source_simple(stmt["value"])
+        if value != "":
+            return indent + "raise " + value + "\n"
+    if kind == "break":
+        return indent + "break\n"
+    if kind == "continue":
+        return indent + "continue\n"
+    if kind == "if":
+        condition = expr_source_simple(stmt["condition"])
+        if condition == "":
+            return ""
+        out = indent + "if " + condition + ":\n"
+        out = out + block_source_simple(stmt["body"], depth + 1)
+        idx = 0
+        while idx < len(stmt["elifs"]):
+            elif_cond = expr_source_simple(stmt["elifs"][idx]["condition"])
+            if elif_cond == "":
+                return ""
+            out = out + indent + "elif " + elif_cond + ":\n"
+            out = out + block_source_simple(stmt["elifs"][idx]["body"], depth + 1)
+            idx = idx + 1
+        if len(stmt["else_body"]) > 0:
+            out = out + indent + "else:\n"
+            out = out + block_source_simple(stmt["else_body"], depth + 1)
+        return out
+    if kind == "while":
+        condition = expr_source_simple(stmt["condition"])
+        if condition == "":
+            return ""
+        return indent + "while " + condition + ":\n" + block_source_simple(stmt["body"], depth + 1)
+    if kind == "for":
+        targets = ""
+        idx = 0
+        while idx < len(stmt["targets"]):
+            if idx > 0:
+                targets = targets + ", "
+            targets = targets + stmt["targets"][idx]
+            idx = idx + 1
+        iterable = expr_source_simple(stmt["iterable"])
+        if targets == "" or iterable == "":
+            return ""
+        return indent + "for " + targets + " in " + iterable + ":\n" + block_source_simple(stmt["body"], depth + 1)
+    if kind == "with":
+        resource = expr_source_simple(stmt["resource"])
+        if resource == "":
+            return ""
+        return indent + "with " + resource + " as " + stmt["name"] + ":\n" + block_source_simple(stmt["body"], depth + 1)
+    if kind == "function":
+        params = params_source_simple(stmt["params"])
+        return indent + "def " + stmt["name"] + "(" + params + "):\n" + block_source_simple(stmt["body"], depth + 1)
+    if kind == "class":
+        return indent + "class " + stmt["name"] + ":\n" + block_source_simple(stmt["body"], depth + 1)
+    if kind == "try":
+        out = indent + "try:\n" + block_source_simple(stmt["body"], depth + 1)
+        if len(stmt["except_body"]) > 0:
+            out = out + indent + "except"
+            if stmt["except_name"] != "":
+                out = out + " " + stmt["except_name"]
+            if stmt["except_binding"] != "":
+                out = out + " as " + stmt["except_binding"]
+            out = out + ":\n" + block_source_simple(stmt["except_body"], depth + 1)
+        if len(stmt["finally_body"]) > 0:
+            out = out + indent + "finally:\n" + block_source_simple(stmt["finally_body"], depth + 1)
+        return out
+    return ""
+
+def stmt_source_simple(stmt):
+    return stmt_source_simple_depth(stmt, 0)
+
+def function_body_source_simple(fn):
+    out = ""
+    idx = 0
+    while idx < len(fn["body"]):
+        line = stmt_source_simple(fn["body"][idx])
+        if line == "":
+            return ""
+        out = out + line
+        idx = idx + 1
+    return out
+
+def statement_list_has_return(stmts):
+    idx = 0
+    while idx < len(stmts):
+        stmt = stmts[idx]
+        kind = stmt["kind"]
+        if kind == "return":
+            return True
+        if kind == "if":
+            if statement_list_has_return(stmt["body"]):
+                return True
+            elif_idx = 0
+            while elif_idx < len(stmt["elifs"]):
+                if statement_list_has_return(stmt["elifs"][elif_idx]["body"]):
+                    return True
+                elif_idx = elif_idx + 1
+            if statement_list_has_return(stmt["else_body"]):
+                return True
+        if kind == "while" or kind == "for" or kind == "with" or kind == "try":
+            if statement_list_has_return(stmt["body"]):
+                return True
+            if kind == "try":
+                if statement_list_has_return(stmt["except_body"]):
+                    return True
+                if statement_list_has_return(stmt["finally_body"]):
+                    return True
+        idx = idx + 1
+    return False
+
+def source_function_has_return(fn):
+    return statement_list_has_return(fn["body"])
+
+def statement_list_has_value_return(stmts):
+    idx = 0
+    while idx < len(stmts):
+        stmt = stmts[idx]
+        kind = stmt["kind"]
+        if kind == "return":
+            value = stmt["value"]
+            if value["kind"] != "none":
+                return True
+        if kind == "if":
+            if statement_list_has_value_return(stmt["body"]):
+                return True
+            elif_idx = 0
+            while elif_idx < len(stmt["elifs"]):
+                if statement_list_has_value_return(stmt["elifs"][elif_idx]["body"]):
+                    return True
+                elif_idx = elif_idx + 1
+            if statement_list_has_value_return(stmt["else_body"]):
+                return True
+        if kind == "while" or kind == "for" or kind == "with" or kind == "try":
+            if statement_list_has_value_return(stmt["body"]):
+                return True
+            if kind == "try":
+                if statement_list_has_value_return(stmt["except_body"]):
+                    return True
+                if statement_list_has_value_return(stmt["finally_body"]):
+                    return True
+        idx = idx + 1
+    return False
+
+def source_function_has_value_return(fn):
+    return statement_list_has_value_return(fn["body"])
+
+def expr_is_var(expr, name):
+    return expr["kind"] == "var" and expr["value"] == name
+
+def expr_is_int(expr, value):
+    return expr["kind"] == "int" and expr["value"] == value
+
+def expr_is_bool(expr, value):
+    return expr["kind"] == "bool" and expr["value"] == value
+
+def expr_is_newline_string(expr):
+    return expr["kind"] == "string" and (expr["value"] == "\n" or expr["value"] == "\\n")
+
+def expr_is_call0(expr, name):
+    return expr["kind"] == "call" and expr_call_name(expr) == name and len(expr["args"]) == 0
+
+def expr_is_call1_var(expr, name, arg_name):
+    return expr["kind"] == "call" and expr_call_name(expr) == name and len(expr["args"]) == 1 and expr_var_name(expr["args"][0]) == arg_name
+
+def expr_is_call2_vars(expr, name, arg0_name, arg1_name):
+    return expr["kind"] == "call" and expr_call_name(expr) == name and len(expr["args"]) == 2 and expr_var_name(expr["args"][0]) == arg0_name and expr_var_name(expr["args"][1]) == arg1_name
+
+def expr_is_method_call0(expr, receiver_name, method_name):
+    return expr["kind"] == "method_call" and expr_var_name(expr["receiver"]) == receiver_name and expr["name"] == method_name and len(expr["args"]) == 0
+
+def expr_is_method_call1_string(expr, receiver_name, method_name, value):
+    return expr["kind"] == "method_call" and expr_var_name(expr["receiver"]) == receiver_name and expr["name"] == method_name and len(expr["args"]) == 1 and expr["args"][0]["kind"] == "string" and expr["args"][0]["value"] == value
+
+def expr_is_len_call_var(expr, arg_name):
+    return expr_is_call1_var(expr, "len", arg_name)
+
+def return_expr(fn):
+    if len(fn["body"]) != 1:
+        fail(fn["name"] + " native helper lowering requires a single return statement")
+    stmt = fn["body"][0]
+    if stmt["kind"] != "return":
+        fail(fn["name"] + " native helper lowering requires a return statement")
+    return stmt["value"]
+
+def single_return_expr_or_unsupported(fn):
+    if len(fn["body"]) != 1:
+        return {"kind": "unsupported", "reason": fn["name"] + " helper body is not a single return statement"}
+    stmt = fn["body"][0]
+    if stmt["kind"] != "return":
+        return {"kind": "unsupported", "reason": fn["name"] + " helper body is not a return statement"}
+    return stmt["value"]
+
+def collect_read_file_plan(program):
+    fn = program_find_function_or_none(program, "read_file")
+    if fn == none:
+        return {"param": "", "lowered_call": "", "param_label": "L_read_file_param_name", "body_label": "L_read_file_body_src", "body_source": "", "shape_ok": False, "diagnostic": "read_file native lowering helper is not present"}
+    if len(fn["params"]) != 1:
+        return {"param": "", "lowered_call": "", "param_label": "L_read_file_param_name", "body_label": "L_read_file_body_src", "body_source": "", "shape_ok": False, "diagnostic": "read_file native lowering requires one path param"}
+    path_param = param_name(fn["params"][0])
+    body_source = function_body_source_simple(fn)
+    lowered_call = "read_text_file"
+    expr = single_return_expr_or_unsupported(fn)
+    if expr["kind"] == "call" and expr_call_name(expr) == "read_text_file" and len(expr["args"]) == 1 and expr_var_name(expr["args"][0]) == path_param:
+        body_source = "return read_text_file(" + path_param + ")\n"
+        return {"param": path_param, "lowered_call": lowered_call, "param_label": "L_read_file_param_name", "body_label": "L_read_file_body_src", "body_source": body_source, "shape_ok": True, "diagnostic": "read_file lowered as fixed native read_text_file wrapper"}
+    return {"param": path_param, "lowered_call": lowered_call, "param_label": "L_read_file_param_name", "body_label": "L_read_file_body_src", "body_source": body_source, "shape_ok": False, "diagnostic": "read_file native lowering expected: return read_text_file(path)"}
+
+def collect_make_asm_path_plan(program):
+    fn = program_find_function_or_none(program, "make_asm_path")
+    if fn == none:
+        return {"param": "", "suffix": "", "suffix_label": "L_make_asm_path_suffix", "param_label": "L_make_asm_path_param_name", "body_label": "L_make_asm_path_body_src", "body_source": "", "shape_ok": False, "diagnostic": "make_asm_path native lowering helper is not present"}
+    if len(fn["params"]) != 1:
+        return {"param": "", "suffix": "", "suffix_label": "L_make_asm_path_suffix", "param_label": "L_make_asm_path_param_name", "body_label": "L_make_asm_path_body_src", "body_source": "", "shape_ok": False, "diagnostic": "make_asm_path native lowering requires one output_path param"}
+    output_param = param_name(fn["params"][0])
+    body_source = function_body_source_simple(fn)
+    suffix = ""
+    expr = single_return_expr_or_unsupported(fn)
+    if expr["kind"] == "binary" and expr["op"] == "+" and expr_var_name(expr["left"]) == output_param and expr["right"]["kind"] == "string":
+        suffix = expr["right"]["value"]
+        body_source = "return " + output_param + " + \"" + suffix + "\"\n"
+        return {"param": output_param, "suffix": suffix, "suffix_label": "L_make_asm_path_suffix", "param_label": "L_make_asm_path_param_name", "body_label": "L_make_asm_path_body_src", "body_source": body_source, "shape_ok": True, "diagnostic": "make_asm_path lowered as fixed suffix append wrapper"}
+    return {"param": output_param, "suffix": suffix, "suffix_label": "L_make_asm_path_suffix", "param_label": "L_make_asm_path_param_name", "body_label": "L_make_asm_path_body_src", "body_source": body_source, "shape_ok": False, "diagnostic": "make_asm_path native lowering expected: return output_path + suffix"}
+
+def collect_link_asm_plan(program):
+    fn = program_find_function_or_none(program, "link_asm")
+    if fn == none:
+        return {"asm_param": "", "output_param": "", "tool": "", "out_flag": "", "body_label": "L_link_asm_body_src", "body_source": "", "shape_ok": False, "diagnostic": "link_asm native lowering helper is not present"}
+    if len(fn["params"]) != 2:
+        return {"asm_param": "", "output_param": "", "tool": "", "out_flag": "", "body_label": "L_link_asm_body_src", "body_source": "", "shape_ok": False, "diagnostic": "link_asm native lowering requires asm_path and output_path params"}
+    asm_param = param_name(fn["params"][0])
+    output_param = param_name(fn["params"][1])
+    # Linking is a compiler-owned side-effect primitive. The source body
+    # documents and executes the seed semantics; descendants use the same
+    # explicit assemble/object-link ABI rather than embedding helper source.
+    return {"asm_param": asm_param, "output_param": output_param, "tool": "cc", "out_flag": "-o", "object_suffix": ".o", "body_label": "L_link_asm_body_src", "body_source": function_body_source_simple(fn), "shape_ok": True, "diagnostic": "link_asm lowered as fixed two-stage native tool primitive"}
+
+def build_native_plan_record(program, input_param, output_param, body_source, shape_ok, diagnostic):
+    return {"program": program, "input_param": input_param, "output_param": output_param, "input_param_label": "L_build_native_input_param_name", "output_param_label": "L_build_native_output_param_name", "body_label": "L_build_native_body_src", "body_source": body_source, "read_plan": collect_read_file_plan(program), "make_asm_path_plan": collect_make_asm_path_plan(program), "link_plan": collect_link_asm_plan(program), "parse_program_items_plan": collect_parse_program_items_plan(program), "lex_plan": collect_lowered_source_body_plan(program, "lex", "L_lex_body_src"), "parse_statement_plan": collect_lowered_source_body_plan(program, "parse_statement", "L_parse_statement_body_src"), "parse_pratt_expr_plan": collect_lowered_source_body_plan(program, "parse_pratt_expr", "L_parse_pratt_expr_body_src"), "compiler_cli_plan": collect_lowered_source_body_plan(program, "build_compiler_cli_native", "L_build_compiler_cli_native_body_src"), "collect_cli_spec_plan": collect_lowered_source_body_plan(program, "collect_cli_spec", "L_collect_cli_spec_body_src"), "render_compiler_cli_artifact_plan": collect_lowered_source_body_plan(program, "render_compiler_cli_artifact", "L_render_compiler_cli_artifact_body_src"), "program_find_function_plan": collect_lowered_source_body_plan(program, "program_find_function", "L_program_find_function_body_src"), "program_find_function_or_none_plan": collect_lowered_source_body_plan(program, "program_find_function_or_none", "L_program_find_function_or_none_body_src"), "shape_ok": shape_ok, "diagnostic": diagnostic}
+
+def unsupported_build_native_plan(program, diagnostic, input_param, output_param):
+    body_source = ""
+    fn = program_find_function_or_none(program, "build_native")
+    if fn != none:
+        body_source = function_body_source_simple(fn)
+    return build_native_plan_record(program, input_param, output_param, body_source, False, diagnostic)
+
+def collect_return_call_one_arg_plan(program, name, callee):
+    fn = program_find_function_or_none(program, name)
+    if fn == none:
+        return {"source_param": "", "callee": callee, "shape_ok": False, "diagnostic": name + " helper is not present"}
+    if len(fn["params"]) != 1:
+        return {"source_param": "", "callee": callee, "shape_ok": False, "diagnostic": name + " requires one source param"}
+    source_param = param_name(fn["params"][0])
+    expr = single_return_expr_or_unsupported(fn)
+    if expr["kind"] == "call" and expr_call_name(expr) == callee and len(expr["args"]) == 1 and expr_var_name(expr["args"][0]) == source_param:
+        return {"source_param": source_param, "callee": callee, "shape_ok": True, "diagnostic": ""}
+    return {"source_param": source_param, "callee": callee, "shape_ok": False, "diagnostic": name + " expected: return " + callee + "(source)"}
+
+def collect_build_native_plan(program):
+    fn = program_find_function(program, "build_native")
+    if len(fn["params"]) < 2:
+        return unsupported_build_native_plan(program, "build_native native lowering requires input_path and output_path params", "", "")
+    input_param = param_name(fn["params"][0])
+    output_param = param_name(fn["params"][1])
+    body_source = function_body_source_simple(fn)
+    return build_native_plan_record(program, input_param, output_param, body_source, True, "")
+
+def collect_parse_program_items_plan(program):
+    fn = program_find_function_or_none(program, "parse_program_items")
+    if fn == none:
+        return {"body_label": "L_parse_program_items_body_src", "body_source": "", "param_labels": [lowered_function_label("L_fn_param_parse_program_items_", "0")], "has_return": True}
+    return {"body_label": "L_parse_program_items_body_src", "body_source": function_body_source_simple(fn), "param_labels": lowered_source_function_param_labels(fn), "has_return": source_function_has_value_return(fn)}
+
+def collect_lowered_source_body_plan(program, name, body_label):
+    fn = program_find_function_or_none(program, name)
+    if fn == none:
+        return {"body_label": body_label, "body_source": "", "param_labels": [], "has_return": True}
+    return {"body_label": body_label, "body_source": function_body_source_simple(fn), "param_labels": lowered_source_function_param_labels(fn), "has_return": source_function_has_value_return(fn)}
+
+def lowered_function_label(prefix, name):
+    return prefix + name
+
+def lowered_function_char_equals_code(name):
+    if name == "char_is_tab":
+        return 9
+    if name == "char_is_newline":
+        return 10
+    if name == "char_is_hash":
+        return 35
+    if name == "char_is_underscore":
+        return 95
+    if name == "char_is_dot":
+        return 46
+    if name == "char_is_double_quote":
+        return 34
+    if name == "char_is_single_quote":
+        return 39
+    if name == "char_is_backslash":
+        return 92
+    return -1
+
+def lowered_function_char_class_kind(name):
+    if name == "is_digit":
+        return 1
+    if name == "is_lower":
+        return 2
+    if name == "is_upper":
+        return 3
+    if name == "is_space":
+        return 4
+    if name == "is_alpha":
+        return 5
+    if name == "is_ident_start":
+        return 6
+    if name == "is_ident_continue":
+        return 7
+    return -1
+
+def lowered_function_has_fixed_plan(name):
+    if primitive_schema_lowered_fixed(name):
+        return True
+    if name == "lowered_function_label":
+        return True
+    if name == "asm_addr" or name == "asm_darwin_addr":
+        return True
+    if name == "asm_cstr":
+        return True
+    if name == "asm_escape_string":
+        return True
+    if name == "lowered_function_inventory_param":
+        return True
+    if name == "lowered_function_inventory_has_name":
+        return True
+    if name == "lowered_function_inventory_rows":
+        return True
+    if name == "split_inventory_text":
+        return True
+    if name == "lowered_function_inventory_field":
+        return True
+    if name == "lowered_function_inventory_row":
+        return True
+    if name == "lowered_function_inventory_cell":
+        return True
+    if name == "decimal_text":
+        return True
+    if name == "method_append":
+        return True
+    if name == "usage" or name == "version":
+        return True
+    if lowered_function_char_equals_code(name) >= 0:
+        return True
+    if lowered_function_char_class_kind(name) >= 0:
+        return True
+    if name == "contains_text":
+        return True
+    if name == "numeric_text" or name == "is_compare_token":
+        return True
+    if name == "fail":
+        return True
+    if name == "keyword_kind" or name == "simple_token_kind" or name == "two_char_token_kind":
+        return True
+    if name == "token" or name == "token_field_at" or name == "token_kind_at" or name == "token_text_at" or name == "token_value_at" or name == "token_kind_next" or name == "token_text_next":
+        return True
+    if name == "parser_skip_newlines" or name == "parser_expect" or name == "pratt_infix_binding_power":
+        return True
+    if name == "parse_expression" or name == "parse_program":
+        return True
+    if name == "parse_program_items":
+        return True
+    if name == "lex" or name == "parse_statement" or name == "parse_pratt_expr":
+        return True
+    if name == "build_native":
+        return True
+    if name == "collect_cli_spec":
+        return True
+    if name == "compiler_program_function_print_text":
+        return True
+    if name == "emit_compiler_cli_asm_into":
+        return True
+    if name == "render_compiler_cli_artifact":
+        return True
+    if name == "program_find_function" or name == "program_find_function_or_none":
+        return True
+    if name == "len":
+        return True
+    if name == "write_text_file" or name == "read_text_file":
+        return True
+    if name == "run_tool":
+        return True
+    if name == "build_runtime_native_program_if_needed":
+        return True
+    if name == "read_file" or name == "make_asm_path":
+        return True
+    if name == "host_target":
+        return True
+    if name == "collect_runtime_file_read_plan":
+        return True
+    if name == "link_asm":
+        return True
+    return False
+
+def lowered_function_is_native_side_effect_primitive(name):
+    # Historical name: this predicate protects every compiler-owned native
+    # boundary from helper-source embedding, including pure queries such as
+    # len/asm_writer_bytes. Purity remains a separate schema field.
+    if primitive_schema_lowered_fixed(name):
+        return True
+    if name == "read_text_file":
+        return True
+    if name == "write_text_file":
+        return True
+    if name == "run_tool":
+        return True
+    if name == "link_asm":
+        return True
+    if name == "host_target":
+        return True
+    return False
+
+def lowered_function_is_whole_program_primitive(name):
+    return False
+
+def lowered_function_dispatch_arg_count(dispatch_name):
+    primitive_arg_count = primitive_schema_dispatch_arg_count(dispatch_name)
+    if primitive_arg_count:
+        return primitive_arg_count
+    return lowered_function_dispatch_arg_count_legacy(dispatch_name)
+
+def lowered_function_dispatch_arg_count_legacy(name):
+    if name == "lowered_function_label":
+        return 3
+    if name == "method_append":
+        return 3
+    if name == "usage" or name == "version":
+        return 0
+    if lowered_function_char_equals_code(name) >= 0:
+        return 2
+    if lowered_function_char_class_kind(name) >= 0:
+        return 2
+    if name == "contains_text":
+        return 3
+    if name == "numeric_text" or name == "is_compare_token":
+        return 2
+    if name == "fail":
+        return 1
+    if name == "asm_line" or name == "asm_label" or name == "asm_dir" or name == "asm_raw" or name == "asm_section":
+        return 3
+    if name == "asm_addr":
+        return 5
+    if name == "asm_darwin_addr":
+        return 4
+    if name == "lowered_function_inventory_param":
+        return 4
+    if name == "lowered_function_inventory_has_name":
+        return 3
+    if name == "lowered_function_inventory_rows":
+        return 2
+    if name == "split_inventory_text":
+        return 3
+    if name == "lowered_function_inventory_field":
+        return 3
+    if name == "lowered_function_inventory_row":
+        return 3
+    if name == "lowered_function_inventory_cell":
+        return 4
+    if name == "decimal_text":
+        return 2
+    if name == "asm_escape_string":
+        return 2
+    if name == "asm_cstr":
+        return 4
+    if name == "build_runtime_native_program_if_needed":
+        return 4
+    if name == "runtime_native_linux_aarch64_asm_text":
+        return 2
+    if name == "token":
+        return 5
+    if name == "keyword_kind" or name == "simple_token_kind":
+        return 2
+    if name == "two_char_token_kind":
+        return 3
+    if name == "token_field_at":
+        return 4
+    if name == "token_kind_at" or name == "token_text_at" or name == "token_value_at":
+        return 3
+    if name == "token_kind_next" or name == "token_text_next":
+        return 3
+    if name == "parser_expect":
+        return 4
+    if name == "parser_skip_newlines":
+        return 3
+    if name == "pratt_infix_binding_power":
+        return 2
+    if name == "parse_expression":
+        return 3
+    if name == "parse_program":
+        return 2
+    if name == "parse_program_items":
+        return 2
+    if name == "lex":
+        return 2
+    if name == "parse_statement":
+        return 2
+    if name == "parse_pratt_expr":
+        return 3
+    if name == "host_target":
+        return 1
+    if name == "__tyrion_native_tcp_connect" or name == "std_io_tcp_connect":
+        return 4
+    if name == "__tyrion_native_tcp_write" or name == "std_io_tcp_write":
+        return 4
+    if name == "__tyrion_native_tcp_read" or name == "std_io_tcp_read":
+        return 4
+    if name == "__tyrion_native_tcp_close" or name == "std_io_tcp_close":
+        return 2
+    if name == "read_text_file" or name == "read_module_graph":
+        return 2
+    if name == "write_text_file":
+        return 3
+    if name == "run_tool":
+        return 5
+    if name == "asm_writer_open":
+        return 2
+    if name == "asm_writer_append":
+        return 3
+    if name == "asm_writer_close" or name == "asm_writer_bytes" or name == "asm_writer_is_x86":
+        return 2
+    if name == "asm_writer_set_backend":
+        return 3
+    if name == "program_has_function":
+        return 3
+    if name == "program_find_function" or name == "program_find_function_or_none":
+        return 3
+    if name == "collect_runtime_file_read_plan":
+        return 2
+    if name == "build_native":
+        return 2
+    if name == "build_compiler_cli_native":
+        return 4
+    if name == "collect_cli_spec":
+        return 2
+    if name == "compiler_program_function_print_text":
+        return 3
+    if name == "emit_compiler_cli_asm":
+        return 5
+    if name == "emit_compiler_cli_asm_into":
+        return 6
+    if name == "render_compiler_cli_artifact":
+        return 4
+    if name == "link_asm":
+        return 3
+    if name == "make_asm_path":
+        return 2
+    if name == "read_file":
+        return 2
+    fail("unsupported lowered function dispatcher ABI: " + name)
+
+def lowered_source_function_arg_count(fn):
+    count = len(fn["params"])
+    if source_function_has_value_return(fn):
+        count = count + 1
+    if count > 6:
+        fail("source function dispatcher entry exceeded checked six-argument limit: " + fn["name"])
+    return count
+
+def lowered_function_force_success(name):
+    return False
+
+def lowered_function_plan_kind(name):
+    primitive_plan_kind = primitive_schema_lowered_plan_kind(name)
+    if primitive_plan_kind != "":
+        return primitive_plan_kind
+    if name == "lowered_function_label":
+        return "native_string_concat_body"
+    if name == "runtime_native_linux_aarch64_asm_text":
+        return "native_runtime_linux_aarch64_asm_text_body"
+    if name == "method_append":
+        return "method_append_body"
+    if name == "usage":
+        return "usage_body"
+    if name == "version":
+        return "version_body"
+    if lowered_function_char_equals_code(name) >= 0:
+        return "char_equals_body"
+    if lowered_function_char_class_kind(name) >= 0:
+        return "char_class_body"
+    if name == "contains_text":
+        return "contains_text_body"
+    if name == "numeric_text":
+        return "numeric_text_body"
+    if name == "is_compare_token":
+        return "is_compare_token_body"
+    if name == "fail":
+        return "fail_body"
+    if name == "asm_line" or name == "asm_label" or name == "asm_dir" or name == "asm_raw" or name == "asm_section":
+        return "asm_writer_format_body"
+    if name == "asm_addr" or name == "asm_darwin_addr":
+        return "asm_addr_body"
+    if name == "lowered_function_inventory_param":
+        return "native_inventory_param_body"
+    if name == "lowered_function_inventory_has_name":
+        return "native_inventory_has_name_body"
+    if name == "lowered_function_inventory_rows":
+        return "native_inventory_rows_body"
+    if name == "split_inventory_text":
+        return "native_split_text_body"
+    if name == "lowered_function_inventory_field":
+        return "native_inventory_field_body"
+    if name == "lowered_function_inventory_row":
+        return "native_inventory_row_body"
+    if name == "lowered_function_inventory_cell":
+        return "native_inventory_cell_body"
+    if name == "decimal_text":
+        return "native_decimal_text_body"
+    if name == "asm_escape_string":
+        return "asm_escape_string_body"
+    if name == "asm_cstr":
+        return "asm_cstr_writer_body"
+    if name == "keyword_kind":
+        return "string_map_body"
+    if name == "simple_token_kind":
+        return "string_map_body"
+    if name == "two_char_token_kind":
+        return "two_char_token_kind_body"
+    if name == "token":
+        return "token_body"
+    if name == "token_field_at":
+        return "token_field_at_body"
+    if name == "token_kind_at":
+        return "token_accessor_body"
+    if name == "token_text_at":
+        return "token_accessor_body"
+    if name == "token_value_at":
+        return "token_accessor_body"
+    if name == "token_kind_next":
+        return "token_next_accessor_body"
+    if name == "token_text_next":
+        return "token_next_accessor_body"
+    if name == "parser_expect":
+        return "parser_expect_body"
+    if name == "parser_skip_newlines":
+        return "parser_skip_newlines_body"
+    if name == "pratt_infix_binding_power":
+        return "pratt_infix_binding_power_body"
+    if name == "parse_expression":
+        return "parse_expression_body"
+    if name == "parse_program":
+        return "parse_program_body"
+    if name == "parse_program_items":
+        return "generic_source_body"
+    if name == "lex":
+        return "native_lex_body"
+    if name == "parse_statement" or name == "parse_pratt_expr":
+        return "generic_source_body"
+    if name == "build_native":
+        return "build_native_body"
+    if name == "build_compiler_cli_native":
+        return "compiler_cli_native_body"
+    if name == "collect_cli_spec":
+        return "native_collect_cli_spec_body"
+    if name == "compiler_program_function_print_text":
+        return "native_program_function_print_text_body"
+    if name == "emit_compiler_cli_asm_into":
+        return "native_compiler_cli_asm_into_body"
+    if name == "render_compiler_cli_artifact":
+        return "render_compiler_cli_artifact_body"
+    if name == "program_find_function" or name == "program_find_function_or_none":
+        return "generic_source_body"
+    if name == "len":
+        return "native_len_body"
+    if name == "write_text_file":
+        return "native_write_text_file_body"
+    if name == "read_text_file":
+        return "native_read_text_file_body"
+    if name == "run_tool":
+        return "native_run_tool_body"
+    if name == "build_runtime_native_program_if_needed":
+        return "native_runtime_program_build_body"
+    if name == "read_file":
+        return "read_file_body"
+    if name == "make_asm_path":
+        return "make_asm_path_body"
+    if name == "host_target":
+        return "host_target_body"
+    if name == "collect_runtime_file_read_plan":
+        return "collect_runtime_file_read_plan_body"
+    if name == "link_asm":
+        return "link_asm_body"
+    fail("unsupported lowered function plan kind: " + name)
+
+def lowered_source_function_param_labels(fn):
+    labels = []
+    idx = 0
+    while idx < len(fn["params"]):
+        labels = method_append(labels, lowered_function_label("L_fn_param_" + fn["name"] + "_", str(idx)))
+        idx = idx + 1
+    return labels
+
+def lowered_function_body_plan(build_plan, name):
+    primitive_plan_kind = primitive_schema_lowered_plan_kind(name)
+    if primitive_plan_kind != "":
+        return {"native": primitive_schema_impl_key(name)}
+    if name == "read_module_graph":
+        return {"native": "read_module_graph"}
+    if name == "__tyrion_native_tcp_connect" or name == "std_io_tcp_connect":
+        return {"native": "tcp_connect"}
+    if name == "__tyrion_native_tcp_write" or name == "std_io_tcp_write":
+        return {"native": "tcp_write"}
+    if name == "__tyrion_native_tcp_read" or name == "std_io_tcp_read":
+        return {"native": "tcp_read"}
+    if name == "__tyrion_native_tcp_close" or name == "std_io_tcp_close":
+        return {"native": "tcp_close"}
+    if name == "lowered_function_label":
+        return {"native": name}
+    if name == "asm_writer_open" or name == "asm_writer_append" or name == "asm_writer_close" or name == "asm_writer_bytes" or name == "asm_writer_set_backend" or name == "asm_writer_is_x86":
+        return {"native": name}
+    if name == "method_append":
+        return {"native": name}
+    if name == "usage":
+        return {"native": name}
+    if name == "version":
+        return {"native": name}
+    if lowered_function_char_equals_code(name) >= 0:
+        return {"char_code": lowered_function_char_equals_code(name)}
+    if lowered_function_char_class_kind(name) >= 0:
+        return {"class_kind": lowered_function_char_class_kind(name)}
+    if name == "contains_text":
+        return {"native": name}
+    if name == "numeric_text":
+        return {"native": name}
+    if name == "is_compare_token":
+        return {"native": name}
+    if name == "fail":
+        return {"native": name}
+    if name == "asm_line":
+        return {"prefix": "    ", "suffix": "\n"}
+    if name == "asm_label":
+        return {"prefix": "", "suffix": ":\n"}
+    if name == "asm_dir":
+        return {"prefix": "", "suffix": "\n"}
+    if name == "asm_raw":
+        return {"prefix": "", "suffix": ""}
+    if name == "asm_section":
+        return {"prefix": "", "suffix": "\n"}
+    if name == "asm_addr" or name == "asm_darwin_addr":
+        return {"native": "darwin_aarch64"}
+    if name == "lowered_function_inventory_param":
+        return {"native": name}
+    if name == "lowered_function_inventory_has_name":
+        return {"native": name}
+    if name == "lowered_function_inventory_rows":
+        return {"native": name}
+    if name == "split_inventory_text":
+        return {"native": name}
+    if name == "lowered_function_inventory_field":
+        return {"native": name}
+    if name == "lowered_function_inventory_row":
+        return {"native": name}
+    if name == "lowered_function_inventory_cell":
+        return {"native": name}
+    if name == "decimal_text":
+        return {"native": name}
+    if name == "asm_escape_string":
+        return {"native": name}
+    if name == "asm_cstr":
+        return {"native": name}
+    if name == "keyword_kind":
+        return {"default": "IDENTIFIER", "entries": [["def", "KW_DEF"], ["class", "KW_CLASS"], ["if", "KW_IF"], ["elif", "KW_ELIF"], ["else", "KW_ELSE"], ["while", "KW_WHILE"], ["for", "KW_FOR"], ["in", "KW_IN"], ["return", "KW_RETURN"], ["raise", "KW_RAISE"], ["try", "KW_TRY"], ["except", "KW_EXCEPT"], ["finally", "KW_FINALLY"], ["with", "KW_WITH"], ["as", "KW_AS"], ["and", "KW_AND"], ["or", "KW_OR"], ["not", "KW_NOT"], ["True", "KW_TRUE"], ["true", "KW_TRUE"], ["False", "KW_FALSE"], ["false", "KW_FALSE"], ["None", "KW_NONE"], ["none", "KW_NONE"], ["break", "KW_BREAK"], ["continue", "KW_CONTINUE"], ["next", "KW_CONTINUE"], ["unless", "KW_UNLESS"], ["lambda", "KW_LAMBDA"], ["yield", "KW_YIELD"]]}
+    if name == "simple_token_kind":
+        return {"default": "", "entries": [["(", "LPAREN"], [")", "RPAREN"], ["{", "LBRACE"], ["}", "RBRACE"], ["[", "LBRACKET"], ["]", "RBRACKET"], [",", "COMMA"], [":", "COLON"], [".", "DOT"], ["-", "MINUS"], ["*", "STAR"], ["/", "SLASH"], ["%", "PERCENT"], ["+", "PLUS"], ["=", "EQ"], ["!", "UNKNOWN"], ["<", "LT"], [">", "GT"]]}
+    if name == "two_char_token_kind":
+        return {"default": "", "entries": [[43, 61, "PLUSEQ"], [61, 61, "EQEQ"], [33, 61, "NE"], [60, 61, "LE"], [62, 61, "GE"], [45, 62, "ARROW"]]}
+    if name == "token":
+        return {"native": name}
+    if name == "token_field_at":
+        return {"field": ""}
+    if name == "token_kind_at":
+        return {"field": "kind"}
+    if name == "token_text_at":
+        return {"field": "text"}
+    if name == "token_value_at":
+        return {"field": "value", "fallback": "text"}
+    if name == "token_kind_next":
+        return {"field": "kind", "next": True}
+    if name == "token_text_next":
+        return {"field": "text", "next": True}
+    if name == "parser_expect":
+        return {"native": name}
+    if name == "parser_skip_newlines":
+        return {"native": name}
+    if name == "pratt_infix_binding_power":
+        return {"native": name}
+    if name == "parse_expression":
+        return {"native": name}
+    if name == "parse_program":
+        return {"native": name}
+    if name == "parse_program_items":
+        return build_plan["parse_program_items_plan"]
+    if name == "lex":
+        return build_plan["lex_plan"]
+    if name == "parse_statement":
+        return build_plan["parse_statement_plan"]
+    if name == "parse_pratt_expr":
+        return build_plan["parse_pratt_expr_plan"]
+    if name == "build_native":
+        return build_plan
+    if name == "build_compiler_cli_native":
+        return {"native": "compiler_cli_native", "enabled": compiler_cli_minimal_helpers_available(build_plan["program"])}
+    if name == "collect_cli_spec":
+        return {"diagnostic": "collect_cli_spec generated lowering is not implemented yet"}
+    if name == "compiler_program_function_print_text":
+        return {"native": name}
+    if name == "emit_compiler_cli_asm_into":
+        return {"native": name}
+    if name == "render_compiler_cli_artifact":
+        return {"chunks": minimal_compiler_cli_artifact_chunks()}
+    if name == "program_find_function":
+        return build_plan["program_find_function_plan"]
+    if name == "program_find_function_or_none":
+        return build_plan["program_find_function_or_none_plan"]
+    if name == "len":
+        return {"native": name}
+    if name == "host_target":
+        return {"native": name}
+    if name == "collect_runtime_file_read_plan":
+        return {"native": name}
+    if name == "write_text_file":
+        return {"native": "write_text_file"}
+    if name == "read_text_file":
+        return {"native": "read_text_file"}
+    if name == "run_tool":
+        return {"native": "run_tool"}
+    if name == "build_runtime_native_program_if_needed":
+        return {"native": "runtime_native_program_build"}
+    if name == "read_file":
+        return build_plan["read_plan"]
+    if name == "make_asm_path":
+        return build_plan["make_asm_path_plan"]
+    if name == "link_asm":
+        return build_plan["link_plan"]
+    fail("missing lowered function body plan: " + name)
+
+def lowered_function_entry(program, build_plan, name):
+    if name == "read_text_file" or name == "write_text_file":
+        return {"name": name, "name_label": lowered_function_label("L_fn_", name), "handler_label": lowered_function_label("L_clcf_", name), "exec_label": lowered_function_label("L_exec_fn_", name), "dispatch_arg_count": lowered_function_dispatch_arg_count(name), "force_success": lowered_function_force_success(name), "plan_kind": lowered_function_plan_kind(name), "body_plan": lowered_function_body_plan(build_plan, name), "signature_params": [], "source_params": [], "source_body": []}
+    fn = program_find_function_or_none(program, name)
+    if fn == none:
+        return {"name": name, "name_label": lowered_function_label("L_fn_", name), "handler_label": lowered_function_label("L_clcf_", name), "exec_label": lowered_function_label("L_exec_fn_", name), "dispatch_arg_count": lowered_function_dispatch_arg_count(name), "force_success": lowered_function_force_success(name), "plan_kind": lowered_function_plan_kind(name), "body_plan": lowered_function_body_plan(build_plan, name), "signature_params": [], "source_params": [], "source_body": []}
+    if not lowered_function_has_fixed_plan(fn["name"]):
+        return {"name": fn["name"], "name_label": lowered_function_label("L_fn_", fn["name"]), "handler_label": lowered_function_label("L_clcf_", fn["name"]), "exec_label": lowered_function_label("L_exec_fn_", fn["name"]), "dispatch_arg_count": lowered_source_function_arg_count(fn), "force_success": False, "plan_kind": "generic_source_body", "body_plan": {"source_lookup": True, "param_labels": lowered_source_function_param_labels(fn), "has_return": source_function_has_value_return(fn)}, "signature_params": fn["params"], "source_params": fn["params"], "source_body": fn["body"]}
+    if lowered_function_plan_kind(fn["name"]) == "generic_source_body":
+        body_plan = {"source_lookup": True, "param_labels": lowered_source_function_param_labels(fn), "has_return": source_function_has_value_return(fn)}
+        dispatch_arg_count = lowered_source_function_arg_count(fn)
+        return {"name": fn["name"], "name_label": lowered_function_label("L_fn_", fn["name"]), "handler_label": lowered_function_label("L_clcf_", fn["name"]), "exec_label": lowered_function_label("L_exec_fn_", fn["name"]), "dispatch_arg_count": dispatch_arg_count, "force_success": lowered_function_force_success(fn["name"]), "plan_kind": lowered_function_plan_kind(fn["name"]), "body_plan": body_plan, "signature_params": fn["params"], "source_params": fn["params"], "source_body": fn["body"]}
+    # Fixed implementations publish their canonical signature independently
+    # from source-body execution metadata.
+    return {"name": fn["name"], "name_label": lowered_function_label("L_fn_", fn["name"]), "handler_label": lowered_function_label("L_clcf_", fn["name"]), "exec_label": lowered_function_label("L_exec_fn_", fn["name"]), "dispatch_arg_count": lowered_function_dispatch_arg_count(fn["name"]), "force_success": lowered_function_force_success(fn["name"]), "plan_kind": lowered_function_plan_kind(fn["name"]), "body_plan": lowered_function_body_plan(build_plan, fn["name"]), "signature_params": fn["params"], "source_params": [], "source_body": []}
+
+def lowered_function_append_name(names, name):
+    if not list_contains_string(names, name):
+        names = method_append(names, name)
+    return names
+
+def lowered_functions_has_name(functions, name):
+    idx = 0
+    while idx < len(functions):
+        if functions[idx]["name"] == name:
+            return True
+        idx = idx + 1
+    return False
+
+def lowered_function_inventory_rows(inventory):
+    if inventory == "":
+        return []
+    return split_inventory_text(inventory, ";")
+
+def lowered_function_inventory_fields(row):
+    fields = split_inventory_text(row, ":")
+    if len(fields) != 3:
+        fail("invalid lowered function inventory row: " + row)
+    return fields
+
+def lowered_function_inventory_field(row, index):
+    fields = lowered_function_inventory_fields(row)
+    if index < 0 or index >= len(fields):
+        fail("lowered function inventory field index out of range")
+    return fields[index]
+
+def lowered_function_inventory_row(inventory, index):
+    rows = lowered_function_inventory_rows(inventory)
+    if index < 0 or index >= len(rows):
+        fail("lowered function inventory row index out of range")
+    return rows[index]
+
+def lowered_function_inventory_cell(inventory, row_index, field_index):
+    numeric_row_index = int(row_index)
+    numeric_field_index = int(field_index)
+    row = lowered_function_inventory_row(inventory, numeric_row_index)
+    return lowered_function_inventory_field(row, numeric_field_index)
+
+def lowered_function_inventory_has_name(inventory, name):
+    haystack = ";" + inventory + ";"
+    needle = ";" + name + ":"
+    return contains_text(haystack, needle)
+
+def lowered_function_inventory_param(inventory, name, index):
+    rows = lowered_function_inventory_rows(inventory)
+    idx = 0
+    while idx < len(rows):
+        fields = lowered_function_inventory_fields(rows[idx])
+        if fields[0] == name:
+            params = lowered_function_inventory_params(fields)
+            if index < 0 or index >= len(params):
+                fail("lowered function inventory parameter index out of range: " + name)
+            return params[index]
+        idx = idx + 1
+    fail("lowered function inventory missing parameter function: " + name)
+
+def compiler_spec_has_lowered_function(spec, name):
+    return lowered_function_inventory_has_name(spec["lowered_function_inventory"], name)
+
+def lowered_function_inventory_params(fields):
+    reverse_params = []
+    if fields[2] != "":
+        reverse_params = split_inventory_text(fields[2], ",")
+    params = []
+    idx = len(reverse_params)
+    while idx > 0:
+        idx = idx - 1
+        params = method_append(params, reverse_params[idx])
+    return params
+
+def lowered_function_inventory_native_plan_kind(plan_lookup_name):
+    primitive_plan_kind = primitive_schema_lowered_plan_kind(plan_lookup_name)
+    if primitive_plan_kind != "":
+        return primitive_plan_kind
+    return lowered_function_inventory_native_plan_kind_legacy(plan_lookup_name)
+
+def lowered_function_inventory_native_plan_kind_legacy(name):
+    if name == "read_module_graph":
+        return "native_read_module_graph_body"
+    if name == "__tyrion_native_tcp_connect" or name == "std_io_tcp_connect":
+        return "native_tcp_connect_body"
+    if name == "__tyrion_native_tcp_write" or name == "std_io_tcp_write":
+        return "native_tcp_write_body"
+    if name == "__tyrion_native_tcp_read" or name == "std_io_tcp_read":
+        return "native_tcp_read_body"
+    if name == "__tyrion_native_tcp_close" or name == "std_io_tcp_close":
+        return "native_tcp_close_body"
+    if name == "contains_text":
+        return "contains_text_body"
+    if name == "make_asm_path":
+        return "make_asm_path_body"
+    if name == "lowered_function_label":
+        return "native_string_concat_body"
+    if name == "runtime_native_linux_aarch64_asm_text":
+        return "native_runtime_linux_aarch64_asm_text_body"
+    if name == "usage":
+        return "usage_body"
+    if name == "version":
+        return "version_body"
+    if name == "asm_writer_open":
+        return "native_asm_writer_open_body"
+    if name == "asm_writer_append":
+        return "native_asm_writer_append_body"
+    if name == "asm_writer_close":
+        return "native_asm_writer_close_body"
+    if name == "asm_writer_bytes":
+        return "native_asm_writer_bytes_body"
+    if name == "asm_writer_set_backend":
+        return "native_asm_writer_set_backend_body"
+    if name == "asm_writer_is_x86":
+        return "native_asm_writer_is_x86_body"
+    if name == "asm_addr" or name == "asm_darwin_addr":
+        return "asm_addr_body"
+    if name == "lowered_function_inventory_param":
+        return "native_inventory_param_body"
+    if name == "lowered_function_inventory_has_name":
+        return "native_inventory_has_name_body"
+    if name == "lowered_function_inventory_rows":
+        return "native_inventory_rows_body"
+    if name == "split_inventory_text":
+        return "native_split_text_body"
+    if name == "lowered_function_inventory_field":
+        return "native_inventory_field_body"
+    if name == "lowered_function_inventory_row":
+        return "native_inventory_row_body"
+    if name == "lowered_function_inventory_cell":
+        return "native_inventory_cell_body"
+    if name == "decimal_text":
+        return "native_decimal_text_body"
+    if name == "asm_escape_string":
+        return "asm_escape_string_body"
+    if name == "asm_cstr":
+        return "asm_cstr_writer_body"
+    if name == "asm_line" or name == "asm_label" or name == "asm_dir" or name == "asm_raw" or name == "asm_section":
+        return "asm_writer_format_body"
+    if name == "method_append":
+        return "method_append_body"
+    if name == "lex":
+        return "native_lex_body"
+    if name == "parse_program":
+        return "parse_program_body"
+    if name == "collect_cli_spec":
+        return "native_collect_cli_spec_body"
+    if name == "compiler_program_function_print_text":
+        return "native_program_function_print_text_body"
+    if name == "emit_compiler_cli_asm_into":
+        return "native_compiler_cli_asm_into_body"
+    if name == "host_target":
+        return "host_target_body"
+    if name == "build_runtime_native_program_if_needed":
+        return "native_runtime_program_build_body"
+    if name == "link_asm":
+        return "link_asm_body"
+    if name == "build_native":
+        return "build_native_body"
+    return "generic_source_body"
+
+def lowered_function_inventory_entry(fields):
+    name = fields[0]
+    params = lowered_function_inventory_params(fields)
+    plan_kind = lowered_function_inventory_native_plan_kind(name)
+    dispatch_arg_count = fields[1] + 1
+    if plan_kind != "generic_source_body":
+        dispatch_arg_count = lowered_function_dispatch_arg_count(name)
+    # Scalar descendant emission derives parameter labels directly from the
+    # inventory row. Retaining a nested label list here only reconstructs dead
+    # legacy descriptor state and exceeds generated aggregate arenas.
+    body_plan = {"source_lookup": True, "has_return": True}
+    if plan_kind == "asm_writer_format_body":
+        body_plan = lowered_function_body_plan({}, name)
+    if plan_kind == "link_asm_body":
+        body_plan = {"shape_ok": True}
+    if plan_kind == "build_native_body":
+        # Descendant fixed emitters dispatch build_native from scalar inventory
+        # metadata. Do not reconstruct the legacy nested call-plan dictionary.
+        body_plan = {"shape_ok": True}
+    name_label = lowered_function_label("L_fn_", name)
+    handler_label = lowered_function_label("L_clcf_", name)
+    exec_label = lowered_function_label("L_exec_fn_", name)
+    execution_params = []
+    if plan_kind == "generic_source_body":
+        execution_params = params
+    return {"name": name, "name_label": name_label, "handler_label": handler_label, "exec_label": exec_label, "dispatch_arg_count": dispatch_arg_count, "force_success": False, "plan_kind": plan_kind, "body_plan": body_plan, "signature_params": params, "source_params": execution_params, "source_body": []}
+
+def lowered_function_inventory_entry_from_row(row):
+    name = lowered_function_inventory_field(row, 0)
+    arity_text = lowered_function_inventory_field(row, 1)
+    reverse_param_text = lowered_function_inventory_field(row, 2)
+    reverse_params = []
+    if reverse_param_text != "":
+        reverse_params = split_inventory_text(reverse_param_text, ",")
+    plan_kind = lowered_function_inventory_native_plan_kind(name)
+    source_arity = int(arity_text)
+    if source_arity < 0:
+        fail("invalid lowered function inventory arity: " + arity_text)
+    params = reverse_params
+    dispatch_arg_count = source_arity + 1
+    if plan_kind != "generic_source_body":
+        dispatch_arg_count = lowered_function_dispatch_arg_count(name)
+    body_plan = {"source_lookup": True, "has_return": True}
+    if plan_kind == "asm_writer_format_body":
+        body_plan = lowered_function_body_plan({}, name)
+    if plan_kind == "link_asm_body":
+        body_plan = {"shape_ok": True}
+    if plan_kind == "build_native_body":
+        body_plan = {"shape_ok": True}
+    name_label = lowered_function_label("L_fn_", name)
+    handler_label = lowered_function_label("L_clcf_", name)
+    exec_label = lowered_function_label("L_exec_fn_", name)
+    execution_params = []
+    if plan_kind == "generic_source_body":
+        execution_params = params
+    return {"name": name, "name_label": name_label, "handler_label": handler_label, "exec_label": exec_label, "dispatch_arg_count": dispatch_arg_count, "force_success": False, "plan_kind": plan_kind, "body_plan": body_plan, "signature_params": params, "source_params": execution_params, "source_body": []}
+
+def lowered_functions_from_inventory(inventory):
+    rows = lowered_function_inventory_rows(inventory)
+    functions = []
+    idx = 0
+    while idx < len(rows):
+        functions = method_append(functions, lowered_function_inventory_entry(lowered_function_inventory_fields(rows[idx])))
+        idx = idx + 1
+    return functions
+
+def lowered_function_returns_value(fn):
+    if fn["plan_kind"] == "generic_source_body" and fn["body_plan"]["has_return"]:
+        return True
+    name = fn["name"]
+    if name == "__tyrion_native_tcp_connect" or name == "std_io_tcp_connect" or name == "__tyrion_native_tcp_write" or name == "std_io_tcp_write" or name == "__tyrion_native_tcp_read" or name == "std_io_tcp_read" or name == "__tyrion_native_tcp_close" or name == "std_io_tcp_close":
+        return True
+    if name == "lex" or name == "parse_expression" or name == "parse_program" or name == "link_asm":
+        return True
+    if name == "contains_text" or name == "numeric_text" or name == "is_compare_token":
+        return True
+    if name == "asm_line" or name == "asm_label" or name == "asm_dir" or name == "asm_raw" or name == "asm_section":
+        return True
+    if name == "asm_escape_string" or name == "asm_cstr" or name == "asm_addr" or name == "asm_darwin_addr":
+        return True
+    if name == "runtime_native_linux_aarch64_asm_text" or name == "lowered_function_label" or name == "lowered_function_inventory_param" or name == "lowered_function_inventory_has_name" or name == "lowered_function_inventory_rows" or name == "split_inventory_text" or name == "lowered_function_inventory_field" or name == "lowered_function_inventory_row" or name == "lowered_function_inventory_cell" or name == "decimal_text":
+        return True
+    if name == "asm_writer_open" or name == "asm_writer_append" or name == "asm_writer_close" or name == "asm_writer_bytes" or name == "asm_writer_set_backend" or name == "asm_writer_is_x86":
+        return True
+    return name == "emit_compiler_cli_asm_into"
+
+def lowered_function_uses_slot_args(fn):
+    if fn["plan_kind"] == "generic_source_body" or fn["plan_kind"] == "asm_writer_format_body":
+        return True
+    name = fn["name"]
+    if name == "__tyrion_native_tcp_connect" or name == "std_io_tcp_connect" or name == "__tyrion_native_tcp_write" or name == "std_io_tcp_write" or name == "__tyrion_native_tcp_read" or name == "std_io_tcp_read" or name == "__tyrion_native_tcp_close" or name == "std_io_tcp_close":
+        return True
+    if name == "lex" or name == "parse_expression" or name == "parse_program":
+        return True
+    if name == "asm_writer_open" or name == "asm_writer_append" or name == "asm_writer_close" or name == "asm_writer_bytes" or name == "asm_writer_set_backend" or name == "asm_writer_is_x86":
+        return True
+    return name == "runtime_native_linux_aarch64_asm_text" or name == "asm_addr" or name == "asm_darwin_addr" or name == "lowered_function_label" or name == "lowered_function_inventory_param" or name == "lowered_function_inventory_has_name" or name == "lowered_function_inventory_rows" or name == "split_inventory_text" or name == "lowered_function_inventory_field" or name == "lowered_function_inventory_row" or name == "lowered_function_inventory_cell" or name == "decimal_text" or name == "emit_compiler_cli_asm_into"
+
+def lowered_function_uses_fixed_slot_args(fn):
+    if fn["plan_kind"] == "generic_source_body":
+        return False
+    return lowered_function_uses_slot_args(fn)
+
+def lowered_function_returns_typed_value(fn):
+    if lowered_function_uses_slot_args(fn) or lowered_function_returns_value(fn):
+        return True
+    name = fn["name"]
+    if name == "token" or name == "keyword_kind" or name == "simple_token_kind" or name == "two_char_token_kind":
+        return True
+    if name == "parser_expect" or name == "parser_skip_newlines":
+        return True
+    return name == "token_kind_at" or name == "token_text_at" or name == "token_value_at"
+
+
+# Descendant runtime emission consumes scalar inventory rows. These predicates
+# mirror the legacy descriptor predicates without rebuilding hundreds of
+# nested function dictionaries.
+
+def lowered_function_name_returns_value(name):
+    plan_kind = lowered_function_inventory_native_plan_kind(name)
+    if name == "__tyrion_native_tcp_connect" or name == "std_io_tcp_connect" or name == "__tyrion_native_tcp_write" or name == "std_io_tcp_write" or name == "__tyrion_native_tcp_read" or name == "std_io_tcp_read" or name == "__tyrion_native_tcp_close" or name == "std_io_tcp_close":
+        return True
+    if plan_kind == "generic_source_body":
+        return True
+    if name == "lex" or name == "parse_expression" or name == "parse_program" or name == "link_asm":
+        return True
+    if name == "contains_text" or name == "numeric_text" or name == "is_compare_token":
+        return True
+    if name == "asm_line" or name == "asm_label" or name == "asm_dir" or name == "asm_raw" or name == "asm_section":
+        return True
+    if name == "asm_escape_string" or name == "asm_cstr" or name == "asm_addr" or name == "asm_darwin_addr":
+        return True
+    if name == "runtime_native_linux_aarch64_asm_text" or name == "lowered_function_label" or name == "lowered_function_inventory_param" or name == "lowered_function_inventory_has_name" or name == "lowered_function_inventory_rows" or name == "split_inventory_text" or name == "lowered_function_inventory_field" or name == "lowered_function_inventory_row" or name == "lowered_function_inventory_cell" or name == "decimal_text":
+        return True
+    if name == "asm_writer_open" or name == "asm_writer_append" or name == "asm_writer_close" or name == "asm_writer_bytes" or name == "asm_writer_set_backend" or name == "asm_writer_is_x86":
+        return True
+    return name == "emit_compiler_cli_asm_into"
+
+def lowered_function_name_uses_slot_args(name):
+    plan_kind = lowered_function_inventory_native_plan_kind(name)
+    if name == "__tyrion_native_tcp_connect" or name == "std_io_tcp_connect" or name == "__tyrion_native_tcp_write" or name == "std_io_tcp_write" or name == "__tyrion_native_tcp_read" or name == "std_io_tcp_read" or name == "__tyrion_native_tcp_close" or name == "std_io_tcp_close":
+        return True
+    if plan_kind == "generic_source_body" or plan_kind == "asm_writer_format_body":
+        return True
+    if name == "lex" or name == "parse_expression" or name == "parse_program":
+        return True
+    if name == "asm_writer_open" or name == "asm_writer_append" or name == "asm_writer_close" or name == "asm_writer_bytes" or name == "asm_writer_set_backend" or name == "asm_writer_is_x86":
+        return True
+    return name == "runtime_native_linux_aarch64_asm_text" or name == "asm_addr" or name == "asm_darwin_addr" or name == "lowered_function_label" or name == "lowered_function_inventory_param" or name == "lowered_function_inventory_has_name" or name == "lowered_function_inventory_rows" or name == "split_inventory_text" or name == "lowered_function_inventory_field" or name == "lowered_function_inventory_row" or name == "lowered_function_inventory_cell" or name == "decimal_text" or name == "emit_compiler_cli_asm_into"
+
+def lowered_function_name_uses_fixed_slot_args(name):
+    if lowered_function_inventory_native_plan_kind(name) == "generic_source_body":
+        return False
+    return lowered_function_name_uses_slot_args(name)
+
+def lowered_function_name_returns_typed_value(name):
+    if lowered_function_name_uses_slot_args(name) or lowered_function_name_returns_value(name):
+        return True
+    if name == "token" or name == "keyword_kind" or name == "simple_token_kind" or name == "two_char_token_kind":
+        return True
+    if name == "parser_expect" or name == "parser_skip_newlines":
+        return True
+    return name == "token_kind_at" or name == "token_text_at" or name == "token_value_at"
+
+def lowered_function_inventory_from_functions(functions):
+    inventory = ""
+    idx = 0
+    while idx < len(functions):
+        fn = functions[idx]
+        if inventory != "":
+            inventory = inventory + ";"
+        inventory = inventory + fn["name"] + ":" + str(len(fn["signature_params"])) + ":"
+        param_idx = len(fn["signature_params"])
+        wrote_param = False
+        while param_idx > 0:
+            param_idx = param_idx - 1
+            if wrote_param:
+                inventory = inventory + ","
+            inventory = inventory + param_name(fn["signature_params"][param_idx])
+            wrote_param = True
+        idx = idx + 1
+    return inventory
+
+def lowered_function_can_emit(program, name):
+    if lowered_function_has_fixed_plan(name):
+        return True
+    if program_find_function_or_none(program, name) != none:
+        return True
+    return False
+
+def lowered_function_should_skip_generic(name):
+    # The legacy AArch64 descendant compiler executes this inventory. Linux
+    # x86-64 descendants use Native IR v2 directly, so retaining and traversing
+    # their compiler builder here both changes AArch64 output and pulls the
+    # complete x86 lowering graph into an unreachable target branch.
+    if name == "build_runtime_native_x86_program" or name == "emit_linux_x86_64_direct_program_asm_into":
+        return True
+    if name == "collect_build_native_plan" or name == "collect_lowered_function_table_plan":
+        return True
+    if name == "collect_cli_spec":
+        return True
+    if name == "lower_program_to_constant_payload" or name == "lower_statement_list" or name == "lower_statement":
+        return True
+    if name == "eval_const_expr" or name == "eval_call_expr" or name == "eval_method_call_expr":
+        return True
+    if name == "emit_constant_asm" or name == "render_native_artifact":
+        return True
+    if name == "emit_darwin_aarch64_constant_asm" or name == "emit_linux_aarch64_constant_asm" or name == "emit_linux_x86_64_constant_asm":
+        return True
+    return False
+
+def lowered_function_append_source_if_present(program, names, name):
+    fn = program_find_function_or_none(program, name)
+    if fn != none and len(fn["params"]) <= 5 and not lowered_function_should_skip_generic(name):
+        names = lowered_function_append_name(names, name)
+    return names
+
+def lowered_function_append_reachable_call(program, names, name):
+    # Compiler-AST intrinsics execute while constructing the descendant
+    # compiler. They are not callable helper records in that descendant.
+    if primitive_schema_capability(name) == "compiler-ast":
+        return names
+    if lowered_function_has_fixed_plan(name):
+        return lowered_function_append_name(names, name)
+    fn = program_find_function_or_none(program, name)
+    if fn == none:
+        return names
+    if lowered_function_should_skip_generic(name):
+        return names
+    if len(fn["params"]) > 5:
+        return names
+    return lowered_function_append_name(names, name)
+
+def lowered_function_known_direct_calls(name):
+    if name == "contains_text":
+        return []
+    if name == "host_target":
+        return []
+    if name == "program_has_function":
+        return []
+    if name == "program_find_function":
+        return ["fail", "program_find_function_or_none"]
+    if name == "program_find_function_or_none":
+        return []
+    if name == "render_native_artifact":
+        return []
+    if name == "render_compiler_cli_artifact":
+        return []
+    if name == "render_runtime_file_read_artifact":
+        return []
+    if name == "build_compiler_cli_native":
+        return ["emit_compiler_cli_asm_into", "link_asm", "make_asm_path", "render_compiler_cli_artifact", "write_text_file"]
+    if name == "collect_cli_spec":
+        return ["cli_route_info", "cli_spec_record_route", "collect_build_native_plan", "collect_lowered_function_table_plan", "first_call_name", "method_append", "program_find_function"]
+    if name == "emit_compiler_cli_asm":
+        return ["emit_darwin_aarch64_compiler_cli_asm", "fail"]
+    if name == "emit_compiler_cli_asm_into":
+        return ["emit_darwin_aarch64_compiler_cli_asm_into", "emit_linux_aarch64_compiler_cli_asm_into", "emit_linux_x86_64_compiler_cli_asm_into", "fail"]
+    if name == "render_compiler_cli_artifact":
+        return []
+    if name == "build_native":
+        return ["build_compiler_cli_native", "build_runtime_native_program_if_needed", "fail", "lex", "parse_program", "program_has_function", "read_module_graph"]
+    if name == "lex":
+        return ["char_is_backslash", "char_is_dot", "char_is_double_quote", "char_is_hash", "char_is_newline", "char_is_single_quote", "char_is_tab", "char_is_underscore", "fail", "is_alpha", "is_digit", "is_ident_continue", "is_ident_start", "is_lower", "is_space", "is_upper", "keyword_kind", "method_append", "simple_token_kind", "token", "two_char_token_kind"]
+    if name == "is_alpha":
+        return ["is_lower", "is_upper"]
+    if name == "is_ident_start":
+        return ["is_alpha"]
+    if name == "is_ident_continue":
+        return ["is_digit", "is_ident_start"]
+    if name == "char_is_backslash" or name == "char_is_dot" or name == "char_is_double_quote" or name == "char_is_hash" or name == "char_is_newline" or name == "char_is_single_quote" or name == "char_is_tab" or name == "char_is_underscore" or name == "is_digit" or name == "is_lower" or name == "is_space" or name == "is_upper" or name == "simple_token_kind" or name == "two_char_token_kind":
+        return []
+    if name == "token_kind_at" or name == "token_text_at":
+        return ["token_field_at"]
+    if name == "token_value_at":
+        return ["token_field_at", "token_text_at"]
+    if name == "token_kind_next":
+        return ["token_kind_at"]
+    if name == "token_text_next":
+        return ["token_text_at"]
+    if name == "token_field_at":
+        return []
+    if name == "parse_program":
+        return ["parse_program_items"]
+    if name == "parse_program_items":
+        return ["fail", "method_append", "parse_statement", "parser_skip_newlines", "token_kind_at"]
+    if name == "parser_skip_newlines":
+        return ["token_kind_at"]
+    if name == "parser_expect":
+        return ["fail", "token_kind_at"]
+    if name == "parse_statement":
+        return ["fail", "method_append", "parse_expression", "parser_expect", "parser_skip_newlines", "token_kind_at", "token_kind_next", "token_text_at", "token_text_next"]
+    if name == "parse_expression":
+        return ["parse_pratt_expr"]
+    if name == "parse_pratt_expr":
+        return ["fail", "method_append", "numeric_text", "parse_expression", "parse_pratt_expr", "parser_expect", "pratt_infix_binding_power", "token_kind_at", "token_kind_next", "token_text_at", "token_text_next"]
+    if name == "pratt_infix_binding_power":
+        return ["is_compare_token"]
+    if name == "is_compare_token":
+        return []
+    if name == "lower_program_to_constant_payload":
+        return ["collect_classes", "collect_functions", "fail", "lower_statement_list"]
+    if name == "lower_statement_list":
+        return ["const_value", "lower_statement"]
+    if name == "lower_statement":
+        return ["const_clone", "const_iter_values", "const_set_index", "const_truthy", "const_value", "eval_const_expr", "eval_method_call_expr", "fail", "flush", "lower_statement_list", "method_append", "value_to_output"]
+    if name == "eval_const_expr":
+        return ["const_clone", "const_equal", "const_iter_values", "const_kind_for_number", "const_truthy", "const_unbox", "const_value", "contains_text", "env_get", "eval_call_expr", "eval_const_expr", "eval_method_call_expr", "fail", "method_append", "value_to_output"]
+    if name == "eval_call_expr":
+        return ["const_clone", "const_iter_values", "const_range", "const_truthy", "const_value", "env_get", "eval_const_expr", "eval_lambda_call", "fail", "keys", "lower_statement_list", "method_append", "param_has_default", "param_name", "value_to_output"]
+    if name == "eval_method_call_expr":
+        return ["const_clone", "const_equal", "const_value", "eval_const_expr", "fail", "keys", "lower_statement_list", "method_append", "param_has_default", "param_name"]
+    if name == "emit_constant_asm":
+        return ["emit_darwin_aarch64_constant_asm", "emit_linux_aarch64_constant_asm", "emit_linux_x86_64_constant_asm", "fail"]
+    if name == "emit_darwin_aarch64_constant_asm" or name == "emit_linux_aarch64_constant_asm" or name == "emit_linux_x86_64_constant_asm":
+        return ["asm_dir", "asm_escape_string", "asm_label", "asm_line", "asm_section"]
+    return []
+
+def lowered_function_has_known_direct_calls(name):
+    if name == "contains_text":
+        return True
+    if name == "host_target" or name == "program_has_function" or name == "program_find_function" or name == "program_find_function_or_none":
+        return True
+    if name == "render_native_artifact" or name == "render_runtime_file_read_artifact":
+        return True
+    if name == "build_native" or name == "build_compiler_cli_native" or name == "lex" or name == "parse_program" or name == "parse_program_items" or name == "parser_skip_newlines" or name == "parse_statement":
+        return True
+    if name == "char_is_backslash" or name == "char_is_dot" or name == "char_is_double_quote" or name == "char_is_hash" or name == "char_is_newline" or name == "char_is_single_quote" or name == "char_is_tab" or name == "char_is_underscore" or name == "is_alpha" or name == "is_digit" or name == "is_lower" or name == "is_space" or name == "is_upper" or name == "is_ident_start" or name == "is_ident_continue" or name == "simple_token_kind" or name == "token_kind_at" or name == "token_text_at" or name == "token_value_at" or name == "token_field_at" or name == "token_kind_next" or name == "token_text_next" or name == "two_char_token_kind":
+        return True
+    if name == "parse_expression" or name == "parse_pratt_expr" or name == "pratt_infix_binding_power" or name == "is_compare_token":
+        return True
+    if name == "lower_program_to_constant_payload" or name == "lower_statement_list" or name == "lower_statement":
+        return True
+    if name == "eval_const_expr" or name == "eval_call_expr" or name == "eval_method_call_expr":
+        return True
+    if name == "emit_constant_asm":
+        return True
+    if name == "emit_darwin_aarch64_constant_asm" or name == "emit_linux_aarch64_constant_asm" or name == "emit_linux_x86_64_constant_asm":
+        return True
+    return False
+
+def lowered_function_append_known_direct_calls(program, names, name):
+    if name == "build_compiler_cli_native" and not compiler_cli_minimal_helpers_available(program):
+        return names
+    calls = lowered_function_known_direct_calls(name)
+    idx = 0
+    while idx < len(calls):
+        names = lowered_function_append_reachable_call(program, names, calls[idx])
+        idx = idx + 1
+    return names
+
+def lowered_function_collect_expr_calls(program, names, expr):
+    kind = expr["kind"]
+    if kind == "call":
+        if expr["callee"]["kind"] == "var":
+            names = lowered_function_append_reachable_call(program, names, expr["callee"]["value"])
+        names = lowered_function_collect_expr_calls(program, names, expr["callee"])
+        idx = 0
+        while idx < len(expr["args"]):
+            names = lowered_function_collect_expr_calls(program, names, expr["args"][idx])
+            idx = idx + 1
+    elif kind == "method_call":
+        names = lowered_function_collect_expr_calls(program, names, expr["receiver"])
+        idx = 0
+        while idx < len(expr["args"]):
+            names = lowered_function_collect_expr_calls(program, names, expr["args"][idx])
+            idx = idx + 1
+    elif kind == "attr":
+        names = lowered_function_collect_expr_calls(program, names, expr["receiver"])
+    elif kind == "index":
+        names = lowered_function_collect_expr_calls(program, names, expr["receiver"])
+        names = lowered_function_collect_expr_calls(program, names, expr["index"])
+    elif kind == "slice":
+        names = lowered_function_collect_expr_calls(program, names, expr["receiver"])
+        names = lowered_function_collect_expr_calls(program, names, expr["start"])
+        names = lowered_function_collect_expr_calls(program, names, expr["stop"])
+    elif kind == "binary":
+        names = lowered_function_collect_expr_calls(program, names, expr["left"])
+        names = lowered_function_collect_expr_calls(program, names, expr["right"])
+    elif kind == "unary":
+        names = lowered_function_collect_expr_calls(program, names, expr["value"])
+    elif kind == "kwarg":
+        names = lowered_function_collect_expr_calls(program, names, expr["value"])
+    elif kind == "lambda":
+        names = lowered_function_collect_expr_calls(program, names, expr["body"])
+    elif kind == "list" or kind == "tuple" or kind == "set":
+        idx = 0
+        while idx < len(expr["items"]):
+            names = lowered_function_collect_expr_calls(program, names, expr["items"][idx])
+            idx = idx + 1
+    elif kind == "dict":
+        idx = 0
+        while idx < len(expr["entries"]):
+            names = lowered_function_collect_expr_calls(program, names, expr["entries"][idx]["key"])
+            names = lowered_function_collect_expr_calls(program, names, expr["entries"][idx]["value"])
+            idx = idx + 1
+    elif kind == "comprehension":
+        names = lowered_function_collect_expr_calls(program, names, expr["expr"])
+        names = lowered_function_collect_expr_calls(program, names, expr["key"])
+        names = lowered_function_collect_expr_calls(program, names, expr["value"])
+        names = lowered_function_collect_expr_calls(program, names, expr["iterable"])
+        names = lowered_function_collect_expr_calls(program, names, expr["condition"])
+    return names
+
+def lowered_function_collect_stmt_calls(program, names, stmt):
+    kind = stmt["kind"]
+    if kind == "assign":
+        names = lowered_function_collect_expr_calls(program, names, stmt["target"])
+        names = lowered_function_collect_expr_calls(program, names, stmt["value"])
+    elif kind == "return":
+        names = lowered_function_collect_expr_calls(program, names, stmt["value"])
+    elif kind == "expr":
+        names = lowered_function_collect_expr_calls(program, names, stmt["value"])
+    elif kind == "raise" or kind == "yield":
+        names = lowered_function_collect_expr_calls(program, names, stmt["value"])
+    elif kind == "if":
+        names = lowered_function_collect_expr_calls(program, names, stmt["condition"])
+        idx = 0
+        while idx < len(stmt["body"]):
+            names = lowered_function_collect_stmt_calls(program, names, stmt["body"][idx])
+            idx = idx + 1
+        idx = 0
+        while idx < len(stmt["elifs"]):
+            names = lowered_function_collect_expr_calls(program, names, stmt["elifs"][idx]["condition"])
+            body_idx = 0
+            while body_idx < len(stmt["elifs"][idx]["body"]):
+                names = lowered_function_collect_stmt_calls(program, names, stmt["elifs"][idx]["body"][body_idx])
+                body_idx = body_idx + 1
+            idx = idx + 1
+        idx = 0
+        while idx < len(stmt["else_body"]):
+            names = lowered_function_collect_stmt_calls(program, names, stmt["else_body"][idx])
+            idx = idx + 1
+    elif kind == "while":
+        names = lowered_function_collect_expr_calls(program, names, stmt["condition"])
+        idx = 0
+        while idx < len(stmt["body"]):
+            names = lowered_function_collect_stmt_calls(program, names, stmt["body"][idx])
+            idx = idx + 1
+    elif kind == "for":
+        names = lowered_function_collect_expr_calls(program, names, stmt["iterable"])
+        idx = 0
+        while idx < len(stmt["body"]):
+            names = lowered_function_collect_stmt_calls(program, names, stmt["body"][idx])
+            idx = idx + 1
+    elif kind == "with":
+        names = lowered_function_collect_expr_calls(program, names, stmt["resource"])
+        idx = 0
+        while idx < len(stmt["body"]):
+            names = lowered_function_collect_stmt_calls(program, names, stmt["body"][idx])
+            idx = idx + 1
+    elif kind == "try":
+        idx = 0
+        while idx < len(stmt["body"]):
+            names = lowered_function_collect_stmt_calls(program, names, stmt["body"][idx])
+            idx = idx + 1
+        idx = 0
+        while idx < len(stmt["except_body"]):
+            names = lowered_function_collect_stmt_calls(program, names, stmt["except_body"][idx])
+            idx = idx + 1
+        idx = 0
+        while idx < len(stmt["finally_body"]):
+            names = lowered_function_collect_stmt_calls(program, names, stmt["finally_body"][idx])
+            idx = idx + 1
+    elif kind == "function" or kind == "class":
+        idx = 0
+        while idx < len(stmt["body"]):
+            names = lowered_function_collect_stmt_calls(program, names, stmt["body"][idx])
+            idx = idx + 1
+    return names
+
+def lowered_function_expand_reachable_sources(program, names):
+    idx = 0
+    while idx < len(names):
+        fn = program_find_function_or_none(program, names[idx])
+        # Fixed plans are compiler-owned ABI boundaries. Their Tyrion bodies
+        # document semantics but are not executed by the generated compiler, so
+        # traversing them invents dependencies that the selected native plan
+        # does not call.
+        if fn != none and not lowered_function_has_fixed_plan(names[idx]):
+            body_idx = 0
+            while body_idx < len(fn["body"]):
+                names = lowered_function_collect_stmt_calls(program, names, fn["body"][body_idx])
+                body_idx = body_idx + 1
+        if lowered_function_has_known_direct_calls(names[idx]):
+            names = lowered_function_append_known_direct_calls(program, names, names[idx])
+        idx = idx + 1
+    return names
+
+def collect_lowered_function_table_plan(program, build_plan):
+    names = []
+    names = lowered_function_append_name(names, "asm_writer_open")
+    names = lowered_function_append_name(names, "asm_writer_append")
+    names = lowered_function_append_name(names, "asm_writer_close")
+    names = lowered_function_append_name(names, "asm_writer_bytes")
+    names = lowered_function_append_name(names, "asm_writer_set_backend")
+    names = lowered_function_append_name(names, "asm_writer_is_x86")
+    names = lowered_function_append_name(names, "runtime_native_linux_aarch64_asm_text")
+    names = lowered_function_append_source_if_present(program, names, "emit_darwin_aarch64_compiler_cli_asm_into")
+    names = lowered_function_append_source_if_present(program, names, "emit_linux_aarch64_compiler_cli_asm_into")
+    names = lowered_function_append_source_if_present(program, names, "emit_linux_x86_64_compiler_cli_asm_into")
+    if program_has_function(program, "usage"):
+        names = lowered_function_append_name(names, "usage")
+    if program_has_function(program, "version"):
+        names = lowered_function_append_name(names, "version")
+    names = lowered_function_append_name(names, "len")
+    # Generic record execution references the native append ABI even when a
+    # reduced compiler fixture omits the documenting Tyrion helper.
+    names = lowered_function_append_name(names, "method_append")
+    names = lowered_function_append_name(names, "build_native")
+    names = lowered_function_append_source_if_present(program, names, "build_compiler_cli_native")
+    if build_plan["shape_ok"] and build_plan["diagnostic"] != "":
+        names = lowered_function_append_known_direct_calls(program, names, "build_native")
+    names = lowered_function_append_name(names, "read_text_file")
+    names = lowered_function_append_name(names, "write_text_file")
+    names = lowered_function_append_name(names, "run_tool")
+    names = lowered_function_append_source_if_present(program, names, "generated_value_owner_mem")
+    names = lowered_function_append_source_if_present(program, names, "generated_value_tag_mem")
+    names = lowered_function_append_name(names, "build_runtime_native_program_if_needed")
+    names = lowered_function_append_name(names, "runtime_native_append_unique")
+    # AST-native runtime emitter helpers require the shared lexer/Pratt arena
+    # runtime even in reduced compiler fixtures with no source lex() body.
+    names = lowered_function_append_name(names, "lex")
+    names = lowered_function_append_name(names, "host_target")
+    names = lowered_function_append_name(names, "__tyrion_native_tcp_connect")
+    names = lowered_function_append_name(names, "__tyrion_native_tcp_write")
+    names = lowered_function_append_name(names, "__tyrion_native_tcp_read")
+    names = lowered_function_append_name(names, "__tyrion_native_tcp_close")
+    names = lowered_function_append_name(names, "std_io_tcp_connect")
+    names = lowered_function_append_name(names, "std_io_tcp_write")
+    names = lowered_function_append_name(names, "std_io_tcp_read")
+    names = lowered_function_append_name(names, "std_io_tcp_close")
+    if program_has_function(program, "token_kind_at"):
+        names = lowered_function_append_name(names, "token_kind_at")
+    if program_has_function(program, "token_text_at"):
+        names = lowered_function_append_name(names, "token_text_at")
+    if program_has_function(program, "token_value_at"):
+        names = lowered_function_append_name(names, "token_value_at")
+    if program_has_function(program, "asm_line"):
+        names = lowered_function_append_name(names, "asm_line")
+    if program_has_function(program, "asm_label"):
+        names = lowered_function_append_name(names, "asm_label")
+    if program_has_function(program, "asm_dir"):
+        names = lowered_function_append_name(names, "asm_dir")
+    if program_has_function(program, "asm_raw"):
+        names = lowered_function_append_name(names, "asm_raw")
+    if program_has_function(program, "asm_section"):
+        names = lowered_function_append_name(names, "asm_section")
+    if program_has_function(program, "asm_cstr"):
+        names = lowered_function_append_name(names, "asm_cstr")
+    if program_has_function(program, "asm_escape_string"):
+        names = lowered_function_append_name(names, "asm_escape_string")
+    names = lowered_function_append_source_if_present(program, names, "source_indent")
+    names = lowered_function_append_compiler_component_sources(program, names)
+    if not build_plan["shape_ok"]:
+        names = lowered_function_append_source_if_present(program, names, "fail")
+        names = lowered_function_append_source_if_present(program, names, "method_append")
+        names = lowered_function_append_source_if_present(program, names, "token")
+        names = lowered_function_append_source_if_present(program, names, "lex")
+        names = lowered_function_append_source_if_present(program, names, "parse_program")
+        names = lowered_function_append_source_if_present(program, names, "parse_program_items")
+        names = lowered_function_append_source_if_present(program, names, "host_target")
+        names = lowered_function_append_source_if_present(program, names, "lower_program_to_constant_payload")
+        names = lowered_function_append_source_if_present(program, names, "lower_statement_list")
+        names = lowered_function_append_source_if_present(program, names, "emit_constant_asm")
+        names = lowered_function_append_source_if_present(program, names, "render_native_artifact")
+    names = lowered_function_expand_reachable_sources(program, names)
+    entries_builder = __tyrion_native_ast_builder_create()
+    idx = 0
+    while idx < len(names):
+        if lowered_function_can_emit(program, names[idx]):
+            __tyrion_native_ast_builder_append(entries_builder, 0, lowered_function_entry(program, build_plan, names[idx]))
+        idx = idx + 1
+    entries_lanes = __tyrion_native_ast_builder_finish(entries_builder)
+    return entries_lanes[0]
+
+def collect_cli_spec(program):
+    cli = program_find_function(program, "cli_main")
+    build_plan = collect_build_native_plan(program)
+    route_spec = cli_route_records_to_spec(materialize_cli_route_records(cli))
+    route_spec["build_plan"] = build_plan
+    route_spec["lowered_functions"] = collect_lowered_function_table_plan(program, build_plan)
+    route_spec["lowered_function_inventory"] = lowered_function_inventory_from_functions(route_spec["lowered_functions"])
+    route_spec["make_asm_path_suffix"] = build_plan["make_asm_path_plan"]["suffix"]
+    route_spec["component_profile"] = "compiler-full"
+    return route_spec
+
+def lowered_function_inventory_arity(arity_text):
+    arity = int(arity_text)
+    if arity < 0:
+        fail("invalid lowered function inventory arity: " + arity_text)
+    return arity
+
+def lowered_function_find_by_plan_kind(functions, kind):
+    idx = 0
+    while idx < len(functions):
+        if functions[idx]["plan_kind"] == kind:
+            return functions[idx]
+        idx = idx + 1
+    fail("missing lowered function for plan kind: " + kind)
+
+def param_name(param):
+    if "has_default" in param:
+        return param["name"]
+    return param
+
+def param_has_default(param):
+    if "has_default" in param:
+        return param["has_default"]
+    return False
+
+def lower_statement(stmt, env):
+    payload = ""
+    kind = stmt["kind"]
+    functions = env["__functions"]
+    if kind == "function" or kind == "class" or kind == "module" or kind == "export" or kind == "import":
+        return {"env": env, "payload": payload, "signal": "", "value": const_value("none", none)}
+    if kind == "assign":
+        assigned_value = eval_const_expr(stmt["value"], env, functions)
+        if assigned_value["kind"] == "raise":
+            return {"env": env, "payload": payload, "signal": "raise", "value": assigned_value["value"]}
+        env = const_set_index(stmt["target"], assigned_value, env, functions)
+        return {"env": env, "payload": payload, "signal": "", "value": const_value("none", none)}
+    if kind == "return":
+        return {"env": env, "payload": payload, "signal": "return", "value": eval_const_expr(stmt["value"], env, functions)}
+    if kind == "raise":
+        return {"env": env, "payload": payload, "signal": "raise", "value": eval_const_expr(stmt["value"], env, functions)}
+    if kind == "yield":
+        if not ("__yield" in env):
+            env["__yield"] = []
+        env["__yield"] = method_append(env["__yield"], eval_const_expr(stmt["value"], env, functions))
+        return {"env": env, "payload": payload, "signal": "", "value": const_value("none", none)}
+    if kind == "break":
+        return {"env": env, "payload": payload, "signal": "break", "value": const_value("none", none)}
+    if kind == "continue":
+        return {"env": env, "payload": payload, "signal": "continue", "value": const_value("none", none)}
+    if kind == "expr":
+        expr = stmt["value"]
+        if expr["kind"] == "call" and expr["callee"]["kind"] == "var" and expr["callee"]["value"] == "print":
+            arg_idx = 0
+            while arg_idx < len(expr["args"]):
+                if arg_idx > 0:
+                    payload = payload + " "
+                printed_value = eval_const_expr(expr["args"][arg_idx], env, functions)
+                if printed_value["kind"] == "raise":
+                    return {"env": env, "payload": payload, "signal": "raise", "value": printed_value["value"]}
+                payload = payload + value_to_output(printed_value)
+                arg_idx = arg_idx + 1
+            payload = payload + "\n"
+        elif expr["kind"] == "method_call" and expr["receiver"]["kind"] == "var" and (expr["name"] == "append" or expr["name"] == "remove" or expr["name"] == "add"):
+            env[expr["receiver"]["value"]] = eval_method_call_expr(expr, env, functions)
+        else:
+            ignored = eval_const_expr(expr, env, functions)
+            if ignored["kind"] == "raise":
+                return {"env": env, "payload": payload, "signal": "raise", "value": ignored["value"]}
+        return {"env": env, "payload": payload, "signal": "", "value": const_value("none", none)}
+    if kind == "with":
+        resource = eval_const_expr(stmt["resource"], env, functions)
+        env[stmt["name"]] = resource
+        chunk = lower_statement_list(stmt["body"], env)
+        if resource["kind"] == "file":
+            resource["value"].flush()
+        return chunk
+    if kind == "if":
+        if const_truthy(eval_const_expr(stmt["condition"], env, functions)):
+            return lower_statement_list(stmt["body"], env)
+        elif_idx = 0
+        while elif_idx < len(stmt["elifs"]):
+            branch = stmt["elifs"][elif_idx]
+            if const_truthy(eval_const_expr(branch["condition"], env, functions)):
+                return lower_statement_list(branch["body"], env)
+            elif_idx = elif_idx + 1
+        return lower_statement_list(stmt["else_body"], env)
+    if kind == "while":
+        guard = 0
+        while const_truthy(eval_const_expr(stmt["condition"], env, functions)):
+            if guard > 100000:
+                fail("compile-time while loop exceeded iteration limit")
+            chunk = lower_statement_list(stmt["body"], env)
+            env = chunk["env"]
+            payload = payload + chunk["payload"]
+            if chunk["signal"] == "break":
+                return {"env": env, "payload": payload, "signal": "", "value": const_value("none", none)}
+            if chunk["signal"] == "return":
+                return {"env": env, "payload": payload, "signal": "return", "value": chunk["value"]}
+            guard = guard + 1
+        return {"env": env, "payload": payload, "signal": "", "value": const_value("none", none)}
+    if kind == "for":
+        iterable = eval_const_expr(stmt["iterable"], env, functions)
+        values = const_iter_values(iterable)
+        idx = 0
+        while idx < len(values):
+            item = values[idx]
+            if len(stmt["targets"]) == 1:
+                env[stmt["targets"][0]] = const_clone(item)
+            else:
+                if (item["kind"] != "list" and item["kind"] != "tuple") or len(item["value"]) != len(stmt["targets"]):
+                    fail("for unpack target mismatch")
+                target_idx = 0
+                while target_idx < len(stmt["targets"]):
+                    env[stmt["targets"][target_idx]] = const_clone(item["value"][target_idx])
+                    target_idx = target_idx + 1
+            chunk = lower_statement_list(stmt["body"], env)
+            env = chunk["env"]
+            payload = payload + chunk["payload"]
+            if chunk["signal"] == "break":
+                return {"env": env, "payload": payload, "signal": "", "value": const_value("none", none)}
+            if chunk["signal"] == "return":
+                return {"env": env, "payload": payload, "signal": "return", "value": chunk["value"]}
+            idx = idx + 1
+        return {"env": env, "payload": payload, "signal": "", "value": const_value("none", none)}
+    if kind == "try":
+        chunk = lower_statement_list(stmt["body"], env)
+        env = chunk["env"]
+        payload = payload + chunk["payload"]
+        if chunk["signal"] == "raise":
+            caught = False
+            if stmt["except_name"] == "":
+                caught = True
+            elif chunk["value"]["kind"] == "string" and chunk["value"]["value"] == stmt["except_name"]:
+                caught = True
+            if caught:
+                if stmt["except_binding"] != "":
+                    env[stmt["except_binding"]] = const_clone(chunk["value"])
+                except_chunk = lower_statement_list(stmt["except_body"], env)
+                env = except_chunk["env"]
+                payload = payload + except_chunk["payload"]
+                if except_chunk["signal"] != "":
+                    chunk = except_chunk
+                else:
+                    chunk = {"signal": "", "value": const_value("none", none)}
+        finally_chunk = lower_statement_list(stmt["finally_body"], env)
+        env = finally_chunk["env"]
+        payload = payload + finally_chunk["payload"]
+        if finally_chunk["signal"] != "":
+            return {"env": env, "payload": payload, "signal": finally_chunk["signal"], "value": finally_chunk["value"]}
+        if chunk["signal"] != "":
+            return {"env": env, "payload": payload, "signal": chunk["signal"], "value": chunk["value"]}
+        return {"env": env, "payload": payload, "signal": "", "value": const_value("none", none)}
+    fail("unsupported statement during compiler evaluation: " + kind)
+
+def lower_statement_list(items, env):
+    payload = ""
+    idx = 0
+    while idx < len(items):
+        lowered = lower_statement(items[idx], env)
+        env = lowered["env"]
+        payload = payload + lowered["payload"]
+        if lowered["signal"] != "":
+            return {"env": env, "payload": payload, "signal": lowered["signal"], "value": lowered["value"]}
+        idx = idx + 1
+    return {"env": env, "payload": payload, "signal": "", "value": const_value("none", none)}
+
+def lower_program_to_constant_payload(program):
+    items = program["items"]
+    lowered = lower_statement_list(items, {"__functions": collect_functions(program), "__classes": collect_classes(program)})
+    if lowered["signal"] != "":
+        fail("unexpected top-level signal during compiler evaluation: " + lowered["signal"])
+    return lowered["payload"]
+
+def parse_source(source, target):
+    target_validate(target)
+    return {"contract": "tyrion-parse-v1", "target": target, "program": parse_program(lex(source))}
+
+def analyze_program(parsed):
+    if parsed["contract"] != "tyrion-parse-v1":
+        fail("invalid parse boundary record")
+    target_validate(parsed["target"])
+    return {"contract": "tyrion-analysis-v1", "target": parsed["target"], "program": parsed["program"]}
+
+def plan_runtime(analysis):
+    if analysis["contract"] != "tyrion-analysis-v1":
+        fail("invalid analysis boundary record")
+    target = backend_require_implemented(analysis["target"])
+    plan = collect_runtime_native_program_plan(analysis["program"], target)
+    return {"contract": "tyrion-runtime-plan-v1", "target": target, "program": analysis["program"], "runtime": plan}
+
+def plan_runtime_with_extensions(analysis, extensions):
+    return plan_runtime_with_extension_config(analysis, extensions, "off", "")
+
+def plan_runtime_with_extension_config(analysis, extensions, dynamic_extension_mode, dynamic_extension_root):
+    if analysis["contract"] != "tyrion-analysis-v1":
+        fail("invalid analysis boundary record")
+    target = backend_require_implemented(analysis["target"])
+    plan = collect_runtime_native_program_plan_with_extension_config(analysis["program"], target, extensions, dynamic_extension_mode, dynamic_extension_root)
+    return {"contract": "tyrion-runtime-plan-v1", "target": target, "program": analysis["program"], "runtime": plan}
+
+def lower_program(runtime_plan):
+    if runtime_plan["contract"] != "tyrion-runtime-plan-v1":
+        fail("invalid runtime plan boundary record")
+    target_validate(runtime_plan["target"])
+    return {"contract": "tyrion-lowered-program-v1", "target": runtime_plan["target"], "program": runtime_plan["program"], "runtime": runtime_plan["runtime"]}
+
+def link_executable(target, asm_path, output_path):
+    target = backend_require_operation(target, "link")
+    backend_require_host_link_compatible(target, host_target())
+    return link_asm(asm_path, output_path)
+
+def pipeline_contract_probe(source):
+    target = host_target()
+    parsed = parse_source(source, target)
+    analysis = analyze_program(parsed)
+    runtime_plan = plan_runtime(analysis)
+    lowered = lower_program(runtime_plan)
+    return parsed["contract"] + ":" + analysis["contract"] + ":" + runtime_plan["contract"] + ":" + lowered["contract"]
+
+def pipeline_stage_probe(source, stage):
+    target = host_target()
+    parsed = parse_source(source, target)
+    if stage == "parse":
+        return parsed["contract"]
+    analysis = analyze_program(parsed)
+    if stage == "analyze":
+        return analysis["contract"]
+    runtime_plan = plan_runtime(analysis)
+    if stage == "plan":
+        return runtime_plan["contract"]
+    lowered = lower_program(runtime_plan)
+    return lowered["contract"]
+
+def expr_static_string(expr, strings):
+    if expr["kind"] == "string":
+        return {"ok": True, "value": expr["value"]}
+    if expr["kind"] == "var" and expr["value"] in strings:
+        return {"ok": True, "value": strings[expr["value"]]}
+    return {"ok": False, "value": ""}
+
+def expr_static_int(expr):
+    if expr["kind"] == "int":
+        return {"ok": True, "value": expr["value"]}
+    return {"ok": False, "value": 0}
+
+def expr_is_open_read_resource(expr, strings):
+    if expr["kind"] != "call":
+        return {"ok": False, "path": ""}
+    if expr["callee"]["kind"] != "var" or expr["callee"]["value"] != "open":
+        return {"ok": False, "path": ""}
+    if len(expr["args"]) != 2:
+        return {"ok": False, "path": ""}
+    path = expr_static_string(expr["args"][0], strings)
+    mode = expr_static_string(expr["args"][1], strings)
+    if not path["ok"] or not mode["ok"]:
+        return {"ok": False, "path": ""}
+    if mode["value"] != "r" and mode["value"] != "rb":
+        return {"ok": False, "path": ""}
+    return {"ok": True, "path": path["value"]}
+
+def stmt_assigns_static_string(stmt, strings):
+    if stmt["kind"] != "assign" or stmt["target"]["kind"] != "var":
+        return strings
+    value = expr_static_string(stmt["value"], strings)
+    if value["ok"]:
+        strings[stmt["target"]["value"]] = value["value"]
+    return strings
+
+def stmt_reads_file_to_var(stmt, file_var):
+    if stmt["kind"] != "assign" or stmt["target"]["kind"] != "var":
+        return {"ok": False, "var": "", "read_len": 8191}
+    expr = stmt["value"]
+    if expr["kind"] != "method_call":
+        return {"ok": False, "var": "", "read_len": 8191}
+    if expr["receiver"]["kind"] != "var" or expr["receiver"]["value"] != file_var:
+        return {"ok": False, "var": "", "read_len": 8191}
+    if expr["name"] != "read":
+        return {"ok": False, "var": "", "read_len": 8191}
+    if len(expr["args"]) == 0:
+        return {"ok": True, "var": stmt["target"]["value"], "read_len": 8191}
+    if len(expr["args"]) == 1:
+        read_len = expr_static_int(expr["args"][0])
+        if read_len["ok"]:
+            return {"ok": True, "var": stmt["target"]["value"], "read_len": read_len["value"]}
+    return {"ok": False, "var": "", "read_len": 8191}
+
+def stmt_prints_runtime_file_var(stmt, data_var, strings):
+    if stmt["kind"] != "expr":
+        return {"ok": False, "parts": []}
+    expr = stmt["value"]
+    if expr["kind"] != "call" or expr["callee"]["kind"] != "var" or expr["callee"]["value"] != "print":
+        return {"ok": False, "parts": []}
+    parts = []
+    idx = 0
+    while idx < len(expr["args"]):
+        part = print_arg_runtime_file_part(expr["args"][idx], data_var, strings)
+        if not part["ok"]:
+            return {"ok": False, "parts": []}
+        parts = method_append(parts, part)
+        idx = idx + 1
+    return {"ok": True, "parts": parts}
+
+def expr_runtime_data_string_compare(expr, data_var, strings):
+    if expr["kind"] != "binary":
+        return {"ok": False, "op": "", "value": ""}
+    if expr["op"] != "==" and expr["op"] != "!=":
+        return {"ok": False, "op": "", "value": ""}
+    if expr["left"]["kind"] == "var" and expr["left"]["value"] == data_var:
+        right = expr_static_string(expr["right"], strings)
+        if right["ok"]:
+            return {"ok": True, "op": expr["op"], "value": right["value"]}
+    if expr["right"]["kind"] == "var" and expr["right"]["value"] == data_var:
+        left = expr_static_string(expr["left"], strings)
+        if left["ok"]:
+            return {"ok": True, "op": expr["op"], "value": left["value"]}
+    return {"ok": False, "op": "", "value": ""}
+
+def expr_is_len_data(expr, data_var):
+    return expr["kind"] == "call" and expr_call_name(expr) == "len" and len(expr["args"]) == 1 and expr["args"][0]["kind"] == "var" and expr["args"][0]["value"] == data_var
+
+def expr_runtime_data_nonempty_test(expr, data_var):
+    if expr["kind"] != "binary":
+        return {"ok": False, "true_when_nonempty": True}
+    left_len = expr_is_len_data(expr["left"], data_var)
+    right_len = expr_is_len_data(expr["right"], data_var)
+    left_zero = expr_is_int(expr["left"], 0)
+    right_zero = expr_is_int(expr["right"], 0)
+    if left_len and right_zero:
+        if expr["op"] == ">" or expr["op"] == "!=":
+            return {"ok": True, "true_when_nonempty": True}
+        if expr["op"] == "==" or expr["op"] == "<=":
+            return {"ok": True, "true_when_nonempty": False}
+    if right_len and left_zero:
+        if expr["op"] == "<" or expr["op"] == "!=":
+            return {"ok": True, "true_when_nonempty": True}
+        if expr["op"] == "==" or expr["op"] == ">=":
+            return {"ok": True, "true_when_nonempty": False}
+    return {"ok": False, "true_when_nonempty": True}
+
+def stmt_runtime_file_if_plan(stmt, data_var, strings):
+    if stmt["kind"] != "if" or len(stmt["elifs"]) != 0:
+        return {"ok": False, "mode": "", "compare_op": "", "compare_value": "", "true_when_nonempty": True, "true_parts": [], "false_parts": []}
+    if len(stmt["body"]) != 1 or len(stmt["else_body"]) != 1:
+        return {"ok": False, "mode": "", "compare_op": "", "compare_value": "", "true_when_nonempty": True, "true_parts": [], "false_parts": []}
+    condition = expr_runtime_data_string_compare(stmt["condition"], data_var, strings)
+    true_print = stmt_prints_runtime_file_var(stmt["body"][0], data_var, strings)
+    false_print = stmt_prints_runtime_file_var(stmt["else_body"][0], data_var, strings)
+    if not true_print["ok"] or not false_print["ok"]:
+        return {"ok": False, "mode": "", "compare_op": "", "compare_value": "", "true_when_nonempty": True, "true_parts": [], "false_parts": []}
+    if condition["ok"]:
+        return {"ok": True, "mode": "if_string_compare", "compare_op": condition["op"], "compare_value": condition["value"], "true_when_nonempty": True, "true_parts": true_print["parts"], "false_parts": false_print["parts"]}
+    nonempty = expr_runtime_data_nonempty_test(stmt["condition"], data_var)
+    if nonempty["ok"]:
+        return {"ok": True, "mode": "if_data_nonempty", "compare_op": "", "compare_value": "", "true_when_nonempty": nonempty["true_when_nonempty"], "true_parts": true_print["parts"], "false_parts": false_print["parts"]}
+    return {"ok": False, "mode": "", "compare_op": "", "compare_value": "", "true_when_nonempty": True, "true_parts": [], "false_parts": []}
+
+def stmt_runtime_file_while_chunks_plan(stmt, data_var, file_var, read_len, strings):
+    if stmt["kind"] != "while" or len(stmt["body"]) != 2:
+        return {"ok": False, "loop_parts": []}
+    cond = stmt["condition"]
+    if cond["kind"] != "binary":
+        return {"ok": False, "loop_parts": []}
+    string_empty_compare = False
+    data_on_left = cond["left"]["kind"] == "var" and cond["left"]["value"] == data_var and cond["right"]["kind"] == "string" and cond["right"]["value"] == ""
+    data_on_right = cond["right"]["kind"] == "var" and cond["right"]["value"] == data_var and cond["left"]["kind"] == "string" and cond["left"]["value"] == ""
+    if (data_on_left or data_on_right) and cond["op"] == "!=":
+        string_empty_compare = True
+    nonempty = expr_runtime_data_nonempty_test(cond, data_var)
+    if not string_empty_compare and (not nonempty["ok"] or not nonempty["true_when_nonempty"]):
+        return {"ok": False, "loop_parts": []}
+    printed = stmt_prints_runtime_file_var(stmt["body"][0], data_var, strings)
+    if not printed["ok"]:
+        return {"ok": False, "loop_parts": []}
+    reread = stmt_reads_file_to_var(stmt["body"][1], file_var)
+    if not reread["ok"] or reread["var"] != data_var or reread["read_len"] != read_len:
+        return {"ok": False, "loop_parts": []}
+    return {"ok": True, "loop_parts": printed["parts"]}
+
+def collect_compiler_asm_section_plan(target, spec):
+    plan = ""
+    section_id = "preamble"
+    count = 0
+    while section_id != "":
+        if count > 64:
+            fail("compiler assembly section dependency cycle")
+        plan = plan + section_id + "|"
+        section_id = compiler_asm_section_dependent(section_id)
+        count = count + 1
+    return plan

@@ -1,0 +1,6 @@
+import http
+
+
+response = http_get_timeout(argv()[0], 5000)
+text = http_body_text(response)
+print(response["status"], len(response["body"]), response["body"][0], response["body"][-1], len(text))

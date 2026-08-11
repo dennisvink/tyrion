@@ -1,0 +1,354 @@
+# Interactive native terminal chess.
+#
+# read_key() supplies normalized terminal events. All input handling, board
+# state, move validation, check detection, and rendering live in Tyrion.
+
+
+def ansi(code):
+    return ansi_escape() + "[" + code
+
+
+def initial_board():
+    board = []
+    for piece in ["r", "n", "b", "q", "k", "b", "n", "r"]:
+        board.append(piece)
+    for col in range(8):
+        board.append("p")
+    for row in range(4):
+        for col in range(8):
+            board.append(".")
+    for col in range(8):
+        board.append("P")
+    for piece in ["R", "N", "B", "Q", "K", "B", "N", "R"]:
+        board.append(piece)
+    return board
+
+
+def row_of(square):
+    return int(square / 8)
+
+
+def col_of(square):
+    row = row_of(square)
+    return square - row * 8
+
+
+def abs_int(value):
+    if value < 0:
+        return 0 - value
+    return value
+
+
+def is_white_piece(piece):
+    return piece in ["P", "N", "B", "R", "Q", "K"]
+
+
+def is_black_piece(piece):
+    return piece in ["p", "n", "b", "r", "q", "k"]
+
+
+def is_pawn(piece):
+    return piece == "P" or piece == "p"
+
+
+def is_knight(piece):
+    return piece == "N" or piece == "n"
+
+
+def is_bishop(piece):
+    return piece == "B" or piece == "b"
+
+
+def is_rook(piece):
+    return piece == "R" or piece == "r"
+
+
+def is_queen(piece):
+    return piece == "Q" or piece == "q"
+
+
+def is_king(piece):
+    return piece == "K" or piece == "k"
+
+
+def same_side(left, right):
+    if left == "." or right == ".":
+        return False
+    if is_white_piece(left) and is_white_piece(right):
+        return True
+    if is_black_piece(left) and is_black_piece(right):
+        return True
+    return False
+
+
+def sign(value):
+    if value < 0:
+        return -1
+    if value > 0:
+        return 1
+    return 0
+
+
+def path_clear(board, source, target):
+    source_row = row_of(source)
+    source_col = col_of(source)
+    target_row = row_of(target)
+    target_col = col_of(target)
+    row_step = sign(target_row - source_row)
+    col_step = sign(target_col - source_col)
+    row = source_row + row_step
+    col = source_col + col_step
+    while row != target_row or col != target_col:
+        if board[row * 8 + col] != ".":
+            return False
+        row = row + row_step
+        col = col + col_step
+    return True
+
+
+def piece_attacks_square(board, source, target):
+    piece = board[source]
+    if piece == "." or source == target:
+        return False
+
+    source_row = row_of(source)
+    source_col = col_of(source)
+    target_row = row_of(target)
+    target_col = col_of(target)
+    row_delta = target_row - source_row
+    col_delta = target_col - source_col
+    row_distance = abs_int(row_delta)
+    col_distance = abs_int(col_delta)
+
+    if piece == "P":
+        return row_delta == -1 and col_distance == 1
+    if piece == "p":
+        return row_delta == 1 and col_distance == 1
+    if is_knight(piece):
+        return (row_distance == 2 and col_distance == 1) or (row_distance == 1 and col_distance == 2)
+    if is_king(piece):
+        return row_distance <= 1 and col_distance <= 1
+    if is_bishop(piece):
+        return row_distance == col_distance and path_clear(board, source, target)
+    if is_rook(piece):
+        return (row_delta == 0 or col_delta == 0) and path_clear(board, source, target)
+    if is_queen(piece):
+        straight = row_delta == 0 or col_delta == 0
+        diagonal = row_distance == col_distance
+        return (straight or diagonal) and path_clear(board, source, target)
+    return False
+
+
+def find_king(board, white):
+    wanted = "K"
+    if not white:
+        wanted = "k"
+    for square in range(64):
+        if board[square] == wanted:
+            return square
+    return -1
+
+
+def square_is_attacked(board, target, by_white):
+    for source in range(64):
+        piece = board[source]
+        if by_white and is_white_piece(piece):
+            if piece_attacks_square(board, source, target):
+                return True
+        if not by_white and is_black_piece(piece):
+            if piece_attacks_square(board, source, target):
+                return True
+    return False
+
+
+def side_is_in_check(board, white):
+    king = find_king(board, white)
+    if king < 0:
+        return True
+    return square_is_attacked(board, king, not white)
+
+
+def piece_move_is_legal(board, source, target, white_turn):
+    if source < 0 or source >= 64 or target < 0 or target >= 64:
+        return False
+    if source == target:
+        return False
+
+    piece = board[source]
+    target_piece = board[target]
+    if piece == ".":
+        return False
+    if white_turn and not is_white_piece(piece):
+        return False
+    if not white_turn and not is_black_piece(piece):
+        return False
+    if same_side(piece, target_piece):
+        return False
+    if is_king(target_piece):
+        return False
+
+    source_row = row_of(source)
+    source_col = col_of(source)
+    target_row = row_of(target)
+    target_col = col_of(target)
+    row_delta = target_row - source_row
+    col_delta = target_col - source_col
+    row_distance = abs_int(row_delta)
+    col_distance = abs_int(col_delta)
+    valid_shape = False
+
+    if piece == "P":
+        if col_delta == 0 and row_delta == -1 and target_piece == ".":
+            valid_shape = True
+        elif col_delta == 0 and row_delta == -2 and source_row == 6 and target_piece == ".":
+            valid_shape = board[(source_row - 1) * 8 + source_col] == "."
+        elif row_delta == -1 and col_distance == 1 and is_black_piece(target_piece):
+            valid_shape = True
+    elif piece == "p":
+        if col_delta == 0 and row_delta == 1 and target_piece == ".":
+            valid_shape = True
+        elif col_delta == 0 and row_delta == 2 and source_row == 1 and target_piece == ".":
+            valid_shape = board[(source_row + 1) * 8 + source_col] == "."
+        elif row_delta == 1 and col_distance == 1 and is_white_piece(target_piece):
+            valid_shape = True
+    elif is_knight(piece):
+        valid_shape = (row_distance == 2 and col_distance == 1) or (row_distance == 1 and col_distance == 2)
+    elif is_king(piece):
+        valid_shape = row_distance <= 1 and col_distance <= 1
+    elif is_bishop(piece):
+        valid_shape = row_distance == col_distance and path_clear(board, source, target)
+    elif is_rook(piece):
+        valid_shape = (row_delta == 0 or col_delta == 0) and path_clear(board, source, target)
+    elif is_queen(piece):
+        straight = row_delta == 0 or col_delta == 0
+        diagonal = row_distance == col_distance
+        valid_shape = (straight or diagonal) and path_clear(board, source, target)
+
+    if not valid_shape:
+        return False
+
+    board[target] = piece
+    board[source] = "."
+    leaves_check = side_is_in_check(board, white_turn)
+    board[source] = piece
+    board[target] = target_piece
+    return not leaves_check
+
+
+def apply_move(board, source, target):
+    piece = board[source]
+    board[target] = piece
+    board[source] = "."
+    target_row = row_of(target)
+    if piece == "P" and target_row == 0:
+        board[target] = "Q"
+    if piece == "p" and target_row == 7:
+        board[target] = "q"
+    return board
+
+
+def square_name(square):
+    files = ["a", "b", "c", "d", "e", "f", "g", "h"]
+    return files[col_of(square)] + str(8 - row_of(square))
+
+
+def is_even(value):
+    while value >= 2:
+        value = value - 2
+    return value == 0
+
+
+def square_style(square, cursor, selected, legal):
+    if square == cursor:
+        return ansi("1;37;44m")
+    if square == selected:
+        return ansi("1;30;43m")
+    if legal:
+        return ansi("1;30;42m")
+    if is_even(row_of(square) + col_of(square)):
+        return ansi("37;48;5;94m")
+    return ansi("30;48;5;223m")
+
+
+def render_board(board, cursor, selected, white_turn, message):
+    print(ansi("2J") + ansi("H") + ansi("?25l") + ansi("0m") + "TYRION TERMINAL CHESS")
+    print("Arrow keys: move cursor | Enter/Space: select or move | q: quit")
+    print("Uppercase: White | lowercase: Black | no castling/en-passant")
+    print("")
+    print("       a  b  c  d  e  f  g  h")
+    for row in range(8):
+        line = " " + str(8 - row) + "   "
+        for col in range(8):
+            square = row * 8 + col
+            piece = board[square]
+            legal = selected >= 0 and piece_move_is_legal(board, selected, square, white_turn)
+            glyph = piece
+            if legal and piece == ".":
+                glyph = "*"
+            line = line + square_style(square, cursor, selected, legal) + " " + glyph + " "
+        print(line + ansi("0m") + "  " + str(8 - row))
+    print("       a  b  c  d  e  f  g  h")
+    turn_name = "White"
+    if not white_turn:
+        turn_name = "Black"
+    print("")
+    print("Turn:", turn_name, " Cursor:", square_name(cursor))
+    if selected >= 0:
+        print("Selected:", square_name(selected), board[selected])
+    print(message + ansi("0m") + ansi("J"))
+
+
+board = initial_board()
+cursor = 6 * 8 + 4
+selected = -1
+white_turn = True
+message = "Select a white piece."
+running = True
+
+while running:
+    render_board(board, cursor, selected, white_turn, message)
+    event = read_key()
+    key = event["key"]
+    text = event["text"]
+    if key == "eof" or text == "q" or text == "Q":
+        running = False
+    elif key == "up":
+        if row_of(cursor) > 0:
+            cursor = cursor - 8
+    elif key == "down":
+        if row_of(cursor) < 7:
+            cursor = cursor + 8
+    elif key == "left":
+        if col_of(cursor) > 0:
+            cursor = cursor - 1
+    elif key == "right":
+        if col_of(cursor) < 7:
+            cursor = cursor + 1
+    elif key == "enter" or key == "space":
+        if selected < 0:
+            candidate = board[cursor]
+            if candidate == ".":
+                message = "That square is empty."
+            elif white_turn and not is_white_piece(candidate):
+                message = "White must select an uppercase piece."
+            elif not white_turn and not is_black_piece(candidate):
+                message = "Black must select a lowercase piece."
+            else:
+                selected = cursor
+                message = "Choose a highlighted destination."
+        elif cursor == selected:
+            selected = -1
+            message = "Selection cancelled."
+        elif piece_move_is_legal(board, selected, cursor, white_turn):
+            origin = square_name(selected)
+            destination = square_name(cursor)
+            board = apply_move(board, selected, cursor)
+            white_turn = not white_turn
+            selected = -1
+            message = origin + " -> " + destination
+            if side_is_in_check(board, white_turn):
+                message = message + "  CHECK!"
+        else:
+            message = "Illegal move. Choose another square or cancel at the source."
+
+print(ansi("0m") + ansi("?25h") + "Game closed.")

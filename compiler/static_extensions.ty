@@ -1,0 +1,239 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# Static host-extension planning for direct-native applications.
+
+
+def native_package_write_embedded(name, path):
+    if contains_text(name, "\n") or contains_text(path, "\n"):
+        fail("invalid embedded native package path")
+    handle = __tyrion_native_host_load("toolchain")
+    result = none
+    try:
+        result = __tyrion_native_host_call(handle, "resource.write", name + "\n" + path)
+    finally:
+        __tyrion_native_host_unload(handle)
+    if result != "ok":
+        if result == none:
+            fail("embedded native package unavailable: " + name)
+        fail("embedded native package extraction failed: " + result)
+    return path
+
+
+def static_extension_builtin(name):
+    if name == "tls":
+        return {"present": True, "name": "tls", "call_symbol": "tyext_tls_call_v1", "resource": "tls"}
+    return {"present": False, "name": "", "call_symbol": "", "resource": ""}
+
+def static_extension_manifest_scalar(source, key):
+    prefix = key + " = \""
+    for line in source.split("\n"):
+        line = line.strip()
+        if line.startswith(prefix) and line.endswith("\""):
+            return line[len(prefix):len(line) - 1]
+    return ""
+
+def static_extension_manifest_sources(source):
+    prefix = "sources = ["
+    for line in source.split("\n"):
+        line = line.strip()
+        if line.startswith(prefix) and line.endswith("]"):
+            body = line[len(prefix):len(line) - 1].strip()
+            if body == "":
+                return []
+            sources = []
+            for item in body.split(","):
+                item = item.strip()
+                if len(item) < 2 or not item.startswith("\"") or not item.endswith("\""):
+                    fail("invalid static extension sources list")
+                value = item[1:len(item) - 1]
+                if contains_text(value, "\""):
+                    fail("invalid static extension source path: " + value)
+                sources = method_append(sources, value)
+            return sources
+    return []
+
+def static_extension_identifier_valid(value):
+    if value == "":
+        return False
+    idx = 0
+    while idx < len(value):
+        valid = is_ident_continue(value[idx])
+        if valid != True:
+            return False
+        idx = idx + 1
+    return True
+
+def static_extension_append_unique(names, name):
+    present = list_contains_string(names, name)
+    if present != True:
+        names = method_append(names, name)
+    return names
+
+def static_extension_expr_names_configured(expr, names, dynamic_allowed):
+    kind = expr["kind"]
+    if kind == "call":
+        if expr["callee"]["kind"] == "var" and expr["callee"]["value"] == "__tyrion_native_host_load":
+            if len(expr["args"]) != 1:
+                fail("host extension load requires one extension name")
+            if expr["args"][0]["kind"] == "string":
+                names = static_extension_append_unique(names, expr["args"][0]["value"])
+            elif not dynamic_allowed:
+                fail("non-literal host load requires --ext-dynamic=allowed")
+        names = static_extension_expr_names_configured(expr["callee"], names, dynamic_allowed)
+        for arg in expr["args"]:
+            if arg["kind"] == "kwarg":
+                names = static_extension_expr_names_configured(arg["value"], names, dynamic_allowed)
+            else:
+                names = static_extension_expr_names_configured(arg, names, dynamic_allowed)
+        return names
+    if kind == "method_call":
+        names = static_extension_expr_names_configured(expr["receiver"], names, dynamic_allowed)
+        for arg in expr["args"]:
+            if arg["kind"] == "kwarg":
+                names = static_extension_expr_names_configured(arg["value"], names, dynamic_allowed)
+            else:
+                names = static_extension_expr_names_configured(arg, names, dynamic_allowed)
+        return names
+    if kind == "binary":
+        names = static_extension_expr_names_configured(expr["left"], names, dynamic_allowed)
+        return static_extension_expr_names_configured(expr["right"], names, dynamic_allowed)
+    if kind == "unary" or kind == "kwarg" or kind == "lambda":
+        if kind == "lambda":
+            return static_extension_expr_names_configured(expr["body"], names, dynamic_allowed)
+        return static_extension_expr_names_configured(expr["value"], names, dynamic_allowed)
+    if kind == "index":
+        names = static_extension_expr_names_configured(expr["receiver"], names, dynamic_allowed)
+        return static_extension_expr_names_configured(expr["index"], names, dynamic_allowed)
+    if kind == "slice":
+        names = static_extension_expr_names_configured(expr["receiver"], names, dynamic_allowed)
+        names = static_extension_expr_names_configured(expr["start"], names, dynamic_allowed)
+        return static_extension_expr_names_configured(expr["stop"], names, dynamic_allowed)
+    if kind == "attr":
+        return static_extension_expr_names_configured(expr["receiver"], names, dynamic_allowed)
+    if kind == "list" or kind == "tuple" or kind == "set":
+        for item in expr["items"]:
+            names = static_extension_expr_names_configured(item, names, dynamic_allowed)
+        return names
+    if kind == "dict":
+        for entry in expr["entries"]:
+            names = static_extension_expr_names_configured(entry["key"], names, dynamic_allowed)
+            names = static_extension_expr_names_configured(entry["value"], names, dynamic_allowed)
+        return names
+    if kind == "comprehension":
+        names = static_extension_expr_names_configured(expr["iterable"], names, dynamic_allowed)
+        names = static_extension_expr_names_configured(expr["condition"], names, dynamic_allowed)
+        names = static_extension_expr_names_configured(expr["expr"], names, dynamic_allowed)
+        names = static_extension_expr_names_configured(expr["key"], names, dynamic_allowed)
+        return static_extension_expr_names_configured(expr["value"], names, dynamic_allowed)
+    return names
+
+def static_extension_expr_names(expr, names):
+    return static_extension_expr_names_configured(expr, names, False)
+
+def static_extension_statement_names_configured(items, names, dynamic_allowed):
+    for stmt in items:
+        kind = stmt["kind"]
+        if kind == "assign":
+            names = static_extension_expr_names_configured(stmt["target"], names, dynamic_allowed)
+            names = static_extension_expr_names_configured(stmt["value"], names, dynamic_allowed)
+        elif kind == "expr" or kind == "return" or kind == "raise" or kind == "yield":
+            names = static_extension_expr_names_configured(stmt["value"], names, dynamic_allowed)
+        elif kind == "if":
+            names = static_extension_expr_names_configured(stmt["condition"], names, dynamic_allowed)
+            names = static_extension_statement_names_configured(stmt["body"], names, dynamic_allowed)
+            for branch in stmt["elifs"]:
+                names = static_extension_expr_names_configured(branch["condition"], names, dynamic_allowed)
+                names = static_extension_statement_names_configured(branch["body"], names, dynamic_allowed)
+            names = static_extension_statement_names_configured(stmt["else_body"], names, dynamic_allowed)
+        elif kind == "while":
+            names = static_extension_expr_names_configured(stmt["condition"], names, dynamic_allowed)
+            names = static_extension_statement_names_configured(stmt["body"], names, dynamic_allowed)
+        elif kind == "for":
+            names = static_extension_expr_names_configured(stmt["iterable"], names, dynamic_allowed)
+            names = static_extension_statement_names_configured(stmt["body"], names, dynamic_allowed)
+        elif kind == "with":
+            names = static_extension_expr_names_configured(stmt["resource"], names, dynamic_allowed)
+            names = static_extension_statement_names_configured(stmt["body"], names, dynamic_allowed)
+        elif kind == "try":
+            names = static_extension_statement_names_configured(stmt["body"], names, dynamic_allowed)
+            names = static_extension_statement_names_configured(stmt["except_body"], names, dynamic_allowed)
+            names = static_extension_statement_names_configured(stmt["finally_body"], names, dynamic_allowed)
+        elif kind == "function" or kind == "class":
+            names = static_extension_statement_names_configured(stmt["body"], names, dynamic_allowed)
+    return names
+
+def static_extension_statement_names(items, names):
+    return static_extension_statement_names_configured(items, names, False)
+
+def static_extension_plan_configured(program, extension_root, dynamic_mode):
+    if dynamic_mode != "off" and dynamic_mode != "allowed":
+        fail("invalid --ext-dynamic mode: " + dynamic_mode)
+    names = static_extension_statement_names_configured(program["items"], [], dynamic_mode == "allowed")
+    extensions = []
+    for name in names:
+        name_valid = static_extension_identifier_valid(name)
+        if name_valid != True:
+            fail("invalid static extension name: " + name)
+        builtin = static_extension_builtin(name)
+        if builtin["present"]:
+            extensions = method_append(extensions, {"id": len(extensions), "name": name, "call_symbol": builtin["call_symbol"], "sources": [], "source_count": 0, "source_path": "", "embedded_resource": builtin["resource"]})
+            continue
+        root = extension_root + "/" + name
+        manifest_path = root + "/ext.toml"
+        manifest = read_text_file(manifest_path)
+        manifest_name = static_extension_manifest_scalar(manifest, "name")
+        abi = static_extension_manifest_scalar(manifest, "abi")
+        call_symbol = static_extension_manifest_scalar(manifest, "call_symbol")
+        sources = static_extension_manifest_sources(manifest)
+        if manifest_name != name:
+            fail("static extension manifest name mismatch: " + name)
+        if abi != "tyrion-host-ext/v1":
+            fail("unsupported static extension ABI: " + abi)
+        symbol_valid = static_extension_identifier_valid(call_symbol)
+        if symbol_valid != True:
+            fail("invalid static extension call symbol: " + call_symbol)
+        if len(sources) == 0:
+            fail("static extension requires at least one source: " + name)
+        source_paths = []
+        for source in sources:
+            invalid_source = source == ""
+            if not invalid_source:
+                invalid_source = source[0] == "/"
+            if not invalid_source:
+                invalid_source = contains_text(source, "..")
+            if invalid_source:
+                fail("invalid static extension source path: " + source)
+            source_paths = method_append(source_paths, root + "/" + source)
+        extensions = method_append(extensions, {"id": len(extensions), "name": name, "call_symbol": call_symbol, "sources": source_paths, "source_count": len(source_paths), "source_path": source_paths[0]})
+    return extensions
+
+def static_extension_plan(program, extension_root):
+    return static_extension_plan_configured(program, extension_root, "off")
+
+def static_extension_build_plan_configured(program, extension_mode, extension_root, dynamic_mode):
+    if dynamic_mode != "off" and dynamic_mode != "allowed":
+        fail("invalid --ext-dynamic mode: " + dynamic_mode)
+    dynamic_allowed = dynamic_mode == "allowed"
+    names = static_extension_statement_names_configured(program["items"], [], dynamic_allowed)
+    if extension_mode == "off":
+        if len(names) > 0 and not dynamic_allowed:
+            fail("static extensions are disabled")
+        return []
+    if extension_mode != "auto" and extension_mode != "required":
+        fail("invalid --ext-static mode: " + extension_mode)
+    extensions = static_extension_plan_configured(program, extension_root, dynamic_mode)
+    if extension_mode == "required" and len(extensions) == 0:
+        fail("required static extension was not referenced")
+    return extensions
+
+def static_extension_build_plan(program, extension_mode, extension_root):
+    return static_extension_build_plan_configured(program, extension_mode, extension_root, "off")
+
+def static_extension_id(plan, name):
+    for extension in plan["extensions"]:
+        if extension["name"] == name:
+            return extension["id"]
+    fail("static extension is not present in the application plan: " + name)

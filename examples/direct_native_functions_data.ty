@@ -1,0 +1,14 @@
+def addmul(a, b=3):
+    return a + b * 2
+
+nums = [1, 2, 3, 4]
+total = 0
+for n in nums:
+    total += n
+
+mapping = {"x": total, "y": addmul(total, b=1)}
+
+print("total", total)
+print("first_last", nums[0], nums[3])
+print("mapped", mapping["x"], mapping["y"])
+print("builtins", len(nums), range(5)[4], int("7"), float("2.5"), bool(0))

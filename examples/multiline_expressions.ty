@@ -1,0 +1,44 @@
+def combine(
+  items,
+  y,
+  mapping,
+):
+    return items[0] + y + mapping["foo"]
+
+
+def build(x):
+    value = combine(
+      [
+        x,
+      ],
+
+      # Continuation indentation is deliberately unrelated to the block.
+      4,
+      {
+        "foo": 5,
+      },
+    )
+    return value
+
+
+foo = build(3)
+
+nested = [
+  foo,
+  {
+    "value": (
+      foo + 1
+    )
+  }["value"]
+]
+
+indexed = enumerate(
+  [9],
+  start=5,
+)
+values = []
+values.append(
+  foo,
+)
+
+print("multiline", foo, nested, indexed[0][0], values)

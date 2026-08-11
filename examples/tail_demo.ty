@@ -1,0 +1,27 @@
+# Demonstrates file seek/read, string split/strip, and basic built-ins.
+
+def read_lines(path):
+    f = open(path, "r")
+    f.seek(0, SEEK_SET)
+    data = f.read(1024)
+    parts = data.split("\n")
+    lines = []
+    for line in parts[0:-1]:
+        lines = lines.append(line.strip())
+    return lines
+
+def greet(name, suffix="!"):
+    # keyword args + defaults
+    return "hello " + name + suffix
+
+# Demo: create a tiny log file, then read it back.
+log = open("examples_data.log", "w")
+log.write("alpha\nbeta\n")
+log.seek(0, SEEK_SET)
+
+for line in read_lines("examples_data.log"):
+    print("line:", line)
+
+print(greet("world"))
+print(greet("world", suffix="?"))
+print("current time (secs):", time())

@@ -1,0 +1,12 @@
+i = 0
+sum = 0
+while i < 5:
+    i = i + 1
+    if i == 3:
+        print("mid", i)
+    elif i > 3:
+        print("gt3", i)
+    else:
+        print("lt3", i)
+    sum = sum + i
+print("sum", sum)

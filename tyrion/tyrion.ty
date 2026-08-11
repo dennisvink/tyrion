@@ -1,0 +1,6 @@
+# Standalone single-binary Tyrion interpreter.
+
+import src.driver
+
+
+tyrion_main(argv())

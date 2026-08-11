@@ -1,0 +1,74 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# compiler / core: responsibility-owned canonical compiler module.
+
+def read_text_file(path):
+    with open(path, "r") as f:
+        data = f.read()
+    return data
+
+def write_text_file(path, text):
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def fail(message):
+    raise message
+
+def method_append(items, item):
+    out = items.append(item)
+    return out
+
+def contains_text(haystack, needle):
+    if needle == "":
+        return True
+    parts = haystack.split(needle)
+    count = len(parts)
+    if count > 1:
+        return True
+    return False
+
+def read_file(path):
+    return read_text_file(path)
+
+def make_asm_path(output_path):
+    return output_path + ".s"
+
+def run_tool(cmd, arg0, arg1, arg2):
+    result = __tyrion_run_tool(cmd, [arg0, arg1, arg2])
+    return result["ok"]
+
+def trim_spaces(text):
+    return text.strip()
+
+def first_call_name(body):
+    idx = 0
+    while idx < len(body):
+        name = call_stmt_name(body[idx])
+        if name != "":
+            return name
+        idx = idx + 1
+    return ""
+
+def list_contains_string(items, value):
+    idx = 0
+    while idx < len(items):
+        if items[idx] == value:
+            return True
+        idx = idx + 1
+    return False
+
+def split_inventory_text(text, delimiter):
+    return text.split(delimiter)
+
+def decimal_text(value):
+    return str(value)
+
+def read_key():
+    fail("read_key requires native compiler runtime")
+
+def ansi_escape():
+    fail("ansi_escape requires native compiler runtime")

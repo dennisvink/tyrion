@@ -1,0 +1,10 @@
+def add8(a, b, c, d, e, f, g, h):
+    return a + b + c + d + e + f + g + h
+
+if add8(1, 2, 3, 4, 5, 6, 7, 8) == 36:
+    print("int-call-abi-ok")
+else:
+    print("int-call-abi-fail")
+
+print(add8(4294967296, 1, 2, 3, 4, 5, 6, 7))
+print(add8(-4294967297, -1, -2, -3, -4, -5, -6, -7))

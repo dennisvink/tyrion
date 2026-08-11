@@ -1,0 +1,8 @@
+# Host-safe text helpers for Tyrion.
+
+
+def tyrion_text_contains(text, needle):
+    if needle == "":
+        return True
+    return len(text.split(needle)) > 1
+
