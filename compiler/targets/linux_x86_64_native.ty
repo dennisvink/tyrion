@@ -23095,7 +23095,11 @@ def x86_native_emit_v2_aggregate_runtime(out, include_string_print, include_writ
     out = x86_native_line(out, "movq %r14, %rsi")
     out = x86_native_line(out, "shlq $7, %rsi")
     out = x86_native_line(out, "addq 0(%r12), %rsi")
-    out = x86_native_line(out, "call __tyrion_direct_slot_clone_owned")
+    # Clone only this aggregate's backing store. Children retain their shared
+    # payloads and detach independently if a later nested mutation reaches
+    # them; recursively cloning the whole graph makes parser-state updates
+    # exponential for large imported module graphs.
+    out = x86_native_line(out, "call __tyrion_direct_slot_copy_owned")
     out = x86_native_line(out, "testl %eax, %eax")
     out = x86_native_line(out, "je .L_tyrion_direct_slot_copy_cleanup")
     out = x86_native_line(out, "addq $1, %r14")
@@ -23131,7 +23135,7 @@ def x86_native_emit_v2_aggregate_runtime(out, include_string_print, include_writ
     out = x86_native_line(out, "movq %r14, %rsi")
     out = x86_native_line(out, "shlq $7, %rsi")
     out = x86_native_line(out, "addq 0(%r12), %rsi")
-    out = x86_native_line(out, "call __tyrion_direct_slot_clone_owned")
+    out = x86_native_line(out, "call __tyrion_direct_slot_copy_owned")
     out = x86_native_line(out, "testl %eax, %eax")
     out = x86_native_line(out, "je .L_tyrion_direct_slot_copy_cleanup")
     out = x86_native_line(out, "addq $1, %r14")

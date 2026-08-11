@@ -239,7 +239,7 @@ static int tyrion_tls_load_roots(mbedtls_x509_crt *roots) {
 }
 
 static const char *tyrion_tls_connect(const char *payload) {
-  static const unsigned char personalization[] = "tyrionic-tls-client-v1";
+  static const unsigned char personalization[] = "tyrion-tls-client-v1";
   static const char *alpn[] = {"http/1.1", NULL};
   char *copy;
   char *host;

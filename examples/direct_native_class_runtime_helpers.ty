@@ -20,5 +20,5 @@ keys = mapping.keys()
 items = mapping.items()
 print("dict", keys[0], keys[1], items[0][1], items[1][1])
 
-s = "  tyrionic-lang.ty  "
+s = "  tyrion-lang.ty  "
 print("str", s.strip(), s.endswith(".ty  "), "a,b".split(",")[1])

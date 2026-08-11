@@ -5,7 +5,7 @@ script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(cd -- "$script_dir/.." && pwd)
 compiler_output_path="$script_dir/builtin_modules.ty"
 interpreter_output_path="$repo_dir/tyrion/src/builtin_modules.ty"
-temporary_path=$(mktemp "${TMPDIR:-/tmp}/tyrionic-builtin-modules.XXXXXX")
+temporary_path=$(mktemp "${TMPDIR:-/tmp}/tyrion-builtin-modules.XXXXXX")
 trap 'rm -f "$temporary_path"' EXIT
 
 if [[ $# -gt 1 || ($# -eq 1 && $1 != "--check") ]]; then

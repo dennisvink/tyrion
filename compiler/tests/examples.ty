@@ -58,7 +58,7 @@ def test_deterministic_examples():
     cases = cases.append(["examples/direct_native_aggregate_builtins.ty", "direct_native_aggregate_builtins", ["sum 14 24", "minmax 1 5 2 9", "truth True True False"]])
     cases = cases.append(["examples/direct_native_assignments.ty", "direct_native_assignments", ["counts 2 0 1", "nums 10 25 23", "unpack 1 3 2 4 5"]])
     cases = cases.append(["examples/direct_native_builtin_kwargs.ty", "direct_native_builtin_kwargs", ["sorted [1, 2, 3] [3, 2, 1]"]])
-    cases = cases.append(["examples/direct_native_class_runtime_helpers.ty", "direct_native_class_runtime_helpers", ["class 4 8 8", "list 2 5", "dict b a 2 1", "str tyrionic-lang.ty True b"]])
+    cases = cases.append(["examples/direct_native_class_runtime_helpers.ty", "direct_native_class_runtime_helpers", ["class 4 8 8", "list 2 5", "dict b a 2 1", "str tyrion-lang.ty True b"]])
     cases = cases.append(["examples/direct_native_control_flow.ty", "direct_native_control_flow", ["lt3 1", "mid 3", "gt3 5", "sum 15"]])
     cases = cases.append(["examples/direct_native_exceptions_comprehensions.ty", "direct_native_exceptions_comprehensions", ["comp 3 11 12", "caught boom", "finally 5"]])
     cases = cases.append(["examples/direct_native_for_range_if_else_branch.ty", "direct_native_for_range_if_else_branch", ["for-range-if-else-ok"]])

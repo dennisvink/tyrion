@@ -1,0 +1,16 @@
+original = {
+    "outer": {"value": 1},
+    "items": [[1, 2]],
+}
+copy = original
+copy["marker"] = 9
+copy["outer"] = {"value": 2}
+copy["items"] = [[9, 2]]
+print(
+    len(original),
+    len(copy),
+    original["outer"]["value"],
+    copy["outer"]["value"],
+    original["items"][0][0],
+    copy["items"][0][0],
+)
