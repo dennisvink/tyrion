@@ -29,23 +29,23 @@ def static_extension_builtin(name):
 
 def static_extension_manifest_scalar(source, key):
     prefix = key + " = \""
-    for line in source.split("\n"):
-        line = line.strip()
+    for line in split_inventory_text(source, "\n"):
+        line = trim_spaces(line)
         if line.startswith(prefix) and line.endswith("\""):
             return line[len(prefix):len(line) - 1]
     return ""
 
 def static_extension_manifest_sources(source):
     prefix = "sources = ["
-    for line in source.split("\n"):
-        line = line.strip()
+    for line in split_inventory_text(source, "\n"):
+        line = trim_spaces(line)
         if line.startswith(prefix) and line.endswith("]"):
-            body = line[len(prefix):len(line) - 1].strip()
+            body = trim_spaces(line[len(prefix):len(line) - 1])
             if body == "":
                 return []
             sources = []
-            for item in body.split(","):
-                item = item.strip()
+            for item in split_inventory_text(body, ","):
+                item = trim_spaces(item)
                 if len(item) < 2 or not item.startswith("\"") or not item.endswith("\""):
                     fail("invalid static extension sources list")
                 value = item[1:len(item) - 1]
@@ -67,6 +67,10 @@ def static_extension_identifier_valid(value):
     return True
 
 def static_extension_append_unique(names, name):
+    # AST string fields can be borrowed views in the C-seed compiler.  Own the
+    # extension name before retaining it in the application plan; otherwise a
+    # later parser/compiler allocation can invalidate the view.
+    name = "" + name
     present = list_contains_string(names, name)
     if present != True:
         names = method_append(names, name)
@@ -79,7 +83,8 @@ def static_extension_expr_names_configured(expr, names, dynamic_allowed):
             if len(expr["args"]) != 1:
                 fail("host extension load requires one extension name")
             if expr["args"][0]["kind"] == "string":
-                names = static_extension_append_unique(names, expr["args"][0]["value"])
+                extension_name = "" + expr["args"][0]["value"]
+                names = static_extension_append_unique(names, extension_name)
             elif not dynamic_allowed:
                 fail("non-literal host load requires --ext-dynamic=allowed")
         names = static_extension_expr_names_configured(expr["callee"], names, dynamic_allowed)
@@ -174,13 +179,17 @@ def static_extension_plan_configured(program, extension_root, dynamic_mode):
     names = static_extension_statement_names_configured(program["items"], [], dynamic_mode == "allowed")
     extensions = []
     for name in names:
-        name_valid = static_extension_identifier_valid(name)
-        if name_valid != True:
-            fail("invalid static extension name: " + name)
+        # Built-ins are compiler-owned resources, not user extension names.
+        # Resolve them before generic identifier validation so the built-in
+        # TLS anchor cannot be rejected by the seed compiler's string-view
+        # validation path.
         builtin = static_extension_builtin(name)
         if builtin["present"]:
             extensions = method_append(extensions, {"id": len(extensions), "name": name, "call_symbol": builtin["call_symbol"], "sources": [], "source_count": 0, "source_path": "", "embedded_resource": builtin["resource"]})
             continue
+        name_valid = static_extension_identifier_valid(name)
+        if name_valid != True:
+            fail("invalid static extension name: " + name)
         root = extension_root + "/" + name
         manifest_path = root + "/ext.toml"
         manifest = read_text_file(manifest_path)

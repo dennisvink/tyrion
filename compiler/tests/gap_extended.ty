@@ -1,0 +1,38 @@
+class Stark:
+    def __init__(self, name):
+        self.name = name
+
+
+values = {1, 2, 3}
+values.discard(9)
+values.discard(1)
+print("sets", values, values.union({3, 4}), values.intersection({2, 8}), values.difference({2}), values.symmetric_difference({2, 4}))
+print("relations", values.isdisjoint({8}), values.issubset({2, 3, 4}), values.issuperset({2}))
+
+print("layout", "arya".capitalize(), "arya stark".title(), "ArYa".swapcase())
+print("justify", "x".center(5, "-"), "x".ljust(3, "."), "x".rjust(3, "."), "-7".zfill(4))
+print("classify", "Arya7".isalnum(), "Arya".isalpha(), "123".isdigit(), "arya".islower(), "ARYA".isupper(), " \t".isspace())
+print("split", "  Arya   Sansa ".split(), "a,b,c".split(",", 1), "a,b,c".rsplit(",", 1), "a\nb".splitlines(), "a\tb".expandtabs(4))
+print("bounds", "Winterfell".startswith(("Summer", "Winter")), "Winterfell".endswith("fell", 0, 10))
+
+arya = Stark("Arya")
+print("types", type(1), type("x"), type(arya), isinstance(arya, Stark), isinstance(1, ("str", "int")))
+print("callable", callable(Stark), callable(type), callable(1))
+print("attrs", hasattr(arya, "name"), getattr(arya, "name"), getattr(arya, "missing", "fallback"))
+setattr(arya, "title", "No One")
+print("setattr", arya.title)
+delattr(arya, "title")
+print("delattr", hasattr(arya, "title"))
+print("represent", repr(["Arya", 7]), ascii("Sansa"), format(12))
+print("construct", tuple([1, 2]), set([1, 1, 2]), dict([["name", "Arya"]]))
+print("conversion", int("ff", 16), int(), float(), bool(), str())
+encoded = (258).to_bytes(2, "big")
+print("integer", (255).bit_length(), (255).bit_count(), (7).as_integer_ratio(), (7).is_integer(), (7.0).is_integer(), int.from_bytes(encoded, "big"))
+mutable = bytearray(encoded)
+mutable.append(65)
+print("bytes", encoded.hex(), encoded, mutable, bytes([65, 114, 121, 97]).decode())
+span = range(2, 9, 2)
+print("range", span.start, span.stop, span.step, span.count(6), span.index(8))
+iterator = iter(["Arya", "Sansa"])
+print("iterator", next(iterator), next(iterator), next(iterator, "done"))
+print("keywords", "a", "b", sep="-", end="!\n", flush=True)

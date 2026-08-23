@@ -1,0 +1,9 @@
+import compiler.targets.linux_x86_64_native
+
+
+def main():
+    instruction = {"result": 0, "op": "direct_primitive_call", "type": "i32", "fields": {"primitive_id": 7}}
+    block = {"id": 0, "instructions": [instruction], "terminator": {"op": "return", "value": 0}}
+    function = {"id": 1, "name": "probe", "blocks": [block], "primitive_ids": [7]}
+    primitive_ids = x86_native_function_primitive_ids(function)
+    return primitive_ids[0]

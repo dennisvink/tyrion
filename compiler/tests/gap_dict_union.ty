@@ -1,0 +1,7 @@
+left = {"a": 1, "shared": 2}
+right = {"shared": 9, "b": 3}
+merged = left | right
+print(merged)
+print(left)
+left |= right
+print(left)

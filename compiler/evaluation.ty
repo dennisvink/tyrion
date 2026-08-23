@@ -515,17 +515,38 @@ def eval_call_expr(node, env, functions):
             idx = idx + 1
         return const_value("list", out)
     if name == "zip":
-        if len(args) != 2:
-            fail("zip currently expects two args")
-        left = const_iter_values(args[0])
-        right = const_iter_values(args[1])
+        if len(args) < 1:
+            fail("zip expects at least one iterable")
+        strict = False
+        if "strict" in kwargs:
+            strict = const_truthy(kwargs["strict"])
+        values = []
+        arg_idx = 0
+        while arg_idx < len(args):
+            values = method_append(values, const_iter_values(args[arg_idx]))
+            arg_idx = arg_idx + 1
+        if strict:
+            expected = len(values[0])
+            arg_idx = 1
+            while arg_idx < len(values):
+                if len(values[arg_idx]) != expected:
+                    fail("ValueError: zip() argument lengths differ")
+                arg_idx = arg_idx + 1
         out = []
         idx = 0
-        limit = len(left)
-        if len(right) < limit:
-            limit = len(right)
+        limit = len(values[0])
+        arg_idx = 1
+        while arg_idx < len(values):
+            if len(values[arg_idx]) < limit:
+                limit = len(values[arg_idx])
+            arg_idx = arg_idx + 1
         while idx < limit:
-            out = method_append(out, const_value("tuple", [const_clone(left[idx]), const_clone(right[idx])]))
+            row = []
+            arg_idx = 0
+            while arg_idx < len(values):
+                row = method_append(row, const_clone(values[arg_idx][idx]))
+                arg_idx = arg_idx + 1
+            out = method_append(out, const_value("tuple", row))
             idx = idx + 1
         return const_value("list", out)
     if name == "sum":
@@ -733,9 +754,9 @@ def eval_method_call_expr(node, env, functions):
             items = method_append(items, const_clone(args[0]))
         return const_value(receiver["kind"], items)
     if receiver["kind"] == "string" and name == "strip" and len(args) == 0:
-        return const_value("string", receiver["value"].strip())
+        return const_value("string", trim_spaces(receiver["value"]))
     if receiver["kind"] == "string" and name == "split" and len(args) == 1:
-        parts = receiver["value"].split(args[0]["value"])
+        parts = split_inventory_text(receiver["value"], args[0]["value"])
         out = []
         idx = 0
         while idx < len(parts):
@@ -764,6 +785,14 @@ def eval_method_call_expr(node, env, functions):
         while idx < len(keys):
             key = keys[idx]
             out = method_append(out, const_value("list", [const_value("string", key), const_clone(receiver["value"][key])]))
+            idx = idx + 1
+        return const_value("list", out)
+    if receiver["kind"] == "dict" and name == "values" and len(args) == 0:
+        values = receiver["value"].values()
+        out = []
+        idx = 0
+        while idx < len(values):
+            out = method_append(out, const_clone(values[idx]))
             idx = idx + 1
         return const_value("list", out)
     fail("unsupported method during compiler evaluation: " + receiver["kind"] + "." + name)

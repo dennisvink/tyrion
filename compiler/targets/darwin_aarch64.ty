@@ -1078,13 +1078,18 @@ def emit_aarch64_runtime_process_argv(out, target):
 
 
 def emit_darwin_aarch64_runtime_native_program_asm_into(out, target, program, plan):
-    frame_bytes = runtime_native_direct_frame_bytes(plan["top_level"], plan)
+    frame_bytes = 65536
     branch_ids = __tyrion_native_ast_builder_create()
-    state = {"target": target, "frame": plan["top_level"], "frame_bytes": frame_bytes, "branch_ids": branch_ids, "break_label": "", "continue_label": "", "return_label": "", "raise_label": "", "exception_slot": 0, "temp_base": len(plan["top_level"]["locals"]), "lambda_index": 0, "generator": False, "finally_label": "", "finally_pending_slot": 0, "finally_scope_path": ""}
+    # Keep top-level temporaries outside source locals.  In particular, a
+    # direct user-function call needs a distinct destination and exception
+    # slot; starting temporaries at the local count made zero-argument calls
+    # alias those slots and discard their return value.
+    state = {"target": target, "frame": plan["top_level"], "frame_bytes": frame_bytes, "branch_ids": branch_ids, "break_label": "", "continue_label": "", "return_label": "", "raise_label": "", "exception_slot": 0, "temp_base": len(plan["top_level"]["locals"]) + 1, "lambda_index": 0, "generator": False, "finally_label": "", "finally_pending_slot": 0, "finally_scope_path": "", "synthetic_slots": [], "range_names": [], "range_descriptors": []}
+    state = runtime_native_direct_collect_range_descriptors(runtime_native_top_level_items(program), state)
     out = asm_raw(out, "# tyrion-runtime-native-asm v1 target=" + target["triple"] + "\n")
     out = asm_section(out, target["text_section"])
     for fn_plan in plan["functions"]:
-        out = emit_runtime_native_direct_function(out, program, plan, fn_plan, target)
+        out = emit_runtime_native_direct_function_v2(out, program, plan, fn_plan, target)
     out = asm_global_c_main(out, target)
     out = asm_addr(out, target, "x9", "__tyrion_app_process_argc")
     out = asm_line(out, "str x0, [x9]")
@@ -1102,10 +1107,13 @@ def emit_darwin_aarch64_runtime_native_program_asm_into(out, target, program, pl
     out = asm_line(out, "str x10, [x9]")
     out = emit_runtime_native_direct_statements(out, runtime_native_top_level_items(program), plan, state, "_top")
     out = asm_line(out, "mov w0, #0")
-    out = asm_line(out, "ldr x15, =" + str(frame_bytes))
-    out = asm_line(out, "add sp, sp, x15")
-    out = asm_line(out, "ldp x29, x30, [sp], #16")
-    out = asm_line(out, "ret")
+    if target["backend"] == "linux-aarch64":
+        out = asm_line(out, "b exit")
+    else:
+        out = asm_line(out, "ldr x15, =" + str(frame_bytes))
+        out = asm_line(out, "add sp, sp, x15")
+        out = asm_line(out, "ldp x29, x30, [sp], #16")
+        out = asm_line(out, "ret")
     out = emit_runtime_native_direct_runtime(out, target, plan)
     out = emit_aarch64_runtime_process_argv(out, target)
     out = asm_section(out, target["rodata_section"])
@@ -1117,6 +1125,7 @@ def emit_darwin_aarch64_runtime_native_program_asm_into(out, target, program, pl
     out = asm_cstr(out, "__tyrion_app_minus", "-")
     out = asm_cstr(out, "__tyrion_app_dot", ".")
     out = asm_cstr(out, "__tyrion_app_mode_r", "r")
+    out = asm_cstr(out, "__tyrion_app_input_eof_error", "EOFError: EOF when reading a line")
     out = asm_cstr(out, "L_tyrion_direct_lbracket", "[")
     out = asm_cstr(out, "L_tyrion_direct_rbracket", "]")
     out = asm_cstr(out, "L_tyrion_direct_comma_space", ", ")

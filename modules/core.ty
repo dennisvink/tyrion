@@ -1,0 +1,729 @@
+# Portable Tyrion core functions.
+#
+# These are ordinary Tyrion functions included in every module graph. Native
+# primitives remain reserved for operations that require runtime type internals
+# or platform services.
+
+
+def abs(value):
+    if value < 0:
+        return 0 - value
+    return value
+
+
+def pow(base, exponent, modulus=None):
+    if exponent < 0:
+        result = 1.0
+        count = 0 - exponent
+        while count > 0:
+            result = result / base
+            count = count - 1
+        return result
+    result = 1
+    factor = base
+    count = exponent
+    while count > 0:
+        if count % 2 == 1:
+            result = result * factor
+            if modulus != None:
+                result = result % modulus
+        count = int(count / 2)
+        if count > 0:
+            factor = factor * factor
+            if modulus != None:
+                factor = factor % modulus
+    return result
+
+
+def divmod(left, right):
+    if right == 0:
+        raise "ZeroDivisionError: division by zero"
+    quotient = int(left / right)
+    remainder = left - quotient * right
+    if remainder != 0 and ((remainder < 0 and right > 0) or (remainder > 0 and right < 0)):
+        quotient = quotient - 1
+        remainder = remainder + right
+    return (quotient, remainder)
+
+
+def round(number, ndigits=0):
+    scale = pow(10, abs(ndigits))
+    scaled = number
+    if ndigits >= 0:
+        scaled = number * scale
+    else:
+        scaled = number / scale
+    whole = int(scaled)
+    fraction = scaled - whole
+    if fraction > 0.500000001 or (fraction >= 0.499999999 and whole % 2 != 0):
+        whole = whole + 1
+    if fraction < -0.500000001 or (fraction <= -0.499999999 and whole % 2 != 0):
+        whole = whole - 1
+    if ndigits > 0:
+        return float(whole) / float(scale)
+    if ndigits < 0:
+        return whole * scale
+    return whole
+
+
+def chr(codepoint):
+    table = "\t\n\r !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    codes = [9, 10, 13]
+    value = 32
+    while value <= 126:
+        codes.append(value)
+        value = value + 1
+    index = 0
+    while index < len(codes):
+        if codes[index] == codepoint:
+            return table[index]
+        index = index + 1
+    raise "ValueError: chr currently supports ASCII code points 9, 10, 13, and 32..126"
+
+
+def ord(character):
+    if len(character) != 1:
+        raise "TypeError: ord expects one character"
+    table = "\t\n\r !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    codes = [9, 10, 13]
+    value = 32
+    while value <= 126:
+        codes.append(value)
+        value = value + 1
+    index = 0
+    while index < len(table):
+        if table[index] == character:
+            return codes[index]
+        index = index + 1
+    raise "ValueError: ord currently supports ASCII"
+
+
+def list(iterable=None):
+    if iterable == None:
+        return []
+    return [item for item in iterable]
+
+
+def __tyrion_dict_from_mapping(iterable=None, keywords=None):
+    result = {}
+    if iterable != None:
+        for pair in iterable.items():
+            result[pair[0]] = pair[1]
+    if keywords != None:
+        for key in keywords:
+            result[key] = keywords[key]
+    return result
+
+
+def __tyrion_dict_from_pairs(iterable=None, keywords=None):
+    result = {}
+    if iterable != None:
+        for pair in iterable:
+            result[pair[0]] = pair[1]
+    if keywords != None:
+        for key in keywords:
+            result[key] = keywords[key]
+    return result
+
+
+def reversed(iterable):
+    result = []
+    index = len(iterable)
+    while index > 0:
+        index = index - 1
+        result.append(iterable[index])
+    return result
+
+
+def __tyrion_map(function, *iterables):
+    result = []
+    if len(iterables) == 0:
+        raise "TypeError: map() must have at least one iterable"
+    limit = len(iterables[0])
+    iterable_index = 1
+    while iterable_index < len(iterables):
+        if len(iterables[iterable_index]) < limit:
+            limit = len(iterables[iterable_index])
+        iterable_index = iterable_index + 1
+    index = 0
+    while index < limit:
+        arguments = []
+        iterable_index = 0
+        while iterable_index < len(iterables):
+            arguments.append(iterables[iterable_index][index])
+            iterable_index = iterable_index + 1
+        if len(arguments) == 1:
+            result.append(function(arguments[0]))
+        elif len(arguments) == 2:
+            result.append(function(arguments[0], arguments[1]))
+        elif len(arguments) == 3:
+            result.append(function(arguments[0], arguments[1], arguments[2]))
+        elif len(arguments) == 4:
+            result.append(function(arguments[0], arguments[1], arguments[2], arguments[3]))
+        else:
+            result.append(function(*arguments))
+        index = index + 1
+    return result
+
+
+def map(function, *iterables):
+    return __tyrion_map(function, *iterables)
+
+
+def filter(function, iterable):
+    result = []
+    if function == None:
+        for item in iterable:
+            if item:
+                result.append(item)
+        return result
+    for item in iterable:
+        if function(item):
+            result.append(item)
+    return result
+
+
+def __tyrion_base_text(value, base, prefix):
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    if base < 2 or base > len(digits):
+        raise "ValueError: base must be between 2 and 36"
+    sign = ""
+    remaining = value
+    if remaining < 0:
+        sign = "-"
+        remaining = 0 - remaining
+    body = "0"
+    if remaining > 0:
+        body = ""
+        while remaining > 0:
+            digit = remaining % base
+            body = digits[digit] + body
+            remaining = int(remaining / base)
+    return sign + prefix + body
+
+
+def bin(value):
+    return __tyrion_base_text(value, 2, "0b")
+
+
+def oct(value):
+    return __tyrion_base_text(value, 8, "0o")
+
+
+def hex(value):
+    return __tyrion_base_text(value, 16, "0x")
+
+
+def __tyrion_string_case(text, uppercase):
+    lower = "abcdefghijklmnopqrstuvwxyz"
+    upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    result = ""
+    for character in text:
+        replacement = character
+        index = 0
+        while index < len(lower):
+            if uppercase and character == lower[index]:
+                replacement = upper[index]
+            if not uppercase and character == upper[index]:
+                replacement = lower[index]
+            index = index + 1
+        result = result + replacement
+    return result
+
+
+def __tyrion_method_lower(text):
+    return __tyrion_string_case(text, False)
+
+
+def __tyrion_method_upper(text):
+    return __tyrion_string_case(text, True)
+
+def __tyrion_core_char_in(chars, character):
+    index = 0
+    while index < len(chars):
+        if chars[index] == character:
+            return True
+        index = index + 1
+    return False
+
+def __tyrion_method_lstrip(text, chars=None):
+    if chars == None:
+        chars = " \t\n\r"
+    start = 0
+    while start < len(text) and __tyrion_core_char_in(chars, text[start]):
+        start = start + 1
+    return text[start:]
+
+def __tyrion_method_rstrip(text, chars=None):
+    if chars == None:
+        chars = " \t\n\r"
+    stop = len(text)
+    while stop > 0 and __tyrion_core_char_in(chars, text[stop - 1]):
+        stop = stop - 1
+    return text[:stop]
+
+def __tyrion_method_strip(text, chars=None):
+    return __tyrion_method_lstrip(__tyrion_method_rstrip(text, chars), chars)
+
+def __tyrion_method_split(text, separator=None, maxsplit=-1):
+    result = []
+    splits = 0
+    if separator == None:
+        whitespace = " \t\n\r\v\f"
+        start = 0
+        while start < len(text) and __tyrion_core_char_in(whitespace, text[start]):
+            start = start + 1
+        if maxsplit == 0:
+            if start < len(text):
+                return [text[start:]]
+            return []
+        index = start
+        while index < len(text):
+            if __tyrion_core_char_in(whitespace, text[index]):
+                result.append(text[start:index])
+                splits = splits + 1
+                while index < len(text) and __tyrion_core_char_in(whitespace, text[index]):
+                    index = index + 1
+                if maxsplit >= 0 and splits >= maxsplit:
+                    if index < len(text):
+                        result.append(text[index:])
+                    return result
+                start = index
+            else:
+                index = index + 1
+        if start < len(text):
+            result.append(text[start:])
+        return result
+    if separator == "":
+        raise "ValueError: empty separator"
+    if maxsplit == 0:
+        return [text]
+    start = 0
+    index = 0
+    while index + len(separator) <= len(text):
+        if text[index:index + len(separator)] == separator:
+            result.append(text[start:index])
+            splits = splits + 1
+            index = index + len(separator)
+            start = index
+            if maxsplit >= 0 and splits >= maxsplit:
+                result.append(text[start:])
+                return result
+        else:
+            index = index + 1
+    result.append(text[start:])
+    return result
+
+def __tyrion_method_rsplit(text, separator=None, maxsplit=-1):
+    if separator != None:
+        parts = __tyrion_method_split(text, separator, -1)
+        if maxsplit < 0 or maxsplit >= len(parts) - 1:
+            return parts
+        keep = len(parts) - maxsplit
+        prefix = parts[0]
+        index = 1
+        while index < keep:
+            prefix = prefix + separator + parts[index]
+            index = index + 1
+        result = [prefix]
+        while index < len(parts):
+            result.append(parts[index])
+            index = index + 1
+        return result
+    whitespace = " \t\n\r\v\f"
+    end = len(text)
+    while end > 0 and __tyrion_core_char_in(whitespace, text[end - 1]):
+        end = end - 1
+    if maxsplit == 0:
+        if end > 0:
+            return [text[:end]]
+        return []
+    reverse_parts = []
+    splits = 0
+    while end > 0:
+        token_start = end
+        while token_start > 0 and not __tyrion_core_char_in(whitespace, text[token_start - 1]):
+            token_start = token_start - 1
+        reverse_parts.append(text[token_start:end])
+        splits = splits + 1
+        if maxsplit >= 0 and splits >= maxsplit:
+            prefix_end = token_start
+            while prefix_end > 0 and __tyrion_core_char_in(whitespace, text[prefix_end - 1]):
+                prefix_end = prefix_end - 1
+            if prefix_end > 0:
+                reverse_parts.append(text[:prefix_end])
+            break
+        end = token_start
+        while end > 0 and __tyrion_core_char_in(whitespace, text[end - 1]):
+            end = end - 1
+    return reversed(reverse_parts)
+
+def __tyrion_method_splitlines(text, keepends=False):
+    result = []
+    start = 0
+    index = 0
+    while index < len(text):
+        width = 0
+        if text[index] == "\r":
+            width = 1
+            if index + 1 < len(text) and text[index + 1] == "\n":
+                width = 2
+        elif text[index] == "\n" or text[index] == "\v" or text[index] == "\f":
+            width = 1
+        if width > 0:
+            stop = index
+            if keepends:
+                stop = index + width
+            result.append(text[start:stop])
+            index = index + width
+            start = index
+        else:
+            index = index + 1
+    if start < len(text):
+        result.append(text[start:])
+    return result
+
+
+def __tyrion_string_find(text, needle, start=0, stop=None, reverse=False):
+    if stop == None or stop > len(text):
+        stop = len(text)
+    if start < 0:
+        start = len(text) + start
+    if stop < 0:
+        stop = len(text) + stop
+    if start < 0:
+        start = 0
+    found = -1
+    index = start
+    while index + len(needle) <= stop:
+        if text[index:index + len(needle)] == needle:
+            found = index
+            if not reverse:
+                return found
+        index = index + 1
+    return found
+
+
+def __tyrion_method_find(text, needle, start=0, stop=None):
+    return __tyrion_string_find(text, needle, start, stop, False)
+
+
+def __tyrion_method_rfind(text, needle, start=0, stop=None):
+    return __tyrion_string_find(text, needle, start, stop, True)
+
+
+def __tyrion_method_index(text, needle, start=0, stop=None):
+    found = __tyrion_string_find(text, needle, start, stop, False)
+    if found < 0:
+        raise "ValueError: substring not found"
+    return found
+
+
+def __tyrion_method_rindex(text, needle, start=0, stop=None):
+    found = __tyrion_string_find(text, needle, start, stop, True)
+    if found < 0:
+        raise "ValueError: substring not found"
+    return found
+
+
+def __tyrion_method_count(text, needle, start=0, stop=None):
+    # A single implementation covers strings and iterable aggregates.  The
+    # string conversion test avoids relying on a compiler-only type predicate:
+    # string needles retain their value through str(), while numeric/object
+    # needles do not.  Aggregate count follows Python's equality semantics.
+    if str(needle) != needle:
+        count = 0
+        for value in text:
+            if value == needle:
+                count = count + 1
+        return count
+    if stop == None or stop > len(text):
+        stop = len(text)
+    count = 0
+    index = start
+    while index + len(needle) <= stop:
+        if text[index:index + len(needle)] == needle:
+            count = count + 1
+            index = index + len(needle)
+        else:
+            index = index + 1
+    return count
+
+
+def __tyrion_method_list_count(values, needle):
+    count = 0
+    for value in values:
+        if value == needle:
+            count = count + 1
+    return count
+
+def __tyrion_method_dict_get(values, key, default=None):
+    if key in values:
+        return values[key]
+    return default
+
+def __tyrion_method_dict_values(values):
+    result = []
+    for key in values:
+        result.append(values[key])
+    return result
+
+def __tyrion_method_dict_update(values, other=None, keyword_values=None):
+    if other != None:
+        for key in other:
+            values[key] = other[key]
+    if keyword_values != None:
+        for key in keyword_values:
+            values[key] = keyword_values[key]
+    return values
+
+def __tyrion_method_dict_pop_rebuild(values, key, default=None, has_default=False):
+    if key in values:
+        result = values[key]
+        replacement = {}
+        for entry_key in values:
+            if entry_key != key:
+                replacement[entry_key] = values[entry_key]
+        return (result, replacement)
+    if has_default:
+        return (default, values)
+    raise "KeyError: " + str(key)
+
+def __tyrion_method_dict_setdefault(values, key, default=None):
+    if key in values:
+        return values[key]
+    values[key] = default
+    return default
+
+def __tyrion_method_dict_setdefault_pair(values, key, default=None):
+    if key in values:
+        return (values[key], values)
+    values[key] = default
+    return (default, values)
+
+def __tyrion_method_dict_clear_pair(values):
+    return (None, {})
+
+def __tyrion_method_dict_popitem_pair(values):
+    keys = values.keys()
+    if len(keys) == 0:
+        raise "KeyError: popitem from empty dictionary"
+    key = keys[len(keys) - 1]
+    value = values[key]
+    replacement = {}
+    index = 0
+    while index < len(keys) - 1:
+        entry_key = keys[index]
+        replacement[entry_key] = values[entry_key]
+        index = index + 1
+    return ((key, value), replacement)
+
+def __tyrion_dict_fromkeys(iterable, value=None):
+    result = {}
+    for key in iterable:
+        result[key] = value
+    return result
+
+def __tyrion_dict_union(left, right):
+    result = {}
+    for key in left:
+        result[key] = left[key]
+    for key in right:
+        result[key] = right[key]
+    return result
+
+def __tyrion_method_list_index(values, needle, start=0, stop=None):
+    if stop == None or stop > len(values):
+        stop = len(values)
+    if start < 0:
+        start = len(values) + start
+    if start < 0:
+        start = 0
+    index = start
+    while index < stop:
+        if values[index] == needle:
+            return index
+        index = index + 1
+    raise "ValueError"
+
+def __tyrion_delete_index(values, index):
+    if str(index) == index:
+        if index in values:
+            result = {}
+            for key in values:
+                if key != index:
+                    result[key] = values[key]
+            return result
+        raise "KeyError: " + str(index)
+    length = len(values)
+    if index < 0:
+        index = length + index
+    if index < 0 or index >= length:
+        raise "IndexError: list index out of range"
+    result = []
+    cursor = 0
+    while cursor < length:
+        if cursor != index:
+            result.append(values[cursor])
+        cursor = cursor + 1
+    return result
+
+def __tyrion_delete_slice(values, start=None, stop=None):
+    length = len(values)
+    if start == None:
+        start = 0
+    if stop == None:
+        stop = length
+    if start < 0:
+        start = length + start
+    if stop < 0:
+        stop = length + stop
+    if start < 0:
+        start = 0
+    if stop < 0:
+        stop = 0
+    if start > length:
+        start = length
+    if stop > length:
+        stop = length
+    result = []
+    cursor = 0
+    while cursor < length:
+        if cursor < start or cursor >= stop:
+            result.append(values[cursor])
+        cursor = cursor + 1
+    return result
+
+def __tyrion_assign_slice(values, start, stop, replacement):
+    length = len(values)
+    if start == None:
+        start = 0
+    if stop == None:
+        stop = length
+    if start < 0:
+        start = length + start
+    if stop < 0:
+        stop = length + stop
+    if start < 0:
+        start = 0
+    if stop < 0:
+        stop = 0
+    if start > length:
+        start = length
+    if stop > length:
+        stop = length
+    result = []
+    cursor = 0
+    while cursor < start:
+        result.append(values[cursor])
+        cursor = cursor + 1
+    for item in replacement:
+        result.append(item)
+    cursor = stop
+    while cursor < length:
+        result.append(values[cursor])
+        cursor = cursor + 1
+    return result
+
+def __tyrion_method_list_reverse(values):
+    result = []
+    index = len(values)
+    while index > 0:
+        index = index - 1
+        result.append(values[index])
+    return result
+
+def __tyrion_method_list_sort(values, key=None, reverse=False):
+    ordered = []
+    for value in values:
+        ordered.append(value)
+    left = 0
+    while left < len(ordered):
+        right = left + 1
+        while right < len(ordered):
+            left_value = ordered[left]
+            right_value = ordered[right]
+            if key != None:
+                left_value = key(left_value)
+                right_value = key(right_value)
+            should_swap = right_value < left_value
+            if reverse:
+                should_swap = left_value < right_value
+            if should_swap:
+                swap = ordered[left]
+                ordered[left] = ordered[right]
+                ordered[right] = swap
+            right = right + 1
+        left = left + 1
+    return ordered
+
+def __tyrion_method_list_sort_plain(values, reverse=False):
+    ordered = []
+    for value in values:
+        ordered.append(value)
+    left = 0
+    while left < len(ordered):
+        right = left + 1
+        while right < len(ordered):
+            should_swap = ordered[right] < ordered[left]
+            if reverse:
+                should_swap = ordered[left] < ordered[right]
+            if should_swap:
+                swap = ordered[left]
+                ordered[left] = ordered[right]
+                ordered[right] = swap
+            right = right + 1
+        left = left + 1
+    return ordered
+
+
+def __tyrion_method_replace(text, old, replacement, limit=-1):
+    if old == "":
+        raise "ValueError: empty replacement pattern is not supported yet"
+    result = ""
+    start = 0
+    replaced = 0
+    found = __tyrion_string_find(text, old, start, None, False)
+    while found >= 0 and (limit < 0 or replaced < limit):
+        result = result + text[start:found] + replacement
+        start = found + len(old)
+        replaced = replaced + 1
+        found = __tyrion_string_find(text, old, start, None, False)
+    return result + text[start:]
+
+
+def __tyrion_method_join(separator, values):
+    result = ""
+    index = 0
+    for value in values:
+        if index > 0:
+            result = result + separator
+        result = result + value
+        index = index + 1
+    return result
+
+
+def __tyrion_method_removeprefix(text, prefix):
+    if len(prefix) <= len(text) and text[0:len(prefix)] == prefix:
+        return text[len(prefix):]
+    return text
+
+
+def __tyrion_method_removesuffix(text, suffix):
+    if len(suffix) <= len(text) and text[len(text) - len(suffix):] == suffix:
+        return text[:len(text) - len(suffix)]
+    return text
+
+
+def __tyrion_method_partition(text, separator):
+    found = __tyrion_string_find(text, separator, 0, None, False)
+    if found < 0:
+        return (text, "", "")
+    return (text[:found], separator, text[found + len(separator):])
+
+
+def __tyrion_method_rpartition(text, separator):
+    found = __tyrion_string_find(text, separator, 0, None, True)
+    if found < 0:
+        return ("", "", text)
+    return (text[:found], separator, text[found + len(separator):])

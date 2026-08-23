@@ -1,0 +1,2 @@
+print(map(lambda value: value * 2, [1, 2, 3]))
+print(filter(lambda value: value > 1, [1, 2, 3]))

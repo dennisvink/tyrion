@@ -1,0 +1,3 @@
+values = {"a": 1, "b": 2}
+del values["a"]
+print(values)

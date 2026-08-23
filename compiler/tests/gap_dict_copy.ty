@@ -1,0 +1,5 @@
+values = {"a": 1}
+copy = values.copy()
+copy["b"] = 2
+print(values)
+print(copy)

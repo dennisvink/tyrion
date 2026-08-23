@@ -1,0 +1,5 @@
+empty = dict()
+from_pairs = dict([("a", 1), ("b", 2)])
+from_mapping = dict({"a": 3})
+with_keywords = dict(a=4, b=5)
+print(len(empty), len(from_pairs), from_pairs["a"], from_pairs["b"], from_mapping["a"], with_keywords["b"])

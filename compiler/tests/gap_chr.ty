@@ -1,0 +1,3 @@
+print(chr(65))
+print(chr(10))
+print(chr(126))

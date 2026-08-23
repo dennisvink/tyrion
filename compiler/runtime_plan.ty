@@ -52,6 +52,8 @@ def runtime_native_expr_metadata(expr, metadata):
     if kind == "call":
         if expr["callee"]["kind"] == "var":
             metadata["calls"] = runtime_native_append_unique(metadata["calls"], expr["callee"]["value"])
+            if expr["callee"]["value"] == "next":
+                metadata["literals"] = runtime_native_append_literal(metadata["literals"], "string", "StopIteration")
         metadata = runtime_native_expr_metadata(expr["callee"], metadata)
         for arg in expr["args"]:
             if arg["kind"] == "kwarg":
@@ -60,6 +62,12 @@ def runtime_native_expr_metadata(expr, metadata):
                 metadata = runtime_native_expr_metadata(arg, metadata)
         return metadata
     if kind == "method_call":
+        if expr["name"] == "reverse" or expr["name"] == "sort":
+            metadata["calls"] = runtime_native_append_unique(metadata["calls"], "__tyrion_method_list_" + expr["name"])
+        if expr["name"] == "update":
+            for update_arg in expr["args"]:
+                if update_arg["kind"] == "kwarg":
+                    metadata["literals"] = runtime_native_append_literal(metadata["literals"], "string", update_arg["name"])
         metadata = runtime_native_expr_metadata(expr["receiver"], metadata)
         for arg in expr["args"]:
             if arg["kind"] == "kwarg":
@@ -579,7 +587,8 @@ def runtime_native_reachable_plan(program, target):
                 fail("runtime-native reachability rejected method without class")
             name = native_classes[class_idx]["name"] + "." + function_plan["method_name"]
         if name[0:8] != "@lambda:":
-            names = runtime_native_append_name(names, name)
+            if not ((target["backend"] == "darwin-aarch64" or target["backend"] == "linux-aarch64") and (name == "map" or name == "filter" or name == "__tyrion_map")):
+                names = runtime_native_append_name(names, name)
         reachable_idx = reachable_idx + 1
     return {"names": names, "class_ids": reachable["class_ids"]}
 
@@ -817,10 +826,10 @@ def runtime_native_direct_statements_have_control_exit(items):
     return application_statements_have_control_exit(items)
 
 def runtime_native_direct_statement_supported(stmt, function_names, in_function):
-    return analyze_application_statement(stmt, application_name_index(function_names), in_function, "stmt")["ok"]
+    return analyze_application_statement(stmt, application_name_index(function_names), in_function, False, "stmt")["ok"]
 
 def runtime_native_direct_statements_supported(items, function_names, in_function):
-    return analyze_application_statements(items, application_name_index(function_names), in_function, "statements")["ok"]
+    return analyze_application_statements(items, application_name_index(function_names), in_function, False, "statements")["ok"]
 
 def runtime_native_direct_program_supported(program):
     function_names = runtime_native_function_names(program)
@@ -850,11 +859,15 @@ def runtime_native_direct_global_index(plan, name):
         idx = idx + 1
     fail("runtime-native direct name not found: " + name)
 
-def runtime_native_direct_slot_offset(slot):
-    return slot * generated_value_slot_size()
+def runtime_native_direct_slot_offset_v2(slot):
+    # Keep the direct native planner tied to the ABI's literal slot width.
+    # The bootstrap evaluator can resolve generated ABI helpers through a
+    # stale compatibility table; using the canonical width here prevents a
+    # zero-byte frame/offset from reaching AArch64 output.
+    return slot * 128
 
-def runtime_native_direct_slot_addr(out, reg, slot):
-    offset = runtime_native_direct_slot_offset(slot)
+def runtime_native_direct_slot_addr_v2(out, reg, slot):
+    offset = runtime_native_direct_slot_offset_v2(slot)
     out = asm_line(out, "ldr x15, =" + str(offset))
     return asm_line(out, "add " + reg + ", sp, x15")
 
@@ -862,11 +875,11 @@ def runtime_native_direct_frame_bytes(frame, plan):
     slots = len(frame["locals"]) + plan["temporary_slots"] + 16
     if slots < 64:
         slots = 64
-    return slots * generated_value_slot_size()
+    return slots * 128
 
 def runtime_native_direct_copy_slot(out, dst, src):
-    out = runtime_native_direct_slot_addr(out, "x0", dst)
-    out = runtime_native_direct_slot_addr(out, "x1", src)
+    out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+    out = runtime_native_direct_slot_addr_v2(out, "x1", src)
     return asm_line(out, "bl __tyrion_app_slot_copy")
 
 def runtime_native_direct_literal_id(plan, kind, value):
@@ -896,6 +909,18 @@ def runtime_native_direct_anonymous_lambda_plan(plan, owner, ordinal):
             current = current + 1
     fail("runtime-native anonymous lambda plan not found: " + owner + ":" + str(ordinal))
 
+def runtime_native_direct_lambda_plan_for_expr(plan, owner, expression, ordinal):
+    # Prefer the exact body AST over traversal order.  Native emitters may
+    # encounter nested lambda-bearing calls in a different order than the
+    # registration walk, which otherwise binds the wrong predicate.
+    for fn_plan in plan["functions"]:
+        anonymous = False
+        if "anonymous" in fn_plan:
+            anonymous = fn_plan["anonymous"]
+        if anonymous and fn_plan["owner"] == owner and fn_plan["body_expr"] == expression["body"]:
+            return fn_plan
+    return runtime_native_direct_anonymous_lambda_plan(plan, owner, ordinal)
+
 def runtime_native_direct_source_function(program, name):
     for stmt in program["items"]:
         if stmt["kind"] == "function" and stmt["name"] == name:
@@ -910,13 +935,18 @@ def link_runtime_native_direct_program(target, asm_path, output_path, plan):
     dynamic_extension_mode = "off"
     if "dynamic_extension_mode" in plan:
         dynamic_extension_mode = plan["dynamic_extension_mode"]
-    if plan["extension_count"] == 0 and dynamic_extension_mode == "off":
+    requires_cache_codec = runtime_native_name_in_list(plan["operations"], "__tyrion_native_cache_encode") or runtime_native_name_in_list(plan["operations"], "__tyrion_native_cache_decode")
+    if plan["extension_count"] == 0 and dynamic_extension_mode == "off" and not requires_cache_codec:
         return link_executable(target, asm_path, output_path)
     object_path = output_path + ".o"
     if not run_tool("cc", "-c", asm_path, "-o" + object_path):
         fail("native-tool rejected code=assemble-failed;path=" + asm_path + ";output=" + object_path)
     response_path = output_path + ".extlink.rsp"
     response = "\"" + object_path + "\"\n"
+    if requires_cache_codec:
+        cache_source_path = output_path + ".cache-codec.c"
+        write_text_file(cache_source_path, compiler_cache_runtime_c_source())
+        response = response + "\"" + cache_source_path + "\"\n"
     for extension in plan["extensions"]:
         embedded_resource = ""
         if "embedded_resource" in extension:
@@ -932,19 +962,32 @@ def link_runtime_native_direct_program(target, asm_path, output_path, plan):
                 response = response + "\"" + source_path + "\"\n"
     if dynamic_extension_mode == "allowed" and target["os"] == "linux":
         response = response + "-ldl\n"
+    # Keep the extension link lane aligned with ordinary native links.  The
+    # response file is also used because run_tool has a bounded argument ABI.
+    response = response + "-lm\n"
     write_text_file(response_path, response)
     if not run_tool("cc", "@" + response_path, "-o", output_path):
         fail("native-tool rejected code=link-failed;path=" + object_path + ";output=" + output_path)
     return True
 
-def build_runtime_native_direct_program(program, plan, input_path, output_path):
+def build_runtime_native_direct_program(program, plan, input_path, output_path, cache_dir="", cache_fingerprint="", cache_stats=False):
     asm_path = output_path + ".runtime.s"
     artifact_path = output_path + ".tyn"
     target = host_target()
-    lowered = lower_program({"contract": "tyrion-runtime-plan-v1", "target": target, "program": program, "runtime": plan})
-    writer = asm_writer_open(asm_path)
-    writer = emit_object_source(writer, lowered)
-    asm_writer_close(writer)
+    cached_assembly = ""
+    if cache_dir != "":
+        cached_assembly = generated_asm_cache_load(cache_dir + "/" + str(compiler_cache_path_hash(cache_fingerprint)) + ".asmcache", cache_fingerprint)
+    if cached_assembly != "":
+        generated_asm_cache_note(cache_dir, "hit", cache_stats)
+        write_text_file(asm_path, cached_assembly)
+    else:
+        generated_asm_cache_note(cache_dir, "miss", cache_stats)
+        lowered = lower_program({"contract": "tyrion-runtime-plan-v1", "target": target, "program": program, "runtime": plan})
+        writer = asm_writer_open(asm_path)
+        writer = emit_object_source(writer, lowered)
+        asm_writer_close(writer)
+        if cache_dir != "":
+            generated_asm_cache_store(cache_dir + "/" + str(compiler_cache_path_hash(cache_fingerprint)) + ".asmcache", cache_fingerprint, read_text_file(asm_path))
     if not link_runtime_native_direct_program(target, asm_path, output_path, plan):
         fail("native-link rejected code=link-failed;path=" + asm_path + ";output=" + output_path)
     artifact = "tyrion-bootstrap-native v0\n"
@@ -960,18 +1003,23 @@ def build_runtime_native_direct_program(program, plan, input_path, output_path):
     write_text_file(artifact_path, artifact)
     return True
 
-def build_runtime_native_direct_program_if_supported_with_extension_config(raw_source, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode):
+def build_runtime_native_direct_program_if_supported_with_program(program, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir="", cache_fingerprint="", cache_stats=False):
     target = host_target()
     if not backend_has_operation(target, "runtime-object"):
         return False
-    parsed = parse_source(raw_source, target)
+    parsed = {"contract": "tyrion-parse-v1", "target": target, "program": program}
     analysis = analyze_program(parsed)
-    program = analysis["program"]
-    require_application_analysis(program, runtime_native_function_names(program))
-    extensions = static_extension_build_plan_configured(program, extension_mode, extension_root, dynamic_extension_mode)
+    analyzed_program = analysis["program"]
+    require_application_analysis(analyzed_program, runtime_native_function_names(analyzed_program))
+    extensions = static_extension_build_plan_configured(analyzed_program, extension_mode, extension_root, dynamic_extension_mode)
     plan_record = plan_runtime_with_extension_config(analysis, extensions, dynamic_extension_mode, extension_root)
     plan = plan_record["runtime"]
-    return build_runtime_native_direct_program(plan["program"], plan, input_path, output_path)
+    return build_runtime_native_direct_program(plan["program"], plan, input_path, output_path, cache_dir, cache_fingerprint, cache_stats)
+
+def build_runtime_native_direct_program_if_supported_with_extension_config(raw_source, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir="", cache_fingerprint=""):
+    target = host_target()
+    parsed = parse_source(raw_source, target)
+    return build_runtime_native_direct_program_if_supported_with_program(parsed["program"], input_path, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir, cache_fingerprint)
 
 def build_runtime_native_direct_program_if_supported_configured(raw_source, input_path, output_path, extension_mode, extension_root):
     return build_runtime_native_direct_program_if_supported_with_extension_config(raw_source, input_path, output_path, extension_mode, extension_root, "off")

@@ -25,10 +25,22 @@ def method_append(items, item):
 def contains_text(haystack, needle):
     if needle == "":
         return True
-    parts = haystack.split(needle)
-    count = len(parts)
-    if count > 1:
-        return True
+    haystack_len = len(haystack)
+    needle_len = len(needle)
+    if needle_len > haystack_len:
+        return False
+    start = 0
+    while start + needle_len <= haystack_len:
+        offset = 0
+        matched = True
+        while offset < needle_len:
+            if haystack[start + offset] != needle[offset]:
+                matched = False
+                break
+            offset = offset + 1
+        if matched:
+            return True
+        start = start + 1
     return False
 
 def read_file(path):
@@ -42,7 +54,20 @@ def run_tool(cmd, arg0, arg1, arg2):
     return result["ok"]
 
 def trim_spaces(text):
-    return text.strip()
+    start = 0
+    text_len = len(text)
+    while start < text_len:
+        ch = text[start]
+        if ch != " " and ch != "\t" and ch != "\r" and ch != "\n":
+            break
+        start = start + 1
+    end = text_len
+    while end > start:
+        ch = text[end - 1]
+        if ch != " " and ch != "\t" and ch != "\r" and ch != "\n":
+            break
+        end = end - 1
+    return text[start:end]
 
 def first_call_name(body):
     idx = 0
@@ -62,6 +87,8 @@ def list_contains_string(items, value):
     return False
 
 def split_inventory_text(text, delimiter):
+    if delimiter == "":
+        return [text]
     return text.split(delimiter)
 
 def decimal_text(value):

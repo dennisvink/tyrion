@@ -1,0 +1,1 @@
+print("double") if True unless False

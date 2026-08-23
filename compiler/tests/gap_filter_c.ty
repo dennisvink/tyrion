@@ -1,0 +1,15 @@
+def filter(function, iterable):
+    result = []
+    for item in iterable:
+        if function == None:
+            if item:
+                result.append(item)
+        elif function(item):
+            result.append(item)
+    return result
+
+def positive(value):
+    return value > 0
+
+print(filter(positive, [-1, 1, 2]))
+print(filter(None, [0, 1, 0, 2]))

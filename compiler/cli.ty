@@ -6,7 +6,7 @@
 # compiler / cli: responsibility-owned canonical compiler module.
 
 def compiler_usage_text():
-    return "Usage:\n  tyrionic --help\n  tyrionic --version\n  tyrionic --scan <input.ty>\n  tyrionic --tokens <input.ty>\n  tyrionic --token-summary <input.ty>\n  tyrionic --parse-summary <input.ty>\n  tyrionic --build <input.ty> --out <output>\n  tyrionic --build <input.ty> --out <output> --ext-static=<off|auto|required>\n  tyrionic --build <input.ty> --out <output> --ext-dynamic=<off|allowed> --ext-dir <path>"
+    return "Usage:\n  tyrionic --help\n  tyrionic --version\n  tyrionic --scan <input.ty>\n  tyrionic --tokens <input.ty>\n  tyrionic --token-summary <input.ty>\n  tyrionic --parse-summary <input.ty>\n  tyrionic --build <input.ty> --out <output>\n  tyrionic --build <input.ty> --out <output> --ext-static=<off|auto|required>\n  tyrionic --build <input.ty> --out <output> --ext-dynamic=<off|allowed> --ext-dir <path>\n  tyrionic --build <input.ty> --out <output> --cache-stats"
 
 def compiler_version_text():
     return "tyrion compiler 1.0.0"
@@ -20,6 +20,8 @@ def usage():
     print("  tyrionic --token-summary <input.ty>")
     print("  tyrionic --parse-summary <input.ty>")
     print("  tyrionic --build <input.ty> --out <output>")
+    print("  tyrionic --build <input.ty> --out <output> --cache-dir <directory>")
+    print("  tyrionic --build <input.ty> --out <output> --cache-stats")
     print("  tyrionic --build <input.ty> --out <output> --ext-static=<off|auto|required>")
     print("  tyrionic --build <input.ty> --out <output> --ext-dynamic=<off|allowed> --ext-dir <path>")
 
@@ -144,25 +146,88 @@ def cli_route_records_to_spec(records):
         spec["out_flag"] = "--out"
     return spec
 
-def build_runtime_native_x86_program(program, output_path, extension_mode, extension_root, dynamic_extension_mode):
+def generated_asm_cache_record(fingerprint, assembly):
+    return "TYRION_GENERATED_ASM_CACHE_V1\n" + str(len(fingerprint)) + ":" + fingerprint + assembly
+
+
+def generated_asm_cache_load(cache_path, fingerprint):
+    try:
+        record = read_text_file(cache_path)
+        header = "TYRION_GENERATED_ASM_CACHE_V1\n"
+        if len(record) < len(header) or record[0:len(header)] != header:
+            return ""
+        cursor = len(header)
+        while cursor < len(record) and record[cursor] != ":":
+            cursor = cursor + 1
+        if cursor >= len(record):
+            return ""
+        fingerprint_length = int(record[len(header):cursor])
+        start = cursor + 1
+        if fingerprint_length != len(fingerprint) or start + fingerprint_length > len(record):
+            return ""
+        if record[start:start + fingerprint_length] != fingerprint:
+            return ""
+        assembly = record[start + fingerprint_length:]
+        if assembly == "":
+            return ""
+        return assembly
+    except:
+        return ""
+
+def generated_asm_cache_store(cache_path, fingerprint, assembly):
+    temporary_path = cache_path + ".tmp"
+    write_text_file(temporary_path, generated_asm_cache_record(fingerprint, assembly))
+    if not __tyrion_run_tool("mv", [temporary_path, cache_path])["ok"]:
+        fail("compiler cache rejected code=publish-failed;path=" + cache_path)
+
+def generated_asm_cache_note(cache_dir, event, enabled=False):
+    if cache_dir == "" or not enabled:
+        return
+    stats_path = cache_dir + "/.generated-asm-cache-events"
+    previous = ""
+    try:
+        previous = read_text_file(stats_path)
+    except:
+        previous = ""
+    write_text_file(stats_path, previous + event + "\n")
+
+def build_runtime_native_x86_program(program, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir="", cache_fingerprint="", cache_context="", cache_stats=False):
     artifact_path = output_path + ".tyn"
     asm_path = make_asm_path(output_path)
     extensions = static_extension_build_plan_configured(program, extension_mode, extension_root, dynamic_extension_mode)
-    asm_writer = asm_writer_open(asm_path)
-    asm_writer = emit_linux_x86_64_direct_program_with_extension_config_asm_into(asm_writer, program, extensions, dynamic_extension_mode, extension_root)
-    asm_writer_close(asm_writer)
+    cached_assembly = ""
+    if cache_dir != "":
+        cached_assembly = generated_asm_cache_load(cache_dir + "/" + str(compiler_cache_path_hash(cache_fingerprint)) + ".asmcache", cache_fingerprint)
+    if cached_assembly != "":
+        generated_asm_cache_note(cache_dir, "hit", cache_stats)
+        write_text_file(asm_path, cached_assembly)
+    else:
+        generated_asm_cache_note(cache_dir, "miss", cache_stats)
+        asm_writer = asm_writer_open(asm_path)
+        asm_writer = emit_linux_x86_64_direct_program_with_extension_config_asm_into(asm_writer, program, extensions, dynamic_extension_mode, extension_root, cache_dir, cache_context, cache_stats)
+        asm_writer_close(asm_writer)
+        if cache_dir != "":
+            generated_asm_cache_store(cache_dir + "/" + str(compiler_cache_path_hash(cache_fingerprint)) + ".asmcache", cache_fingerprint, read_text_file(asm_path))
     artifact = "tyrion-runtime-native v1\nnative-build-target-kind=application\nnative-ir-contract=tyrion-native-ir-v2\nnative-lowering-plan=tyrion-native-direct-plan-v1\nnative-exec-mode=native-ir-v2-direct\n"
     if len(extensions) > 0:
         artifact = artifact + "native-static-extension-count=" + str(len(extensions)) + "\n"
     if dynamic_extension_mode == "allowed":
         artifact = artifact + "native-dynamic-extension-mode=allowed\n"
     write_text_file(artifact_path, artifact)
-    link_plan = {"extensions": extensions, "extension_count": len(extensions), "dynamic_extension_mode": dynamic_extension_mode, "dynamic_extension_root": extension_root}
+    application = require_application_analysis(program, runtime_native_function_names(program))
+    link_plan = {"extensions": extensions, "extension_count": len(extensions), "dynamic_extension_mode": dynamic_extension_mode, "dynamic_extension_root": extension_root, "operations": application["runtime_operations"], "semantic_operations": application["operations"]}
     if not link_runtime_native_direct_program(host_target(), asm_path, output_path, link_plan):
         fail("native-link rejected code=link-failed;path=" + asm_path + ";output=" + output_path)
     return True
 
-def build_runtime_native_program_if_needed(raw_source, program, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode):
+# Five-argument entry point used by the native compiler runtime dispatch.  The
+# runtime route owns source text (rather than a pre-parsed AST), so parse it
+# through the same frontend before entering the Native IR v2 x86 builder.
+def build_runtime_native_x86_program_from_source(raw_source, output_path, extension_mode, extension_root, dynamic_extension_mode):
+    program = parse_program(lex(raw_source))
+    return build_runtime_native_x86_program(program, output_path, extension_mode, extension_root, dynamic_extension_mode)
+
+def build_runtime_native_program_if_needed(raw_source, program, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir="", cache_fingerprint="", cache_context="", cache_stats=False):
     target = host_target()
     # The architecture-neutral analysis contract owns source rejection.
     # Backend emitters only receive accepted programs and therefore cannot
@@ -172,22 +237,31 @@ def build_runtime_native_program_if_needed(raw_source, program, input_path, outp
         # Applications and compiler descendants share the same verified native
         # IR path. Never route x86 applications through the historical
         # AArch64-shaped runtime translator.
-        return build_runtime_native_x86_program(program, output_path, extension_mode, extension_root, dynamic_extension_mode)
+        return build_runtime_native_x86_program(program, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir, cache_fingerprint, cache_context, cache_stats)
     else:
-        return build_runtime_native_direct_program_if_supported_with_extension_config(raw_source, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode)
+        # The module-unit frontend has already produced the canonical parsed
+        # program. Reuse it on AArch64 instead of reparsing the concatenated
+        # graph and discarding the AST-cache boundary.
+        return build_runtime_native_direct_program_if_supported_with_program(program, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir, cache_fingerprint, cache_stats)
 
-def build_native_with_extension_config(input_path, output_path, extension_mode, extension_root, dynamic_extension_mode):
+def build_native_with_extension_config(input_path, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir="", cache_stats=False):
     if dynamic_extension_mode == "allowed":
         if extension_root == "" or extension_root[0] != "/":
             fail("--ext-dynamic=allowed requires an absolute --ext-dir")
-    raw_source = read_module_graph(input_path)
-    program = parse_program(lex(raw_source))
-    if build_runtime_native_program_if_needed(raw_source, program, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode):
+    if cache_dir != "":
+        if not __tyrion_run_tool("mkdir", ["-p", cache_dir])["ok"]:
+            fail("compiler cache rejected code=create-failed;path=" + cache_dir)
+    cache_context = "compiler=1.0.0,target=" + host_target()["backend"] + ",abi=1,ext-static=" + extension_mode + ",ext-dynamic=" + dynamic_extension_mode + ",ext-root=" + extension_root
+    graph_record = read_module_graph_units_cached(input_path, cache_dir, cache_context, cache_stats)
+    raw_source = graph_record["graph"]
+    program = parse_module_unit_records(graph_record["units"], cache_dir, cache_context)
+    cache_fingerprint = "compiler=1.0.0,target=" + host_target()["backend"] + ",abi=1,ext-static=" + extension_mode + ",ext-dynamic=" + dynamic_extension_mode + ",ext-root=" + extension_root + "\n" + raw_source
+    if build_runtime_native_program_if_needed(raw_source, program, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir, cache_fingerprint, cache_context, cache_stats):
         return
     fail("direct native lowering does not support this program")
 
 def build_native_configured(input_path, output_path, extension_mode, extension_root):
-    return build_native_with_extension_config(input_path, output_path, extension_mode, extension_root, "off")
+    return build_native_with_extension_config(input_path, output_path, extension_mode, extension_root, "off", "")
 
 def build_native(input_path, output_path):
     return build_native_configured(input_path, output_path, "auto", "./extensions")
@@ -196,6 +270,8 @@ def build_native_with_options(args):
     extension_mode = "auto"
     extension_root = "./extensions"
     dynamic_extension_mode = "off"
+    cache_dir = ""
+    cache_stats = False
     idx = 4
     while idx < len(args):
         arg = args[idx]
@@ -219,9 +295,17 @@ def build_native_with_options(args):
                 fail("missing path after --ext-dir")
             extension_root = args[idx + 1]
             idx = idx + 2
+        elif arg == "--cache-dir":
+            if idx + 1 >= len(args):
+                fail("missing path after --cache-dir")
+            cache_dir = args[idx + 1]
+            idx = idx + 2
+        elif arg == "--cache-stats":
+            cache_stats = True
+            idx = idx + 1
         else:
             fail("unknown or invalid compiler arguments")
-    return build_native_with_extension_config(args[1], args[3], extension_mode, extension_root, dynamic_extension_mode)
+    return build_native_with_extension_config(args[1], args[3], extension_mode, extension_root, dynamic_extension_mode, cache_dir, cache_stats)
 
 def cli_main(args):
     if len(args) == 0:
@@ -248,16 +332,7 @@ def cli_main(args):
     if len(args) == 4 and args[0] == "--build" and args[2] == "--out":
         build_native(args[1], args[3])
         return
-    if len(args) == 5 and args[0] == "--build" and args[2] == "--out":
-        build_native_with_options(args)
-        return
-    if len(args) == 6 and args[0] == "--build" and args[2] == "--out":
-        build_native_with_options(args)
-        return
-    if len(args) == 7 and args[0] == "--build" and args[2] == "--out":
-        build_native_with_options(args)
-        return
-    if len(args) == 8 and args[0] == "--build" and args[2] == "--out":
+    if len(args) >= 5 and args[0] == "--build" and args[2] == "--out":
         build_native_with_options(args)
         return
     fail("unknown or invalid compiler arguments")

@@ -1,0 +1,14 @@
+def map(function, iterable, second=None):
+    result = []
+    if second == None:
+        for item in iterable:
+            result.append(function(item))
+        return result
+    for item in iterable:
+        result.append(function(item, second[0]))
+    return result
+
+def add(left, right):
+    return left + right
+
+print(map(add, [1, 2], [10, 20]))

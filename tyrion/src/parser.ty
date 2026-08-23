@@ -26,9 +26,29 @@ def tyrion_parser_kind(state):
     return tyrion_parser_peek(state)["kind"]
 
 
+def tyrion_parser_diagnostic_kind(kind):
+    source = ["and", "as", "break", "class", "continue", "def", "del", "elif", "else", "except", "False", "finally", "for", "from", "if", "import", "in", "lambda", "None", "not", "or", "pass", "raise", "return", "True", "try", "unless", "while", "with", "yield"]
+    target = ["KW_AND", "KW_AS", "KW_BREAK", "KW_CLASS", "KW_CONTINUE", "KW_DEF", "KW_DEL", "KW_ELIF", "KW_ELSE", "KW_EXCEPT", "KW_FALSE", "KW_FINALLY", "KW_FOR", "KW_FROM", "KW_IF", "KW_IMPORT", "KW_IN", "KW_LAMBDA", "KW_NONE", "KW_NOT", "KW_OR", "KW_PASS", "KW_RAISE", "KW_RETURN", "KW_TRUE", "KW_TRY", "KW_UNLESS", "KW_WHILE", "KW_WITH", "KW_YIELD"]
+    index = 0
+    while index < len(source):
+        if kind == source[index]:
+            return target[index]
+        index = index + 1
+    punctuation = ["(", ")", "[", "]", "{", "}", ":", ",", ".", "+", "-", "*", "/", "%", "=", "|", "&", "^", "~", "<<", ">>", "==", "!=", "<", "<=", ">", ">=", "+=", "-=", "*=", "/=", "|=", "&=", "^=", "<<=", ">>="]
+    punctuation_kind = ["LPAREN", "RPAREN", "LBRACKET", "RBRACKET", "LBRACE", "RBRACE", "COLON", "COMMA", "DOT", "PLUS", "MINUS", "STAR", "SLASH", "PERCENT", "PIPE", "PIPE", "AMP", "CARET", "TILDE", "LSHIFT", "RSHIFT", "EQEQ", "NE", "LT", "LE", "GT", "GE", "PLUSEQ", "MINUSEQ", "STAREQ", "SLASHEQ", "PIPEEQ", "AMPEQ", "CARETEQ", "LSHIFTEQ", "RSHIFTEQ"]
+    index = 0
+    while index < len(punctuation):
+        if kind == punctuation[index]:
+            return punctuation_kind[index]
+        index = index + 1
+    if kind == "NAME":
+        return "IDENTIFIER"
+    return kind
+
+
 def tyrion_parser_fail(state, message):
     token = tyrion_parser_peek(state)
-    raise state["path"] + ":" + str(token["line"]) + ":" + str(token["column"]) + ": parse error: " + message + "; got " + token["kind"]
+    raise "parser rejected code=syntax-error;line=" + str(token["line"]) + ";column=" + str(token["column"]) + ";detail=" + tyrion_parser_diagnostic_kind(token["kind"])
 
 
 def tyrion_parser_advance(state):
@@ -196,7 +216,12 @@ def tyrion_parse_arguments(state):
     if tyrion_parser_kind(state) == ")":
         return {"state": state, "args": args, "kwargs": kwargs}
     while True:
-        if tyrion_parser_kind(state) == "NAME" and state["next"]["kind"] == "=":
+        if tyrion_parser_kind(state) == "*":
+            star = tyrion_parser_advance(state)
+            value = tyrion_parse_expression(star["state"])
+            state = value["state"]
+            args.append({"kind": "starred", "value": value["node"]})
+        elif tyrion_parser_kind(state) == "NAME" and state["next"]["kind"] == "=":
             name_result = tyrion_parser_advance(state)
             equal = tyrion_parser_expect(name_result["state"], "=")
             value = tyrion_parse_expression(equal["state"])
@@ -205,7 +230,12 @@ def tyrion_parse_arguments(state):
         else:
             value = tyrion_parse_expression(state)
             state = value["state"]
-            args.append(value["node"])
+            # Keep every positional argument in the same explicit wrapper
+            # shape.  The VM must distinguish ordinary node ids from starred
+            # argument wrappers before evaluating the call; representing
+            # ordinary entries as records avoids probing an integer as a
+            # dictionary (which is not portable across native targets).
+            args.append({"kind": "ordinary", "value": value["node"]})
         if tyrion_parser_kind(state) != ",":
             break
         comma = tyrion_parser_advance(state)
@@ -286,18 +316,26 @@ def tyrion_binary_binding_power(kind):
         return 2
     if kind in ["==", "!=", "<", "<=", ">", ">=", "in", "not in"]:
         return 3
-    if kind == "+" or kind == "-":
+    if kind == "|":
         return 4
-    if kind in ["*", "/", "//", "%"]:
+    if kind == "^":
         return 5
+    if kind == "&":
+        return 6
+    if kind == "<<" or kind == ">>":
+        return 7
+    if kind == "+" or kind == "-":
+        return 8
+    if kind in ["*", "/", "//", "%"]:
+        return 9
     return -1
 
 
 def tyrion_parse_expression_bp(state, minimum_power):
     kind = tyrion_parser_kind(state)
-    if kind == "not" or kind == "-" or kind == "+":
+    if kind == "not" or kind == "-" or kind == "+" or kind == "~":
         operator = tyrion_parser_advance(state)
-        value = tyrion_parse_expression_bp(operator["state"], 6)
+        value = tyrion_parse_expression_bp(operator["state"], 10)
         state = value["state"]
         added = tyrion_parser_node(state, {"kind": "unary", "op": operator["token"]["kind"], "value": value["node"]})
         state = added["state"]
@@ -343,9 +381,16 @@ def tyrion_parse_suite(state):
     state = indent["state"]
     body = []
     while tyrion_parser_kind(state) != "DEDENT" and tyrion_parser_kind(state) != "EOF":
-        statement = tyrion_parse_statement(state)
-        state = statement["state"]
-        body.append(statement["node"])
+        # Blank and comment-only lines inside an indented suite are emitted
+        # as NEWLINE tokens by the lexer.  They do not constitute statements;
+        # skip them before dispatching the recursive statement parser.
+        if tyrion_parser_kind(state) == "NEWLINE":
+            skipped = tyrion_parser_advance(state)
+            state = skipped["state"]
+        else:
+            statement = tyrion_parse_statement(state)
+            state = statement["state"]
+            body.append(statement["node"])
     dedent = tyrion_parser_expect(state, "DEDENT")
     block = tyrion_parser_node(dedent["state"], {"kind": "block", "body": body})
     return {"state": block["state"], "body": block["node"]}
@@ -356,6 +401,11 @@ def tyrion_parse_parameters(state):
     if tyrion_parser_kind(state) == ")":
         return {"state": state, "params": params}
     while True:
+        vararg = False
+        if tyrion_parser_kind(state) == "*":
+            star = tyrion_parser_advance(state)
+            state = star["state"]
+            vararg = True
         name = tyrion_parser_expect(state, "NAME")
         state = name["state"]
         default_result = tyrion_parser_node(state, tyrion_literal("missing", ""))
@@ -366,7 +416,7 @@ def tyrion_parse_parameters(state):
             value = tyrion_parse_expression(equal["state"])
             state = value["state"]
             default = value["node"]
-        params.append({"name": name["token"]["text"], "default": default})
+        params.append({"name": name["token"]["text"], "default": default, "vararg": vararg})
         if tyrion_parser_kind(state) != ",":
             break
         comma = tyrion_parser_advance(state)
@@ -504,6 +554,29 @@ def tyrion_assignment_target(node):
     return node["kind"] == "var" or node["kind"] == "index" or node["kind"] == "attr"
 
 
+def tyrion_finish_simple_statement(statement):
+    state = statement["state"]
+    guard_kind = tyrion_parser_kind(state)
+    if guard_kind != "if" and guard_kind != "unless":
+        newline = tyrion_parser_expect(state, "NEWLINE")
+        return {"state": newline["state"], "node": statement["node"], "node_kind": statement["node_kind"]}
+    guard = tyrion_parser_advance(state)
+    condition = tyrion_parse_expression(guard["state"])
+    condition_node = condition["node"]
+    state = condition["state"]
+    if guard_kind == "unless":
+        negated = tyrion_parser_node(state, {"kind": "unary", "op": "not", "value": condition_node})
+        state = negated["state"]
+        condition_node = negated["node"]
+    newline = tyrion_parser_expect(state, "NEWLINE")
+    state = newline["state"]
+    body = tyrion_parser_node(state, {"kind": "block", "body": [statement["node"]]})
+    state = body["state"]
+    empty = tyrion_parser_node(state, {"kind": "block", "body": []})
+    state = empty["state"]
+    return tyrion_parser_node(state, {"kind": "if", "branches": [{"condition": condition_node, "body": body["node"]}], "else_body": empty["node"]})
+
+
 def tyrion_parse_unpack_assignment(state):
     targets = []
     while True:
@@ -521,13 +594,28 @@ def tyrion_parse_unpack_assignment(state):
         state = comma["state"]
     equal = tyrion_parser_expect(state, "=")
     value = tyrion_parse_expression(equal["state"])
-    newline = tyrion_parser_expect(value["state"], "NEWLINE")
-    unpack = tyrion_parser_node(newline["state"], {"kind": "unpack", "targets": targets})
-    return tyrion_parser_node(unpack["state"], {"kind": "assign", "target": unpack["node"], "op": "=", "value": value["node"]})
+    unpack = tyrion_parser_node(value["state"], {"kind": "unpack", "targets": targets})
+    assignment = tyrion_parser_node(unpack["state"], {"kind": "assign", "target": unpack["node"], "op": "=", "value": value["node"]})
+    return tyrion_finish_simple_statement(assignment)
 
 
 def tyrion_parse_simple_statement(state):
     kind = tyrion_parser_kind(state)
+    if kind == "del":
+        keyword = tyrion_parser_advance(state)
+        target = tyrion_parse_expression(keyword["state"])
+        target_node = target["state"]["nodes"][target["node"]]
+        if target_node["kind"] == "index":
+            helper = tyrion_parser_node(target["state"], {"kind": "var", "value": "__tyrion_delete_index"})
+            call = tyrion_parser_node(helper["state"], {"kind": "call", "callee": helper["node"], "args": [target_node["receiver"], target_node["index"]], "kwargs": []})
+            statement = tyrion_parser_node(call["state"], {"kind": "assign", "target": target_node["receiver"], "op": "=", "value": call["node"]})
+            return tyrion_finish_simple_statement(statement)
+        if target_node["kind"] == "slice":
+            helper = tyrion_parser_node(target["state"], {"kind": "var", "value": "__tyrion_delete_slice"})
+            call = tyrion_parser_node(helper["state"], {"kind": "call", "callee": helper["node"], "args": [target_node["receiver"], target_node["start"], target_node["stop"]], "kwargs": []})
+            statement = tyrion_parser_node(call["state"], {"kind": "assign", "target": target_node["receiver"], "op": "=", "value": call["node"]})
+            return tyrion_finish_simple_statement(statement)
+        tyrion_parser_fail(target["state"], "delete requires a list item or slice target")
     if kind == "*" or (kind == "NAME" and state["next"]["kind"] == ","):
         return tyrion_parse_unpack_assignment(state)
     if kind == "return" or kind == "yield" or kind == "raise":
@@ -540,23 +628,35 @@ def tyrion_parse_simple_statement(state):
             expression = tyrion_parse_expression(state)
             state = expression["state"]
             value = expression["node"]
-        newline = tyrion_parser_expect(state, "NEWLINE")
-        return tyrion_parser_node(newline["state"], {"kind": kind, "value": value})
+        statement = tyrion_parser_node(state, {"kind": kind, "value": value})
+        if kind == "yield":
+            newline = tyrion_parser_expect(statement["state"], "NEWLINE")
+            return {"state": newline["state"], "node": statement["node"], "node_kind": statement["node_kind"]}
+        return tyrion_finish_simple_statement(statement)
     if kind == "break" or kind == "continue" or kind == "pass":
         keyword = tyrion_parser_advance(state)
-        newline = tyrion_parser_expect(keyword["state"], "NEWLINE")
-        return tyrion_parser_node(newline["state"], {"kind": kind})
+        statement = tyrion_parser_node(keyword["state"], {"kind": kind})
+        if kind == "pass":
+            newline = tyrion_parser_expect(statement["state"], "NEWLINE")
+            return {"state": newline["state"], "node": statement["node"], "node_kind": statement["node_kind"]}
+        return tyrion_finish_simple_statement(statement)
     expression = tyrion_parse_expression(state)
     state = expression["state"]
-    if tyrion_parser_kind(state) in ["=", "+=", "-=", "*=", "/="]:
+    if tyrion_parser_kind(state) in ["=", "+=", "|=", "&=", "^=", "-=", "*=", "/=", "//=", "<<=", ">>="]:
         if not tyrion_assignment_target({"kind": expression["node_kind"]}):
             tyrion_parser_fail(state, "invalid assignment target")
         operator = tyrion_parser_advance(state)
         value = tyrion_parse_expression(operator["state"])
-        newline = tyrion_parser_expect(value["state"], "NEWLINE")
-        return tyrion_parser_node(newline["state"], {"kind": "assign", "target": expression["node"], "op": operator["token"]["kind"], "value": value["node"]})
-    newline = tyrion_parser_expect(state, "NEWLINE")
-    return tyrion_parser_node(newline["state"], {"kind": "expr", "value": expression["node"]})
+        target_node = state["nodes"][expression["node"]]
+        if target_node["kind"] == "slice" and operator["token"]["kind"] == "=":
+            helper = tyrion_parser_node(value["state"], {"kind": "var", "value": "__tyrion_assign_slice"})
+            call = tyrion_parser_node(helper["state"], {"kind": "call", "callee": helper["node"], "args": [target_node["receiver"], target_node["start"], target_node["stop"], value["node"]], "kwargs": []})
+            statement = tyrion_parser_node(call["state"], {"kind": "assign", "target": target_node["receiver"], "op": "=", "value": call["node"]})
+            return tyrion_finish_simple_statement(statement)
+        statement = tyrion_parser_node(value["state"], {"kind": "assign", "target": expression["node"], "op": operator["token"]["kind"], "value": value["node"]})
+        return tyrion_finish_simple_statement(statement)
+    statement = tyrion_parser_node(state, {"kind": "expr", "value": expression["node"]})
+    return tyrion_finish_simple_statement(statement)
 
 
 def tyrion_parse_statement(state):

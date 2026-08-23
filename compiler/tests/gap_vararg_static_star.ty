@@ -1,0 +1,5 @@
+def collect(*items):
+    return len(items)
+
+print(collect(*[1, 2, 3]))
+print(collect(*(4, 5)))

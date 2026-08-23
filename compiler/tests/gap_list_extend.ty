@@ -1,0 +1,9 @@
+values = [1]
+values.extend([2, 3])
+print(values)
+other = [4]
+other.extend((5, 6))
+print(other)
+letters = ["x"]
+letters.extend("ab")
+print(letters)

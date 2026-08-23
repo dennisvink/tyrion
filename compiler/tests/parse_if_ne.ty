@@ -1,0 +1,4 @@
+def test(positional, none):
+    if positional != none:
+        positional = none
+    return positional

@@ -1,0 +1,2 @@
+print(abs(-7))
+print(abs(-2.5))

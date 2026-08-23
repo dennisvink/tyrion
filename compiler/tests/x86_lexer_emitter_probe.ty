@@ -1,0 +1,13 @@
+import compiler.generated_abi
+import compiler.lexer
+import compiler.writer
+import compiler.targets.linux_x86_64_native
+
+
+def main(path):
+    out = asm_writer_open(path)
+    out = asm_writer_set_backend(out, "linux-x86_64")
+    out = x86_native_emit_v2_lex_runtime(out)
+    size = asm_writer_bytes(out)
+    asm_writer_close(out)
+    return size

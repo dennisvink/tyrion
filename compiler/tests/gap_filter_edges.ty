@@ -1,0 +1,17 @@
+def keep(value):
+    return value != "b"
+
+print(keep("a"))
+
+def filter(function, iterable):
+    result = []
+    for item in iterable:
+        if function == None:
+            if item:
+                result.append(item)
+        elif function(item):
+            result.append(item)
+    return result
+
+print(filter(keep, ["a", "b", "c"]))
+print(filter(None, (0, 1, "", "x")))

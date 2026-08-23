@@ -1,0 +1,7 @@
+text = "  Winter IS coming. Winter!  "
+print("case", text.lower(), text.upper())
+print("join", "-".join(["Arya", "Sansa"]))
+print("find", text.find("Winter"), text.rfind("Winter"), text.count("Winter"))
+print("replace", text.replace("Winter", "Summer", 1))
+print("remove", "Winterfell".removeprefix("Winter"), "Winterfell".removesuffix("fell"))
+print("partition", "north:south".partition(":"), "north:south".rpartition(":"))

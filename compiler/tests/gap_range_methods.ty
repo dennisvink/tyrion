@@ -1,0 +1,7 @@
+r = range(2, 10, 2)
+print(r)
+print(r.start)
+print(r.stop)
+print(r.step)
+print(r.count(6))
+print(r.index(6))

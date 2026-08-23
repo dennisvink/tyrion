@@ -310,6 +310,11 @@ def emit_native_module_graph_primitive(out, target):
     out = asm_line(out, "cbz x0, L_native_read_module_graph_fail")
     out = asm_line(out, "str x0, [x21, #56]")
     out = asm_line(out, "str xzr, [x21, #64]")
+    out = asm_addr(out, target, "x0", "L_module_graph_builtin_core_path")
+    out = asm_line(out, "mov x1, x21")
+    out = asm_line(out, "mov x2, #0")
+    out = asm_line(out, "bl L_module_graph_visit_native")
+    out = asm_line(out, "cbz w0, L_native_read_module_graph_fail")
     out = asm_line(out, "mov x0, x19")
     out = asm_line(out, "mov x1, x21")
     out = asm_line(out, "mov x2, #0")
@@ -596,10 +601,19 @@ def emit_native_module_graph_primitive(out, target):
     out = asm_line(out, "stp x19, x20, [sp, #16]")
     out = asm_line(out, "stp x21, x22, [sp, #32]")
     out = asm_line(out, "mov x19, x0")
-    out = asm_addr(out, target, "x1", "L_module_graph_builtin_http_path")
+    out = asm_addr(out, target, "x1", "L_module_graph_builtin_core_path")
+    out = asm_line(out, "bl " + asm_call_name(target, "strcmp"))
+    out = asm_line(out, "cbnz w0, L_module_graph_read_file_try_http")
+    out = asm_addr(out, target, "x19", "L_module_graph_builtin_core_source")
+    out = asm_line(out, "b L_module_graph_read_file_builtin")
+    out = asm_label(out, "L_module_graph_read_file_try_http")
+    out = asm_addr(out, target, "x0", "L_module_graph_builtin_http_path")
+    out = asm_line(out, "mov x1, x0")
+    out = asm_line(out, "mov x0, x19")
     out = asm_line(out, "bl " + asm_call_name(target, "strcmp"))
     out = asm_line(out, "cbnz w0, L_module_graph_read_file_regular")
     out = asm_addr(out, target, "x19", "L_module_graph_builtin_http_source")
+    out = asm_label(out, "L_module_graph_read_file_builtin")
     out = asm_line(out, "mov x0, x19")
     out = asm_line(out, "bl " + asm_call_name(target, "strlen"))
     out = asm_line(out, "mov x20, x0")
@@ -732,6 +746,23 @@ def emit_native_module_graph_primitive(out, target):
 
     # x0=current path, x1=module ptr, x2=module len, x3=destination.
     out = asm_label(out, "L_module_graph_resolve_native")
+    out = asm_line(out, "cmp x2, #4")
+    out = asm_line(out, "b.ne L_module_graph_resolve_http")
+    out = asm_line(out, "ldrb w4, [x1]")
+    out = asm_line(out, "cmp w4, #99")
+    out = asm_line(out, "b.ne L_module_graph_resolve_http")
+    out = asm_line(out, "ldrb w4, [x1, #1]")
+    out = asm_line(out, "cmp w4, #111")
+    out = asm_line(out, "b.ne L_module_graph_resolve_http")
+    out = asm_line(out, "ldrb w4, [x1, #2]")
+    out = asm_line(out, "cmp w4, #114")
+    out = asm_line(out, "b.ne L_module_graph_resolve_http")
+    out = asm_line(out, "ldrb w4, [x1, #3]")
+    out = asm_line(out, "cmp w4, #101")
+    out = asm_line(out, "b.ne L_module_graph_resolve_http")
+    out = asm_addr(out, target, "x4", "L_module_graph_builtin_core_path")
+    out = asm_line(out, "b L_module_graph_resolve_builtin_copy")
+    out = asm_label(out, "L_module_graph_resolve_http")
     out = asm_line(out, "cmp x2, #4")
     out = asm_line(out, "b.ne L_module_graph_resolve_regular")
     out = asm_line(out, "ldrb w4, [x1]")
@@ -1226,6 +1257,8 @@ def emit_native_module_graph_primitive(out, target):
     out = asm_cstr(out, "L_err_native_read_module_graph", "error: native module graph load failed")
     out = asm_cstr(out, "L_native_module_cycle_failed", "module-graph rejected code=cycle;path=")
     out = asm_cstr(out, "L_native_module_duplicate_failed", "module-graph rejected code=duplicate-symbol;path=")
+    out = asm_cstr(out, "L_module_graph_builtin_core_path", "@tyrion/core")
+    out = asm_cstr(out, "L_module_graph_builtin_core_source", builtin_module_core_source())
     out = asm_cstr(out, "L_module_graph_builtin_http_path", "@tyrion/http")
     out = asm_cstr(out, "L_module_graph_builtin_http_source", builtin_module_http_source())
     out = asm_line(out, ".p2align 2")
@@ -1992,7 +2025,7 @@ def emit_native_ast_handle_access_runtime(out, target):
 
 
 def emit_native_ast_field_access_runtime(out, target):
-    keys = ["kind", "items", "body", "target", "value", "receiver", "resource", "index", "start", "stop", "left", "right", "op", "name", "callee", "args", "entries", "key", "iterable", "condition", "expr", "out_kind", "targets", "elifs", "else_body", "except_name", "except_binding", "except_body", "finally_body", "params", "star", "has_default", "default"]
+    keys = ["kind", "items", "body", "target", "value", "receiver", "resource", "index", "start", "stop", "left", "right", "op", "name", "vararg", "callee", "args", "entries", "key", "iterable", "condition", "expr", "out_kind", "targets", "elifs", "else_body", "except_name", "except_binding", "except_body", "finally_body", "params", "star", "has_default", "default"]
     value_tag_x23 = generated_value_tag_mem("x23")
 
     # x0=handle, x1=field bytes, x2=field length, x3=result slot.
@@ -2085,7 +2118,7 @@ def emit_native_ast_field_access_runtime(out, target):
     # Child-record fields.
     child_row_keys = ["target", "value", "value", "value", "value", "value", "value", "value", "receiver", "receiver", "receiver", "resource", "index", "start", "stop", "left", "right", "callee", "key", "value", "iterable", "condition", "condition", "condition", "default"]
     child_row_kinds = [100, 2, 8, 100, 101, 102, 109, 119, 4, 5, 7, 116, 5, 7, 7, 3, 3, 6, 13, 13, 108, 103, 104, 115, 114]
-    child_row_offsets = [24, 24, 24, 32, 24, 24, 24, 24, 24, 24, 24, 24, 32, 32, 40, 24, 32, 24, 24, 32, 32, 24, 24, 24, 32]
+    child_row_offsets = [24, 24, 24, 32, 24, 24, 24, 24, 24, 24, 24, 24, 32, 32, 40, 24, 32, 24, 24, 32, 32, 24, 24, 24, 48]
     child_keys = ["target", "value", "receiver", "resource", "index", "start", "stop", "left", "right", "op", "name", "callee", "key", "iterable", "condition", "expr", "default"]
     child_key_idx = 0
     while child_key_idx < len(child_keys):
@@ -2617,9 +2650,22 @@ def emit_native_ast_field_access_runtime(out, target):
 
     out = asm_label(out, "L_native_ast_field_star")
     out = asm_line(out, "ldr x9, [x22]")
+    out = asm_line(out, "cmp x9, #8")
+    out = asm_line(out, "b.eq L_native_ast_field_star_argument")
     out = asm_line(out, "cmp x9, #20")
     out = asm_line(out, "b.ne L_native_ast_field_get_fail")
     out = asm_line(out, "ldr x24, [x22, #48]")
+    out = asm_line(out, "mov x0, x23")
+    out = asm_line(out, "bl L_generated_value_zero_slot")
+    out = asm_line(out, "cmp x24, #0")
+    out = asm_line(out, "cset w9, ne")
+    out = asm_line(out, "strb w9, [x23]")
+    out = asm_line(out, "mov w9, #3")
+    out = asm_line(out, "strb w9, " + value_tag_x23)
+    out = asm_line(out, "b L_native_ast_field_get_ok")
+
+    out = asm_label(out, "L_native_ast_field_star_argument")
+    out = asm_line(out, "ldr x24, [x22, #56]")
     out = asm_line(out, "mov x0, x23")
     out = asm_line(out, "bl L_generated_value_zero_slot")
     out = asm_line(out, "cmp x24, #0")
@@ -2633,10 +2679,24 @@ def emit_native_ast_field_access_runtime(out, target):
     out = asm_line(out, "ldr x9, [x22]")
     out = asm_line(out, "cmp x9, #114")
     out = asm_line(out, "b.ne L_native_ast_field_get_fail")
-    out = asm_line(out, "ldr x24, [x22, #32]")
+    out = asm_line(out, "ldr x24, [x22, #40]")
     out = asm_line(out, "mov x0, x23")
     out = asm_line(out, "bl L_generated_value_zero_slot")
     out = asm_line(out, "cmp x24, #-1")
+    out = asm_line(out, "cset w9, ne")
+    out = asm_line(out, "strb w9, [x23]")
+    out = asm_line(out, "mov w9, #3")
+    out = asm_line(out, "strb w9, " + value_tag_x23)
+    out = asm_line(out, "b L_native_ast_field_get_ok")
+
+    out = asm_label(out, "L_native_ast_field_vararg")
+    out = asm_line(out, "ldr x9, [x22]")
+    out = asm_line(out, "cmp x9, #114")
+    out = asm_line(out, "b.ne L_native_ast_field_get_fail")
+    out = asm_line(out, "ldr x24, [x22, #32]")
+    out = asm_line(out, "mov x0, x23")
+    out = asm_line(out, "bl L_generated_value_zero_slot")
+    out = asm_line(out, "cmp x24, #0")
     out = asm_line(out, "cset w9, ne")
     out = asm_line(out, "strb w9, [x23]")
     out = asm_line(out, "mov w9, #3")
@@ -4970,6 +5030,8 @@ def emit_native_runtime_direct_statement_runtime(out, target):
     out = asm_line(out, "ldr x9, [x23, #40]")
     out = asm_line(out, "cmp x9, #3")
     out = asm_line(out, "b.eq L_native_runtime_direct_emit_statement_assign_augmented_add")
+    out = asm_line(out, "cmp x9, #5")
+    out = asm_line(out, "b.eq L_native_runtime_direct_emit_statement_assign_augmented_add")
     out = asm_line(out, "cmp x9, #1")
     out = asm_line(out, "b.eq L_native_runtime_direct_emit_statement_assign_index")
     out = asm_line(out, "cmp x9, #2")
@@ -5463,7 +5525,14 @@ def emit_native_runtime_direct_statement_runtime(out, target):
     out = asm_line(out, "bl L_native_text_builder_append_u64")
     out = asm_line(out, "cbz w0, L_native_runtime_direct_emit_statement_fail")
     out = asm_line(out, "mov x0, x21")
+    out = asm_line(out, "ldr x9, [x23, #40]")
+    out = asm_line(out, "cmp x9, #5")
+    out = asm_line(out, "b.eq L_native_runtime_direct_emit_statement_assign_augmented_floor_code")
     out = asm_addr(out, target, "x1", "L_native_runtime_direct_binary_code_" + str(application_binary_operator_id_at(0)))
+    out = asm_line(out, "b L_native_runtime_direct_emit_statement_assign_augmented_code_ready")
+    out = asm_label(out, "L_native_runtime_direct_emit_statement_assign_augmented_floor_code")
+    out = asm_addr(out, target, "x1", "L_native_runtime_direct_binary_code_" + str(application_binary_operator_id_at(14)))
+    out = asm_label(out, "L_native_runtime_direct_emit_statement_assign_augmented_code_ready")
     out = asm_line(out, "bl L_native_text_builder_append_cstr")
     out = asm_line(out, "cbz w0, L_native_runtime_direct_emit_statement_fail")
     out = asm_line(out, "ldr x9, [sp, #104]")
@@ -12650,14 +12719,14 @@ def native_runtime_direct_terminal_decode_text():
     text = text + "    and w9, w12, #63\n    orr w9, w9, #128\n    strb w9, [x10, #1]\n"
     text = text + "    mov x25, #256\n    mov x26, #2\n"
     text = text + "    b __tyrion_app_terminal_read_key_codepoint_key\n"
-    text = text + "__tyrion_app_terminal_read_key_codepoint_three:\n    ldr x9, =65536\n    cmp x12, x9\n"
+    text = text + "__tyrion_app_terminal_read_key_codepoint_three:\n    movz x9, #0\n    movk x9, #1, lsl #16\n    cmp x12, x9\n"
     text = text + "    b.hs __tyrion_app_terminal_read_key_codepoint_four\n"
     text = text + "    lsr x9, x12, #12\n    orr w9, w9, #224\n    strb w9, [x10]\n"
     text = text + "    lsr x9, x12, #6\n    and w9, w9, #63\n    orr w9, w9, #128\n    strb w9, [x10, #1]\n"
     text = text + "    and w9, w12, #63\n    orr w9, w9, #128\n    strb w9, [x10, #2]\n"
     text = text + "    mov x25, #256\n    mov x26, #3\n"
     text = text + "    b __tyrion_app_terminal_read_key_codepoint_key\n"
-    text = text + "__tyrion_app_terminal_read_key_codepoint_four:\n    ldr x9, =1114112\n    cmp x12, x9\n"
+    text = text + "__tyrion_app_terminal_read_key_codepoint_four:\n    movz x9, #0\n    movk x9, #17, lsl #16\n    cmp x12, x9\n"
     text = text + "    b.hs __tyrion_app_terminal_read_key_empty\n"
     text = text + "    lsr x9, x12, #18\n    orr w9, w9, #240\n    strb w9, [x10]\n"
     text = text + "    lsr x9, x12, #12\n    and w9, w9, #63\n    orr w9, w9, #128\n    strb w9, [x10, #1]\n"
@@ -12818,6 +12887,7 @@ def runtime_native_linux_aarch64_line(line):
     line = runtime_native_replace_all(line, "b _write", "b write")
     line = runtime_native_replace_all(line, "bl _read", "bl read")
     line = runtime_native_replace_all(line, "bl _malloc", "bl malloc")
+    line = runtime_native_replace_all(line, "bl _calloc", "bl calloc")
     line = runtime_native_replace_all(line, "bl _realloc", "bl realloc")
     line = runtime_native_replace_all(line, "bl _free", "bl free")
     line = runtime_native_replace_all(line, "bl _memcpy", "bl memcpy")
@@ -12842,11 +12912,11 @@ def runtime_native_linux_aarch64_line(line):
     line = runtime_native_replace_all(line, "b _exit", "b exit")
     if line == ".subsections_via_symbols":
         line = ""
-    if line.strip() == "ret":
+    if trim_spaces(line) == "ret":
         # GNU as defers `ldr xN, =imm` constants to literal pools. Large
         # generated functions need bounded, non-fallthrough pool sites.
         line = line + "\n    .ltorg"
-    elif line.strip().startswith("b L"):
+    elif len(trim_spaces(line)) >= 3 and trim_spaces(line)[0:3] == "b L":
         # Internal unconditional branches are also non-fallthrough. Flush
         # pending literals here so a single very large lowered function cannot
         # exceed GNU as's per-pool capacity before reaching its final `ret`.
@@ -12881,7 +12951,7 @@ def runtime_native_linux_aarch64_asm_text(text):
 def runtime_native_append_target_asm_text(out, text, target):
     if target["backend"] == "darwin-aarch64":
         return asm_raw(out, text)
-    lines = text.split("\n")
+    lines = split_inventory_text(text, "\n")
     idx = 0
     while idx < len(lines):
         line = lines[idx]
@@ -13336,8 +13406,17 @@ def emit_native_runtime_direct_data_core(out, target):
     main_suffix = "    mov x0, sp\n    mov x1, x28\n    bl __tyrion_app_cleanup_region\n"
     main_suffix = main_suffix + "    add sp, sp, x28\n    ldr x28, [sp, #16]\n    ldr x22, [sp, #24]\n"
     main_suffix = main_suffix + "    mov w0, #0\n"
-    main_suffix = main_suffix + "    ldp x29, x30, [sp], #32\n    ret\n"
-    text_suffix = ".section __TEXT,__text,regular,pure_instructions\n.p2align 2\n__tyrion_app_write:\n"
+    # Linux's libc startup path is sensitive to a damaged link register in
+    # generated application frames.  Exit directly after cleanup on AArch64;
+    # Darwin retains the normal ABI return path.
+    if target["backend"] == "linux-aarch64":
+        main_suffix = main_suffix + "    b exit\n"
+    else:
+        main_suffix = main_suffix + "    ldp x29, x30, [sp], #32\n    ret\n"
+    text_suffix = ".section __TEXT,__text,regular,pure_instructions\n.p2align 2\n"
+    if target["backend"] == "darwin-aarch64":
+        text_suffix = text_suffix + ".globl memmove\n.set memmove, _memmove\n.globl pow\n.set pow, _pow\n"
+    text_suffix = text_suffix + "__tyrion_app_write:\n"
     text_suffix = text_suffix + "    mov x2, x1\n    mov x1, x0\n"
     text_suffix = text_suffix + "    mov x0, #1\n    b _write\n"
     text_suffix = text_suffix + "__tyrion_app_truthy:\n"
@@ -13363,10 +13442,10 @@ def emit_native_runtime_direct_data_core(out, target):
     text_suffix = text_suffix + "    ldrb w9, [x19, #127]\n    cmp w9, #2\n"
     text_suffix = text_suffix + "    b.eq __tyrion_app_print_int\n    cmp w9, #3\n"
     text_suffix = text_suffix + "    b.eq __tyrion_app_print_bool\n    cmp w9, #4\n"
-    text_suffix = text_suffix + "    b.eq __tyrion_app_print_string\n    cmp w9, #19\n"
+    text_suffix = text_suffix + "    cmp w9, #1\n    b.eq __tyrion_app_print_string_inline\n    cmp w9, #4\n    b.eq __tyrion_app_print_string\n    cmp w9, #19\n"
     text_suffix = text_suffix + "    b.eq __tyrion_app_print_float\n    cmp w9, #8\n"
     text_suffix = text_suffix + "    b.eq __tyrion_app_print_string\n    cmp w9, #9\n"
-    text_suffix = text_suffix + "    b.eq __tyrion_app_print_list_dispatch\n    cmp w9, #10\n"
+    text_suffix = text_suffix + "    b.eq __tyrion_app_print_list_marker\n    cmp w9, #10\n"
     text_suffix = text_suffix + "    b.eq __tyrion_app_print_dict_dispatch\n    cmp w9, #20\n"
     text_suffix = text_suffix + "    b.eq __tyrion_app_print_set_dispatch\n"
     text_suffix = text_suffix + "    adrp x0, L_tyrion_direct_none@PAGE\n"
@@ -13403,7 +13482,7 @@ def emit_native_runtime_direct_data_core(out, target):
     text_suffix = text_suffix + "    add x0, x0, L_tyrion_direct_false@PAGEOFF\n"
     text_suffix = text_suffix + "    mov x1, #5\n    bl __tyrion_app_write\n"
     text_suffix = text_suffix + "    b __tyrion_app_print_done\n"
-    text_suffix = text_suffix + "__tyrion_app_print_string:\n    ldr x0, [x19]\n"
+    text_suffix = text_suffix + "__tyrion_app_print_string_inline:\n    mov x0, x19\n    mov x1, #0\n__tyrion_app_print_string_inline_len:\n    ldrb w9, [x0, x1]\n    cbz w9, __tyrion_app_print_string_inline_write\n    add x1, x1, #1\n    cmp x1, #121\n    b.lo __tyrion_app_print_string_inline_len\n__tyrion_app_print_string_inline_write:\n    bl __tyrion_app_write\n    b __tyrion_app_print_done\n__tyrion_app_print_string:\n    ldr x0, [x19]\n"
     text_suffix = text_suffix + "    ldr x1, [x19, #8]\n    bl __tyrion_app_write\n"
     text_suffix = text_suffix + "    b __tyrion_app_print_done\n"
     text_suffix = text_suffix + "__tyrion_app_print_float:\n    ldr d0, [x19]\n"
@@ -13417,7 +13496,7 @@ def emit_native_runtime_direct_data_core(out, target):
     text_suffix = text_suffix + "    bl __tyrion_app_print_value\n    ldr d0, [sp, #40]\n    ldr x9, [sp, #48]\n"
     text_suffix = text_suffix + "    scvtf d1, x9\n    fsub d0, d0, d1\n    fabs d0, d0\n"
     text_suffix = text_suffix + "    fcmp d0, #0.0\n    b.eq __tyrion_app_print_done\n"
-    text_suffix = text_suffix + "    ldr x10, =1000000\n    scvtf d2, x10\n    fmul d0, d0, d2\n"
+    text_suffix = text_suffix + "    movz x10, #16960\n    movk x10, #15, lsl #16\n    scvtf d2, x10\n    fmul d0, d0, d2\n"
     text_suffix = text_suffix + "    mov x10, #1\n    scvtf d1, x10\n    mov x10, #2\n    scvtf d2, x10\n"
     text_suffix = text_suffix + "    fdiv d1, d1, d2\n    fadd d0, d0, d1\n    fcvtzs x9, d0\n"
     text_suffix = text_suffix + "    add x10, sp, #240\n    mov x11, #6\n"
@@ -13432,9 +13511,10 @@ def emit_native_runtime_direct_data_core(out, target):
     text_suffix = text_suffix + "    adrp x0, L_tyrion_direct_dot@PAGE\n    add x0, x0, L_tyrion_direct_dot@PAGEOFF\n"
     text_suffix = text_suffix + "    mov x1, #1\n    bl __tyrion_app_write\n    mov x0, x10\n    sub x1, x11, x10\n"
     text_suffix = text_suffix + "    bl __tyrion_app_write\n    b __tyrion_app_print_done\n"
-    text_suffix = text_suffix + "__tyrion_app_print_list_dispatch:\n    mov x0, x19\n"
+    text_suffix = text_suffix + "__tyrion_app_print_list_marker:\n    ldrb w10, [x19, #126]\n    cbnz w10, __tyrion_app_print_tuple_dispatch\n__tyrion_app_print_list_dispatch:\n    mov x0, x19\n"
     text_suffix = text_suffix + "    bl __tyrion_app_print_list\n"
     text_suffix = text_suffix + "    b __tyrion_app_print_done\n"
+    text_suffix = text_suffix + "__tyrion_app_print_tuple_dispatch:\n    mov x0, x19\n    bl __tyrion_app_print_tuple\n    b __tyrion_app_print_done\n"
     text_suffix = text_suffix + "__tyrion_app_print_dict_dispatch:\n    mov x0, x19\n"
     text_suffix = text_suffix + "    bl __tyrion_app_print_dict\n"
     text_suffix = text_suffix + "    b __tyrion_app_print_done\n"
@@ -13452,6 +13532,8 @@ def emit_native_runtime_direct_data_core(out, target):
     text_suffix = text_suffix + "L_tyrion_direct_dot:\n    .ascii \".\"\n"
     text_suffix = text_suffix + "L_tyrion_direct_lbracket:\n    .ascii \"[\"\n"
     text_suffix = text_suffix + "L_tyrion_direct_rbracket:\n    .ascii \"]\"\n"
+    text_suffix = text_suffix + "L_tyrion_direct_lparen:\n    .ascii \"(\"\n"
+    text_suffix = text_suffix + "L_tyrion_direct_rparen:\n    .ascii \")\"\n"
     text_suffix = text_suffix + "L_tyrion_direct_comma_space:\n    .ascii \", \"\n"
     text_suffix = text_suffix + "L_tyrion_direct_lbrace:\n    .ascii \"{\"\n"
     text_suffix = text_suffix + "L_tyrion_direct_rbrace:\n    .ascii \"}\"\n"
@@ -13493,6 +13575,7 @@ def native_runtime_direct_shared_storage_text():
     text = text + "__tyrion_app_shared_retain_fail:\n    mov w0, #0\n"
     text = text + "__tyrion_app_shared_retain_done:\n    ldr x21, [sp, #32]\n"
     text = text + "    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #64\n    ret\n"
+    text = text + "__tyrion_app_print_tuple:\n    stp x29, x30, [sp, #-64]!\n    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n    mov x19, x0\n    mov w9, #40\n    strb w9, [sp, #56]\n    add x0, sp, #56\n    mov x1, #1\n    bl __tyrion_app_write\n    ldr x20, [x19]\n    ldr x21, [x19, #8]\n    mov x22, #0\n__tyrion_app_print_tuple_loop:\n    cmp x22, x21\n    b.hs __tyrion_app_print_tuple_close\n    cbz x22, __tyrion_app_print_tuple_value\n    adrp x0, L_tyrion_direct_comma_space@PAGE\n    add x0, x0, L_tyrion_direct_comma_space@PAGEOFF\n    mov x1, #2\n    bl __tyrion_app_write\n__tyrion_app_print_tuple_value:\n    add x0, x20, x22, lsl #7\n    bl __tyrion_app_print_value\n    add x22, x22, #1\n    b __tyrion_app_print_tuple_loop\n__tyrion_app_print_tuple_close:\n    mov w9, #41\n    strb w9, [sp, #56]\n    add x0, sp, #56\n    mov x1, #1\n    bl __tyrion_app_write\n    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #64\n    ret\n"
     text = text + "__tyrion_app_shared_release:\n    stp x29, x30, [sp, #-64]!\n"
     text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n    str x21, [sp, #32]\n"
     text = text + "    mov x19, x0\n    cbz x19, __tyrion_app_shared_release_last\n"
@@ -13528,7 +13611,9 @@ def native_runtime_direct_shared_storage_text():
 
 def native_runtime_direct_lifecycle_text():
     extension_tag = str(generated_value_tag_extension_handle())
-    text = "__tyrion_app_zero_region:\n    mov x9, #0\n"
+    iterator_tag = str(generated_value_tag_iterator())
+    text = ".globl __tyrion_app_slot_release\n"
+    text = text + "__tyrion_app_zero_region:\n    mov x9, #0\n"
     text = text + "__tyrion_app_zero_region_loop:\n    cmp x9, x1\n"
     text = text + "    b.hs __tyrion_app_zero_region_done\n    str xzr, [x0, x9]\n"
     text = text + "    add x9, x9, #8\n    b __tyrion_app_zero_region_loop\n"
@@ -13539,11 +13624,11 @@ def native_runtime_direct_lifecycle_text():
     text = text + "    ldrb w9, [x19, #127]\n    cmp w9, #6\n"
     text = text + "    b.eq __tyrion_app_slot_release_object\n    cmp w9, #8\n"
     text = text + "    b.eq __tyrion_app_slot_release_heap\n    cmp w9, #9\n"
-    text = text + "    b.eq __tyrion_app_slot_release_list\n    cmp w9, #10\n"
+    text = text + "    b.eq __tyrion_app_slot_release_list\n    cmp w9, #11\n    b.eq __tyrion_app_slot_release_list\n    cmp w9, #10\n"
     text = text + "    b.eq __tyrion_app_slot_release_dict\n    cmp w9, #20\n"
     text = text + "    b.eq __tyrion_app_slot_release_list\n    cmp w9, #13\n"
     text = text + "    b.eq __tyrion_app_slot_release_socket\n    cmp w9, #21\n"
-    text = text + "    b.eq __tyrion_app_slot_release_generator\n    cmp w9, #" + extension_tag + "\n"
+    text = text + "    b.eq __tyrion_app_slot_release_generator\n    cmp w9, #" + iterator_tag + "\n    b.eq __tyrion_app_slot_release_iterator\n    cmp w9, #" + extension_tag + "\n"
     text = text + "    b.eq __tyrion_app_slot_release_extension\n    cmp w9, #12\n"
     text = text + "    b.eq __tyrion_app_slot_release_file\n    cmp w9, #22\n"
     text = text + "    b.eq __tyrion_app_slot_release_builder\n    b __tyrion_app_slot_release_clear\n"
@@ -13594,6 +13679,12 @@ def native_runtime_direct_lifecycle_text():
     text = text + "    ldr x1, [x20, #24]\n    lsl x1, x1, #7\n"
     text = text + "    bl __tyrion_app_cleanup_region\n    mov x0, x20\n    bl _free\n"
     text = text + "    b __tyrion_app_slot_release_clear\n"
+    text = text + "__tyrion_app_slot_release_iterator:\n    ldr x20, [x19]\n"
+    text = text + "    cbz x20, __tyrion_app_slot_release_clear\n    ldr x9, [x20]\n"
+    text = text + "    subs x9, x9, #1\n    str x9, [x20]\n"
+    text = text + "    b.ne __tyrion_app_slot_release_clear\n    add x0, x20, #16\n"
+    text = text + "    bl __tyrion_app_slot_release\n    mov x0, x20\n    bl _free\n"
+    text = text + "    b __tyrion_app_slot_release_clear\n"
     text = text + "__tyrion_app_slot_release_object:\n    ldr x20, [x19]\n"
     text = text + "    cbz x20, __tyrion_app_slot_release_clear\n    ldr x9, [x20]\n"
     text = text + "    subs x9, x9, #1\n    str x9, [x20]\n"
@@ -13631,10 +13722,12 @@ def native_runtime_direct_lifecycle_text():
     text = text + ".section __TEXT,__const\n.p2align 0\n"
     text = text + "L_tyrion_direct_unhandled_exception:\n    .ascii \"Unhandled Tyrion exception\"\n"
     text = text + "L_tyrion_direct_zero_division:\n    .ascii \"ZeroDivisionError: division by zero\\n\"\n"
+    text = text + "L_tyrion_direct_negative_shift:\n    .ascii \"ValueError: negative shift count\\n\"\n"
     text = text + ".section __TEXT,__text,regular,pure_instructions\n.p2align 2\n"
     return text
 
 def native_runtime_direct_slot_copy_text():
+    iterator_tag = str(generated_value_tag_iterator())
     extension_tag = str(generated_value_tag_extension_handle())
     text = "__tyrion_app_slot_copy:\n    stp x29, x30, [sp, #-48]!\n"
     text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n"
@@ -13652,7 +13745,7 @@ def native_runtime_direct_slot_copy_text():
     text = text + "    cmp w9, #20\n    b.eq __tyrion_app_slot_copy_list\n"
     text = text + "    cmp w9, #12\n    b.eq __tyrion_app_slot_copy_file\n"
     text = text + "    cmp w9, #13\n    b.eq __tyrion_app_slot_copy_socket\n"
-    text = text + "    cmp w9, #21\n    b.eq __tyrion_app_slot_copy_generator\n"
+    text = text + "    cmp w9, #21\n    b.eq __tyrion_app_slot_copy_generator\n    cmp w9, #" + iterator_tag + "\n    b.eq __tyrion_app_slot_copy_iterator\n"
     text = text + "    cmp w9, #22\n    b.eq __tyrion_app_slot_copy_builder\n"
     text = text + "    cmp w9, #" + extension_tag + "\n    b.eq __tyrion_app_slot_copy_extension\n"
     text = text + "    b __tyrion_app_slot_copy_done\n"
@@ -13687,6 +13780,10 @@ def native_runtime_direct_slot_copy_text():
     text = text + "__tyrion_app_slot_copy_generator:\n    ldr x9, [x20]\n"
     text = text + "    cbz x9, __tyrion_app_slot_copy_done\n    ldr x10, [x9, #32]\n"
     text = text + "    add x10, x10, #1\n    str x10, [x9, #32]\n"
+    text = text + "    b __tyrion_app_slot_copy_done\n"
+    text = text + "__tyrion_app_slot_copy_iterator:\n    ldr x9, [x20]\n"
+    text = text + "    cbz x9, __tyrion_app_slot_copy_done\n    ldr x10, [x9]\n"
+    text = text + "    add x10, x10, #1\n    str x10, [x9]\n"
     text = text + "    b __tyrion_app_slot_copy_done\n"
     text = text + "__tyrion_app_slot_copy_object:\n    ldr x9, [x20]\n"
     text = text + "    cbz x9, __tyrion_app_slot_copy_done\n    ldr x10, [x9]\n"
@@ -13804,6 +13901,27 @@ def native_runtime_direct_strings_text():
     text = text + "__tyrion_app_list_concat_done:\n    ldr x25, [sp, #64]\n"
     text = text + "    ldp x23, x24, [sp, #48]\n    ldp x21, x22, [sp, #32]\n"
     text = text + "    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #96\n    ret\n"
+    text = text + "__tyrion_app_list_extend:\n    stp x29, x30, [sp, #-256]!\n"
+    text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n"
+    text = text + "    stp x21, x22, [sp, #32]\n    stp x23, x24, [sp, #48]\n"
+    text = text + "    stp x25, x26, [sp, #64]\n    mov x19, x0\n"
+    text = text + "    mov x20, x1\n    mov x21, x2\n    ldrb w9, [x20, #127]\n"
+    text = text + "    cmp w9, #9\n    b.ne __tyrion_app_list_extend_fail\n    ldrb w9, [x21, #127]\n"
+    text = text + "    cmp w9, #9\n    b.eq __tyrion_app_list_extend_collection\n    cmp w9, #1\n    b.eq __tyrion_app_list_extend_string_inline\n    cmp w9, #4\n    b.eq __tyrion_app_list_extend_string_indirect\n    cmp w9, #8\n    b.ne __tyrion_app_list_extend_fail\n"
+    text = text + "    mov x0, x20\n    bl __tyrion_app_slot_detach_shared\n    cbz w0, __tyrion_app_list_extend_fail\n"
+    text = text + "    ldr x22, [x21, #8]\n    ldr x23, [x21]\n    mov x24, #0\n"
+    text = text + "__tyrion_app_list_extend_loop:\n    cmp x24, x22\n    b.hs __tyrion_app_list_extend_success\n"
+    text = text + "    add x9, x23, x24, lsl #7\n    mov x0, x20\n    mov x1, x9\n    bl __tyrion_app_list_append\n"
+    text = text + "    add x24, x24, #1\n    b __tyrion_app_list_extend_loop\n"
+    text = text + "__tyrion_app_list_extend_string_indirect:\n    ldr x26, [x21]\n    str x26, [sp, #224]\n    ldr x22, [x21, #8]\n    b __tyrion_app_list_extend_string_begin\n"
+    text = text + "__tyrion_app_list_extend_string_inline:\n    mov x26, x21\n    str x26, [sp, #224]\n    mov x22, #0\n__tyrion_app_list_extend_string_len:\n    ldrb w9, [x26, x22]\n    cbz w9, __tyrion_app_list_extend_string_begin\n    add x22, x22, #1\n    b __tyrion_app_list_extend_string_len\n"
+    text = text + "__tyrion_app_list_extend_string_begin:\n    mov x24, #0\n__tyrion_app_list_extend_string_loop:\n    cmp x24, x22\n    b.hs __tyrion_app_list_extend_success\n    add x9, sp, #96\n    mov x10, #0\n    mov x11, #16\n__tyrion_app_list_extend_string_zero:\n    str x10, [x9], #8\n    subs x11, x11, #1\n    b.ne __tyrion_app_list_extend_string_zero\n    add x9, sp, #96\n    ldr x26, [sp, #224]\n    add x10, x26, x24\n    str x10, [x9]\n    mov x10, #1\n    str x10, [x9, #8]\n    mov w10, #4\n    strb w10, [x9, #127]\n    mov x0, x20\n    add x1, sp, #96\n    str x26, [sp, #224]\n    bl __tyrion_app_list_append\n    ldr x26, [sp, #224]\n    cbz w0, __tyrion_app_list_extend_fail\n    add x24, x24, #1\n    b __tyrion_app_list_extend_string_loop\n"
+    text = text + "__tyrion_app_list_extend_collection:\n    mov x0, x20\n    bl __tyrion_app_slot_detach_shared\n    cbz w0, __tyrion_app_list_extend_fail\n    ldr x22, [x21, #8]\n    ldr x23, [x21]\n    mov x24, #0\n    b __tyrion_app_list_extend_loop\n"
+    text = text + "__tyrion_app_list_extend_success:\n    mov w0, #1\n    b __tyrion_app_list_extend_done\n"
+    text = text + "__tyrion_app_list_extend_fail:\n    mov w0, #0\n__tyrion_app_list_extend_done:\n"
+    text = text + "    ldp x25, x26, [sp, #64]\n    ldp x23, x24, [sp, #48]\n"
+    text = text + "    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n"
+    text = text + "    ldp x29, x30, [sp], #256\n    ret\n"
     text = text + "__tyrion_app_numeric_binary:\n    stp x29, x30, [sp, #-80]!\n"
     text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n"
     text = text + "    mov x19, x0\n    mov x20, x1\n    mov x21, x2\n    mov x22, x3\n"
@@ -13814,14 +13932,35 @@ def native_runtime_direct_strings_text():
     text = text + "    ldr x9, [x20]\n    ldr x10, [x21]\n    cmp x22, #0\n    b.eq __tyrion_app_numeric_int_add\n"
     text = text + "    cmp x22, #1\n    b.eq __tyrion_app_numeric_int_sub\n    cmp x22, #2\n    b.eq __tyrion_app_numeric_int_mul\n"
     text = text + "    cmp x22, #3\n    b.eq __tyrion_app_numeric_int_div\n"
+    text = text + "    cmp x22, #5\n    b.eq __tyrion_app_numeric_int_floor_div\n"
+    text = text + "    cmp x22, #6\n    b.eq __tyrion_app_numeric_int_pow\n"
+    text = text + "    cmp x22, #7\n    b.eq __tyrion_app_numeric_int_or\n"
+    text = text + "    cmp x22, #8\n    b.eq __tyrion_app_numeric_int_xor\n"
+    text = text + "    cmp x22, #9\n    b.eq __tyrion_app_numeric_int_and\n"
+    text = text + "    cmp x22, #10\n    b.eq __tyrion_app_numeric_int_lshift\n"
+    text = text + "    cmp x22, #11\n    b.eq __tyrion_app_numeric_int_rshift\n"
     text = text + "    cmp x22, #4\n    b.ne __tyrion_app_add_fail\n    cbz x10, __tyrion_app_numeric_zero_division\n"
     text = text + "    sdiv x11, x9, x10\n    msub x9, x11, x10, x9\n"
     text = text + "    b __tyrion_app_numeric_int_store\n"
     text = text + "__tyrion_app_numeric_int_div:\n    cbz x10, __tyrion_app_numeric_zero_division\n"
     text = text + "    sdiv x9, x9, x10\n    b __tyrion_app_numeric_int_store\n"
+    text = text + "__tyrion_app_numeric_int_floor_div:\n    cbz x10, __tyrion_app_numeric_zero_division\n"
+    text = text + "    sdiv x11, x9, x10\n    msub x12, x11, x10, x9\n    cbz x12, __tyrion_app_numeric_int_store\n"
+    text = text + "    eor x12, x9, x10\n    tbnz x12, #63, __tyrion_app_numeric_int_floor_adjust\n"
+    text = text + "    mov x9, x11\n    b __tyrion_app_numeric_int_store\n"
+    text = text + "__tyrion_app_numeric_int_floor_adjust:\n    sub x9, x11, #1\n    b __tyrion_app_numeric_int_store\n"
     text = text + "__tyrion_app_numeric_int_add:\n    add x9, x9, x10\n    b __tyrion_app_numeric_int_store\n"
     text = text + "__tyrion_app_numeric_int_sub:\n    sub x9, x9, x10\n    b __tyrion_app_numeric_int_store\n"
-    text = text + "__tyrion_app_numeric_int_mul:\n    mul x9, x9, x10\n"
+    text = text + "__tyrion_app_numeric_int_mul:\n    mul x9, x9, x10\n    b __tyrion_app_numeric_int_store\n"
+    text = text + "__tyrion_app_numeric_int_pow:\n    tbnz x10, #63, __tyrion_app_numeric_float_from_int_pow\n    mov x11, #1\n    mov x12, x9\n__tyrion_app_numeric_int_pow_loop:\n    cbz x10, __tyrion_app_numeric_int_pow_done\n    tbz x10, #0, __tyrion_app_numeric_int_pow_skip_mul\n    mul x11, x11, x12\n__tyrion_app_numeric_int_pow_skip_mul:\n    mul x12, x12, x12\n    lsr x10, x10, #1\n    b __tyrion_app_numeric_int_pow_loop\n__tyrion_app_numeric_int_pow_done:\n    mov x9, x11\n    b __tyrion_app_numeric_int_store\n"
+    text = text + "__tyrion_app_numeric_int_or:\n    orr x9, x9, x10\n    b __tyrion_app_numeric_int_store\n"
+    text = text + "__tyrion_app_numeric_int_xor:\n    eor x9, x9, x10\n    b __tyrion_app_numeric_int_store\n"
+    text = text + "__tyrion_app_numeric_int_and:\n    and x9, x9, x10\n    b __tyrion_app_numeric_int_store\n"
+    text = text + "__tyrion_app_numeric_int_lshift:\n    tbnz x10, #63, __tyrion_app_numeric_negative_shift\n    cmp x10, #63\n    b.hi __tyrion_app_numeric_int_shift_zero\n    lsl x9, x9, x10\n    b __tyrion_app_numeric_int_store\n"
+    text = text + "__tyrion_app_numeric_int_rshift:\n    tbnz x10, #63, __tyrion_app_numeric_negative_shift\n    cmp x10, #63\n    b.hi __tyrion_app_numeric_int_rshift_large\n    asr x9, x9, x10\n    b __tyrion_app_numeric_int_store\n"
+    text = text + "__tyrion_app_numeric_int_shift_zero:\n    mov x9, #0\n    b __tyrion_app_numeric_int_store\n"
+    text = text + "__tyrion_app_numeric_int_rshift_large:\n    asr x9, x9, #63\n    b __tyrion_app_numeric_int_store\n"
+    text = text + "__tyrion_app_numeric_float_from_int_pow:\n    scvtf d0, x9\n    scvtf d1, x10\n    bl pow\n    b __tyrion_app_numeric_float_store\n"
     text = text + "__tyrion_app_numeric_int_store:\n    str x9, [sp, #48]\n    mov x0, x19\n"
     text = text + "    bl __tyrion_app_slot_release\n    ldr x9, [sp, #48]\n    str x9, [x19]\n"
     text = text + "    mov w9, #2\n    strb w9, [x19, #127]\n    b __tyrion_app_numeric_done\n"
@@ -13833,11 +13972,14 @@ def native_runtime_direct_strings_text():
     text = text + "    b __tyrion_app_numeric_float_apply\n__tyrion_app_numeric_float_right:\n    ldr d1, [x21]\n"
     text = text + "__tyrion_app_numeric_float_apply:\n    cmp x22, #0\n    b.eq __tyrion_app_numeric_float_add\n"
     text = text + "    cmp x22, #1\n    b.eq __tyrion_app_numeric_float_sub\n    cmp x22, #2\n    b.eq __tyrion_app_numeric_float_mul\n"
-    text = text + "    cmp x22, #3\n    b.ne __tyrion_app_add_fail\n    fcmp d1, #0.0\n    b.eq __tyrion_app_numeric_zero_division\n"
-    text = text + "    fdiv d0, d0, d1\n    b __tyrion_app_numeric_float_store\n"
+    text = text + "    cmp x22, #3\n    b.eq __tyrion_app_numeric_float_div\n"
+    text = text + "    cmp x22, #5\n    b.eq __tyrion_app_numeric_float_div\n    cmp x22, #6\n    b.eq __tyrion_app_numeric_float_pow\n    b __tyrion_app_add_fail\n"
+    text = text + "__tyrion_app_numeric_float_div:\n    fcmp d1, #0.0\n    b.eq __tyrion_app_numeric_zero_division\n"
+    text = text + "    fdiv d0, d0, d1\n    cmp x22, #5\n    b.ne __tyrion_app_numeric_float_store\n    frintm d0, d0\n    b __tyrion_app_numeric_float_store\n"
     text = text + "__tyrion_app_numeric_float_add:\n    fadd d0, d0, d1\n    b __tyrion_app_numeric_float_store\n"
     text = text + "__tyrion_app_numeric_float_sub:\n    fsub d0, d0, d1\n    b __tyrion_app_numeric_float_store\n"
     text = text + "__tyrion_app_numeric_float_mul:\n    fmul d0, d0, d1\n"
+    text = text + "__tyrion_app_numeric_float_pow:\n    bl pow\n    b __tyrion_app_numeric_float_store\n"
     text = text + "__tyrion_app_numeric_float_store:\n    str d0, [sp, #48]\n    mov x0, x19\n"
     text = text + "    bl __tyrion_app_slot_release\n    ldr d0, [sp, #48]\n    str d0, [x19]\n"
     text = text + "    mov w9, #19\n    strb w9, [x19, #127]\n    b __tyrion_app_numeric_done\n"
@@ -13845,6 +13987,10 @@ def native_runtime_direct_strings_text():
     text = text + "    adrp x1, L_tyrion_direct_zero_division@PAGE\n"
     text = text + "    add x1, x1, L_tyrion_direct_zero_division@PAGEOFF\n"
     text = text + "    mov x2, #36\n    bl _write\n    mov x0, #1\n    b _exit\n"
+    text = text + "__tyrion_app_numeric_negative_shift:\n    mov x0, #2\n"
+    text = text + "    adrp x1, L_tyrion_direct_negative_shift@PAGE\n"
+    text = text + "    add x1, x1, L_tyrion_direct_negative_shift@PAGEOFF\n"
+    text = text + "    mov x2, #33\n    bl _write\n    mov x0, #1\n    b _exit\n"
     text = text + "__tyrion_app_numeric_done:\n    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n"
     text = text + "    ldp x29, x30, [sp], #80\n    ret\n"
     text = text + "__tyrion_app_equal:\n    stp x29, x30, [sp, #-64]!\n    mov x29, sp\n"
@@ -14008,6 +14154,8 @@ def native_runtime_direct_strings_text():
     text = text + "    ldp x25, x26, [sp, #64]\n    ldp x23, x24, [sp, #48]\n"
     text = text + "    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n"
     text = text + "    ldp x29, x30, [sp], #112\n    ret\n"
+    text = text + "__tyrion_app_list_copy:\n    stp x29, x30, [sp, #-80]!\n    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n    stp x23, x24, [sp, #48]\n    mov x19, x0\n    mov x20, x1\n    ldrb w9, [x20, #127]\n    cmp w9, #9\n    b.ne __tyrion_app_list_copy_fail\n    ldr x21, [x20, #8]\n    mov x0, x19\n    mov x1, x21\n    bl __tyrion_app_list_new\n    mov x22, #0\n__tyrion_app_list_copy_loop:\n    cmp x22, x21\n    b.hs __tyrion_app_list_copy_success\n    ldr x9, [x20]\n    add x2, x9, x22, lsl #7\n    mov x0, x19\n    mov x1, x22\n    bl __tyrion_app_list_set\n    add x22, x22, #1\n    b __tyrion_app_list_copy_loop\n__tyrion_app_list_copy_success:\n    mov w0, #1\n    b __tyrion_app_list_copy_done\n__tyrion_app_list_copy_fail:\n    mov w0, #0\n__tyrion_app_list_copy_done:\n    ldp x23, x24, [sp, #48]\n    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #80\n    ret\n"
+    text = text + "__tyrion_app_list_reverse:\n    stp x29, x30, [sp, #-80]!\n    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n    stp x23, x24, [sp, #48]\n    mov x19, x0\n    mov x20, x1\n    ldrb w9, [x20, #127]\n    cmp w9, #9\n    b.ne __tyrion_app_list_reverse_fail\n    ldr x21, [x20, #8]\n    mov x0, x19\n    mov x1, x21\n    bl __tyrion_app_list_new\n    mov x22, #0\n__tyrion_app_list_reverse_loop:\n    cmp x22, x21\n    b.hs __tyrion_app_list_reverse_success\n    sub x23, x21, x22\n    sub x23, x23, #1\n    ldr x9, [x20]\n    add x2, x9, x23, lsl #7\n    mov x0, x19\n    mov x1, x22\n    bl __tyrion_app_list_set\n    add x22, x22, #1\n    b __tyrion_app_list_reverse_loop\n__tyrion_app_list_reverse_success:\n    mov w0, #1\n    b __tyrion_app_list_reverse_done\n__tyrion_app_list_reverse_fail:\n    mov w0, #0\n__tyrion_app_list_reverse_done:\n    ldp x23, x24, [sp, #48]\n    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #80\n    ret\n"
     text = text + "__tyrion_app_range_zero_step:\n    mov x0, #2\n"
     text = text + "    adrp x1, L_tyrion_direct_range_zero_step@PAGE\n"
     text = text + "    add x1, x1, L_tyrion_direct_range_zero_step@PAGEOFF\n"
@@ -14039,6 +14187,7 @@ def native_runtime_direct_strings_text():
     text = text + "__tyrion_app_enumerate_done:\n    add sp, sp, #256\n"
     text = text + "    ldr x23, [sp, #48]\n    ldp x21, x22, [sp, #32]\n"
     text = text + "    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #96\n    ret\n"
+    text = text + "__tyrion_app_list_insert:\n    stp x29, x30, [sp, #-112]!\n    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n    stp x23, x24, [sp, #48]\n    stp x25, x26, [sp, #64]\n    mov x19, x0\n    mov x20, x1\n    mov x21, x2\n    mov x22, x3\n    ldrb w9, [x20, #127]\n    cmp w9, #9\n    b.ne __tyrion_app_list_insert_fail\n    ldrb w9, [x21, #127]\n    cmp w9, #2\n    b.ne __tyrion_app_list_insert_fail\n    ldr x23, [x20, #8]\n    ldr x24, [x21]\n    cmp x24, #0\n    b.ge __tyrion_app_list_insert_index_nonnegative\n    add x24, x23, x24\n__tyrion_app_list_insert_index_nonnegative:\n    cmp x24, #0\n    b.ge __tyrion_app_list_insert_index_low_ready\n    mov x24, #0\n__tyrion_app_list_insert_index_low_ready:\n    cmp x24, x23\n    b.le __tyrion_app_list_insert_index_ready\n    mov x24, x23\n__tyrion_app_list_insert_index_ready:\n    add x25, x23, #1\n    mov x0, x19\n    mov x1, x25\n    bl __tyrion_app_list_new\n    mov x26, #0\n    mov x21, #0\n__tyrion_app_list_insert_loop:\n    cmp x21, x25\n    b.hs __tyrion_app_list_insert_done\n    cmp x21, x24\n    b.ne __tyrion_app_list_insert_old\n    mov x0, x19\n    mov x1, x21\n    mov x2, x22\n    bl __tyrion_app_list_set\n    add x21, x21, #1\n    b __tyrion_app_list_insert_loop\n__tyrion_app_list_insert_old:\n    ldr x9, [x20]\n    add x2, x9, x26, lsl #7\n    mov x0, x19\n    mov x1, x21\n    bl __tyrion_app_list_set\n    add x26, x26, #1\n    add x21, x21, #1\n    b __tyrion_app_list_insert_loop\n__tyrion_app_list_insert_done:\n    mov w0, #1\n    b __tyrion_app_list_insert_return\n__tyrion_app_list_insert_fail:\n    mov w0, #0\n__tyrion_app_list_insert_return:\n    ldp x25, x26, [sp, #64]\n    ldp x23, x24, [sp, #48]\n    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #112\n    ret\n"
     return text
 
 def emit_native_runtime_direct_data_files(out, target):
@@ -14141,15 +14290,16 @@ def emit_native_runtime_direct_data_files(out, target):
     return asm_cstr(out, "L_native_runtime_direct_file_suffix", runtime_native_target_asm_text(text, target))
 
 def emit_native_runtime_direct_data_collections(out, target):
-    text = "# tyrion-app-component: collections\n" + native_runtime_direct_collections_text()
+    text = "# tyrion-app-component: collections\n" + native_runtime_direct_collections_text(target)
     return asm_cstr(out, "L_native_runtime_direct_collection_suffix", runtime_native_target_asm_text(text, target))
 
-def native_runtime_direct_collections_text():
-    text = native_runtime_direct_list_storage_text()
+def native_runtime_direct_collections_text(target):
+    text = ""
+    text = text + native_runtime_direct_list_storage_text()
     text = text + native_runtime_direct_list_io_text()
     text = text + native_runtime_direct_dict_storage_text()
-    text = text + native_runtime_direct_dict_io_text()
-    text = text + native_runtime_direct_aggregate_builtins_text()
+    text = text + native_runtime_direct_dict_io_text(target)
+    text = text + native_runtime_direct_aggregate_builtins_text(target)
     text = text + native_runtime_direct_object_text()
     return text
 
@@ -14179,7 +14329,8 @@ def native_runtime_direct_object_text():
     text = text + "__tyrion_app_object_fail:\n    mov x0, #5\n    b _exit\n"
     return text
 
-def native_runtime_direct_aggregate_builtins_text():
+def native_runtime_direct_aggregate_builtins_text(target):
+    iterator_tag = str(generated_value_tag_iterator())
     text = "__tyrion_app_generator_fill:\n    stp x29, x30, [sp, #-112]!\n"
     text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n"
     text = text + "    str x23, [sp, #48]\n    mov x19, x0\n    mov x20, x1\n"
@@ -14201,6 +14352,22 @@ def native_runtime_direct_aggregate_builtins_text():
     text = text + "    bl __tyrion_app_cleanup_region\n    add sp, sp, #128\n    mov x0, x19\n"
     text = text + "    ldr x23, [sp, #48]\n    ldp x21, x22, [sp, #32]\n"
     text = text + "    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #112\n    ret\n"
+    text = text + "__tyrion_app_iter_new:\n    stp x29, x30, [sp, #-64]!\n"
+    text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n"
+    text = text + "    mov x19, x0\n    mov x20, x1\n    ldrb w9, [x20, #127]\n    cmp w9, #" + iterator_tag + "\n"
+    text = text + "    b.eq __tyrion_app_iter_new_copy\n    mov x0, x20\n    bl __tyrion_app_iter_len\n"
+    text = text + "    mov x0, #1\n    mov x1, #144\n    bl _calloc\n    cbz x0, __tyrion_app_oom\n    mov x21, x0\n    mov x22, #1\n    str x22, [x21]\n    str xzr, [x21, #8]\n    add x0, x21, #16\n    mov x1, x20\n    bl __tyrion_app_slot_copy\n    mov x0, x19\n    bl __tyrion_app_slot_release\n    str x21, [x19]\n    mov w9, #2\n    strb w9, [x19, #126]\n    mov w9, #" + iterator_tag + "\n    strb w9, [x19, #127]\n    mov w0, #0\n    b __tyrion_app_iter_new_done\n"
+    text = text + "__tyrion_app_iter_new_copy:\n    mov x0, x19\n    mov x1, x20\n    bl __tyrion_app_slot_copy\n    mov w0, #0\n"
+    text = text + "__tyrion_app_iter_new_done:\n    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #64\n    ret\n"
+    text = text + "__tyrion_app_next:\n    stp x29, x30, [sp, #-80]!\n    mov x29, sp\n"
+    text = text + "    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n    str x23, [sp, #48]\n"
+    text = text + "    mov x19, x0\n    mov x20, x1\n    mov x21, x2\n    mov x23, x3\n    ldrb w9, [x20, #127]\n    cmp w9, #" + iterator_tag + "\n    b.ne __tyrion_app_next_fail\n"
+    text = text + "    ldr x22, [x20]\n    cbz x22, __tyrion_app_next_fail\n    add x1, x22, #16\n    ldrb w9, [x1, #127]\n    cmp w9, #21\n    b.eq __tyrion_app_next_generator\n    mov x0, x1\n    bl __tyrion_app_iter_len\n    mov x23, x0\n    b __tyrion_app_next_compare\n"
+    text = text + "__tyrion_app_next_generator:\n    add x0, x22, #16\n    ldr x9, [x22, #8]\n    add x1, x9, #1\n    bl __tyrion_app_generator_fill\n    ldr x10, [x22, #16]\n    add x10, x10, #128\n    ldr x23, [x10, #8]\n"
+    text = text + "__tyrion_app_next_compare:\n    ldr x0, [x22, #8]\n    cmp x0, x23\n    b.hs __tyrion_app_next_exhausted\n    str x0, [sp, #56]\n    mov x2, x0\n    mov x0, x19\n    mov x1, x22\n    add x1, x1, #16\n    bl __tyrion_app_iter_at\n    ldr x9, [sp, #56]\n    add x9, x9, #1\n    str x9, [x22, #8]\n    mov w0, #0\n    b __tyrion_app_next_done\n"
+    text = text + "__tyrion_app_next_exhausted:\n    cbz x21, __tyrion_app_next_raise\n    mov x0, x19\n    mov x1, x21\n    bl __tyrion_app_slot_copy\n    mov w0, #0\n    b __tyrion_app_next_done\n"
+    text = text + "__tyrion_app_next_raise:\n    mov w0, #1\n    b __tyrion_app_next_done\n"
+    text = text + "__tyrion_app_next_fail:\n    mov w0, #1\n__tyrion_app_next_done:\n    ldr x23, [sp, #48]\n    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #80\n    ret\n"
     text = text + "__tyrion_app_builtin_sum:\n    stp x29, x30, [sp, #-80]!\n"
     text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n"
     text = text + "    mov x19, x0\n    mov x20, x1\n    mov x21, x2\n    cmp x21, #1\n"
@@ -14307,14 +14474,15 @@ def native_runtime_direct_aggregate_builtins_text():
     text = text + "    ldp x29, x30, [sp], #96\n    ret\n"
     text = text + "__tyrion_app_builtin_zip:\n    stp x29, x30, [sp, #-112]!\n    mov x29, sp\n"
     text = text + "    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n"
-    text = text + "    stp x23, x24, [sp, #48]\n    stp x25, x26, [sp, #64]\n"
-    text = text + "    mov x19, x0\n    mov x20, x1\n    mov x24, x2\n"
+    text = text + "    stp x23, x24, [sp, #48]\n    stp x25, x26, [sp, #64]\n    str x4, [sp, #80]\n"
+    text = text + "    mov x19, x0\n    mov x20, x1\n    mov x24, x2\n    mov x26, x3\n    mov x0, x26\n    bl __tyrion_app_truthy\n    mov x26, x0\n"
     text = text + "    cmp x24, #1\n    b.lt __tyrion_app_list_fail\n    mov x21, #-1\n    mov x25, #0\n"
     text = text + "__tyrion_app_builtin_zip_len_loop:\n    cmp x25, x24\n"
     text = text + "    b.hs __tyrion_app_builtin_zip_len_done\n    add x0, x20, x25, lsl #7\n"
     text = text + "    bl __tyrion_app_iter_len\n    cmp x21, #-1\n"
     text = text + "    b.eq __tyrion_app_builtin_zip_len_store\n    cmp x0, x21\n"
-    text = text + "    csel x21, x0, x21, lo\n    b __tyrion_app_builtin_zip_len_next\n"
+    text = text + "    cbz x26, __tyrion_app_builtin_zip_shortest\n    b.ne __tyrion_app_builtin_zip_strict_fail\n"
+    text = text + "__tyrion_app_builtin_zip_shortest:\n    csel x21, x0, x21, lo\n    b __tyrion_app_builtin_zip_len_next\n"
     text = text + "__tyrion_app_builtin_zip_len_store:\n    mov x21, x0\n"
     text = text + "__tyrion_app_builtin_zip_len_next:\n    add x25, x25, #1\n"
     text = text + "    b __tyrion_app_builtin_zip_len_loop\n"
@@ -14338,6 +14506,17 @@ def native_runtime_direct_aggregate_builtins_text():
     text = text + "    ldp x25, x26, [sp, #64]\n    ldp x23, x24, [sp, #48]\n"
     text = text + "    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n"
     text = text + "    ldp x29, x30, [sp], #112\n    ret\n"
+    text = text + "__tyrion_app_builtin_zip_strict_fail:\n    ldr x0, [sp, #80]\n"
+    text = text + "    bl __tyrion_app_slot_release\n"
+    if target["backend"] == "darwin-aarch64":
+        text = text + "    adrp x13, L_tyrion_direct_zip_strict_mismatch@PAGE\n"
+        text = text + "    add x13, x13, L_tyrion_direct_zip_strict_mismatch@PAGEOFF\n"
+    else:
+        text = text + "    adrp x13, L_tyrion_direct_zip_strict_mismatch\n"
+        text = text + "    add x13, x13, :lo12:L_tyrion_direct_zip_strict_mismatch\n"
+    text = text + "    str x13, [x0]\n    mov x9, #10\n    str x9, [x0, #8]\n"
+    text = text + "    mov w9, #4\n    strb w9, [x0, #127]\n    b __tyrion_app_builtin_zip_return\n"
+    text = text + "__tyrion_app_builtin_zip_return:\n    ldp x25, x26, [sp, #64]\n    ldp x23, x24, [sp, #48]\n    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #112\n    ret\n"
     text = text + "__tyrion_app_builtin_sorted:\n    stp x29, x30, [sp, #-112]!\n    mov x29, sp\n"
     text = text + "    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n"
     text = text + "    stp x23, x24, [sp, #48]\n    stp x25, x26, [sp, #64]\n"
@@ -14386,11 +14565,14 @@ def native_runtime_direct_aggregate_builtins_text():
     text = text + "L_tyrion_direct_split_separator_type:\n    .asciz \"split() separator must be str\\n\"\n"
     text = text + "L_tyrion_direct_split_empty_separator:\n    .asciz \"split() empty separator\\n\"\n"
     text = text + "L_tyrion_direct_range_zero_step:\n    .asciz \"range() arg 3 must not be zero\\n\"\n"
+    text = text + "L_tyrion_direct_zip_strict_mismatch:\n    .asciz \"ValueError\"\n"
+    text = text + "L_tyrion_direct_builtin_typeerror:\n    .asciz \"TypeError\"\n"
     text = text + ".section __TEXT,__text,regular,pure_instructions\n.p2align 2\n"
     return text
 
 def native_runtime_direct_list_storage_text():
-    text = "__tyrion_app_list_new:\n    stp x29, x30, [sp, #-48]!\n"
+    text = ".globl __tyrion_app_list_new\n.globl __tyrion_app_list_set\n.globl __tyrion_app_dict_new\n.globl __tyrion_app_dict_set\n"
+    text = text + "__tyrion_app_list_new:\n    stp x29, x30, [sp, #-48]!\n"
     text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n"
     text = text + "    mov x19, x0\n    mov x20, x1\n    bl __tyrion_app_slot_release\n"
     text = text + "    str x20, [x19, #8]\n    mov w9, #9\n    strb w9, [x19, #127]\n"
@@ -14399,6 +14581,7 @@ def native_runtime_direct_list_storage_text():
     text = text + "    lsl x1, x20, #7\n    bl __tyrion_app_zero_region\n"
     text = text + "__tyrion_app_list_new_done:\n    ldp x19, x20, [sp, #16]\n"
     text = text + "    ldp x29, x30, [sp], #48\n    ret\n"
+    text = text + "__tyrion_app_tuple_new:\n    stp x29, x30, [sp, #-32]!\n    mov x29, sp\n    str x19, [sp, #16]\n    mov x19, x0\n    bl __tyrion_app_list_new\n    mov x0, x19\n    mov w9, #1\n    strb w9, [x0, #126]\n    ldr x19, [sp, #16]\n    ldp x29, x30, [sp], #32\n    ret\n"
     text = text + "__tyrion_app_list_set:\n    ldrb w9, [x0, #127]\n    cmp w9, #9\n"
     text = text + "    b.ne __tyrion_app_list_fail\n    stp x29, x30, [sp, #-64]!\n"
     text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n    str x21, [sp, #32]\n"
@@ -14469,6 +14652,35 @@ def native_runtime_direct_list_storage_text():
     text = text + "    str x23, [x19, #8]\n    ldp x25, x26, [sp, #64]\n"
     text = text + "    ldp x23, x24, [sp, #48]\n    ldp x21, x22, [sp, #32]\n"
     text = text + "    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #112\n    ret\n"
+    text = text + "__tyrion_app_list_pop:\n    stp x29, x30, [sp, #-96]!\n"
+    text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n"
+    text = text + "    stp x21, x22, [sp, #32]\n    stp x23, x24, [sp, #48]\n"
+    text = text + "    stp x25, x26, [sp, #64]\n    mov x19, x0\n"
+    text = text + "    mov x20, x1\n    mov x21, x2\n    ldrb w9, [x20, #127]\n"
+    text = text + "    cmp w9, #9\n    b.ne __tyrion_app_list_pop_fail\n"
+    text = text + "    mov x0, x20\n    bl __tyrion_app_slot_detach_shared\n"
+    text = text + "    cbz w0, __tyrion_app_list_pop_fail\n    ldr x22, [x20, #8]\n"
+    text = text + "    cbz x22, __tyrion_app_list_pop_fail\n    sub x23, x22, #1\n"
+    text = text + "    cbz x21, __tyrion_app_list_pop_index_ready\n"
+    text = text + "    ldrb w9, [x21, #127]\n    cmp w9, #2\n"
+    text = text + "    b.ne __tyrion_app_list_pop_fail\n    ldr x23, [x21]\n"
+    text = text + "    cmp x23, #0\n    b.ge __tyrion_app_list_pop_index_nonnegative\n"
+    text = text + "    add x23, x23, x22\n__tyrion_app_list_pop_index_nonnegative:\n"
+    text = text + "    cmp x23, #0\n    b.lt __tyrion_app_list_pop_fail\n    cmp x23, x22\n"
+    text = text + "    b.hs __tyrion_app_list_pop_fail\n__tyrion_app_list_pop_index_ready:\n"
+    text = text + "    ldr x24, [x20]\n    add x25, x24, x23, lsl #7\n"
+    text = text + "    mov x0, x19\n    mov x1, x25\n    bl __tyrion_app_slot_copy\n"
+    text = text + "    mov x26, x23\n__tyrion_app_list_pop_shift:\n    add x9, x26, #1\n"
+    text = text + "    cmp x9, x22\n    b.hs __tyrion_app_list_pop_shift_done\n"
+    text = text + "    add x0, x24, x26, lsl #7\n    add x1, x24, x9, lsl #7\n"
+    text = text + "    bl __tyrion_app_slot_copy\n    add x26, x26, #1\n"
+    text = text + "    b __tyrion_app_list_pop_shift\n__tyrion_app_list_pop_shift_done:\n"
+    text = text + "    sub x9, x22, #1\n    add x0, x24, x9, lsl #7\n    bl __tyrion_app_slot_release\n"
+    text = text + "    sub x22, x22, #1\n    str x22, [x20, #8]\n    mov w0, #1\n"
+    text = text + "    b __tyrion_app_list_pop_done\n__tyrion_app_list_pop_fail:\n    mov w0, #0\n"
+    text = text + "__tyrion_app_list_pop_done:\n    ldp x25, x26, [sp, #64]\n"
+    text = text + "    ldp x23, x24, [sp, #48]\n    ldp x21, x22, [sp, #32]\n"
+    text = text + "    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #96\n    ret\n"
     text = text + "__tyrion_app_set_new:\n    stp x29, x30, [sp, #-48]!\n"
     text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n"
     text = text + "    mov x19, x0\n    mov x20, x1\n    bl __tyrion_app_list_new\n"
@@ -14547,7 +14759,7 @@ def native_runtime_direct_list_io_text():
     text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n    mov x19, x0\n"
     text = text + "    cbz x19, __tyrion_app_slot_detach_shared_fail\n    ldrb w9, [x19, #127]\n"
     text = text + "    cmp w9, #9\n    b.eq __tyrion_app_slot_detach_shared_check\n"
-    text = text + "    cmp w9, #10\n    b.eq __tyrion_app_slot_detach_shared_check\n"
+    text = text + "    cmp w9, #10\n    b.eq __tyrion_app_slot_detach_shared_check\n    cmp w9, #11\n    b.eq __tyrion_app_slot_detach_shared_check\n"
     text = text + "    cmp w9, #20\n    b.ne __tyrion_app_slot_detach_shared_success\n"
     text = text + "__tyrion_app_slot_detach_shared_check:\n    ldr x0, [x19]\n"
     text = text + "    bl __tyrion_app_shared_needs_detach\n    cbz w0, __tyrion_app_slot_detach_shared_success\n"
@@ -14879,6 +15091,7 @@ def native_runtime_direct_list_io_text():
     text = text + "    stp x21, x22, [sp, #32]\n    mov x19, x0\n"
     text = text + "    mov x20, x1\n    mov x21, x2\n    mov x22, #0\n"
     text = text + "    ldrb w9, [x20, #127]\n    cmp w9, #9\n"
+    text = text + "    b.eq __tyrion_app_contains_list_loop\n    cmp w9, #20\n"
     text = text + "    b.eq __tyrion_app_contains_list_loop\n    cmp w9, #10\n"
     text = text + "    b.eq __tyrion_app_contains_dict_loop\n    b __tyrion_app_list_fail\n"
     text = text + "__tyrion_app_contains_list_loop:\n"
@@ -15022,7 +15235,7 @@ def native_runtime_direct_dict_storage_text():
     text = text + "    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #64\n    ret\n"
     return text
 
-def native_runtime_direct_dict_io_text():
+def native_runtime_direct_dict_io_text(target):
     text = "__tyrion_app_dict_clone:\n    stp x29, x30, [sp, #-80]!\n"
     text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n"
     text = text + "    mov x19, x0\n    mov x20, x1\n    mov x0, x19\n    mov x1, #128\n"
@@ -15063,6 +15276,7 @@ def native_runtime_direct_dict_io_text():
     text = text + "    add x22, x22, #1\n    b __tyrion_app_dict_keys_loop\n"
     text = text + "__tyrion_app_dict_keys_done:\n    ldp x21, x22, [sp, #32]\n"
     text = text + "    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #80\n    ret\n"
+    text = text + "__tyrion_app_dict_values:\n    stp x29, x30, [sp, #-80]!\n    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n    mov x19, x0\n    mov x20, x1\n    ldrb w9, [x20, #127]\n    cmp w9, #10\n    b.ne __tyrion_app_dict_fail\n    ldr x21, [x20, #8]\n    mov x0, x19\n    mov x1, x21\n    bl __tyrion_app_list_new\n    mov x22, #0\n__tyrion_app_dict_values_loop:\n    cmp x22, x21\n    b.hs __tyrion_app_dict_values_done\n    ldr x9, [x20]\n    add x2, x9, x22, lsl #8\n    add x2, x2, #128\n    mov x0, x19\n    mov x1, x22\n    bl __tyrion_app_list_set\n    add x22, x22, #1\n    b __tyrion_app_dict_values_loop\n__tyrion_app_dict_values_done:\n    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #80\n    ret\n"
     text = text + "__tyrion_app_dict_items:\n    stp x29, x30, [sp, #-96]!\n"
     text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n"
     text = text + "    stp x21, x22, [sp, #32]\n    str x23, [sp, #48]\n"
@@ -15083,6 +15297,7 @@ def native_runtime_direct_dict_io_text():
     text = text + "    add sp, sp, #256\n    ldr x23, [sp, #48]\n"
     text = text + "    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n"
     text = text + "    ldp x29, x30, [sp], #96\n    ret\n"
+    text = text + "__tyrion_app_dict_update:\n    stp x29, x30, [sp, #-96]!\n    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n    str x23, [sp, #48]\n    mov x19, x0\n    mov x20, x1\n    ldrb w9, [x19, #127]\n    cmp w9, #10\n    b.ne __tyrion_app_dict_fail\n    ldrb w9, [x20, #127]\n    cmp w9, #10\n    b.ne __tyrion_app_dict_fail\n    ldr x21, [x20, #8]\n    mov x22, #0\n__tyrion_app_dict_update_loop:\n    cmp x22, x21\n    b.hs __tyrion_app_dict_update_done\n    ldr x9, [x20]\n    add x23, x9, x22, lsl #8\n    mov x0, x19\n    add x1, x23, #0\n    add x2, x23, #128\n    bl __tyrion_app_dict_set\n    add x22, x22, #1\n    b __tyrion_app_dict_update_loop\n__tyrion_app_dict_update_done:\n    ldr x23, [sp, #48]\n    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #96\n    ret\n"
     text = text + "__tyrion_app_dict_index:\n    stp x29, x30, [sp, #-80]!\n"
     text = text + "    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n"
     text = text + "    mov x19, x0\n    mov x20, x1\n    mov x21, x2\n    mov x22, #0\n"
@@ -15095,6 +15310,9 @@ def native_runtime_direct_dict_io_text():
     text = text + "    bl __tyrion_app_slot_copy\n    ldp x21, x22, [sp, #32]\n"
     text = text + "    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #80\n    ret\n"
     text = text + "__tyrion_app_dict_fail:\n    mov x0, #4\n    b _exit\n"
+    text = text + "__tyrion_app_dict_get:\n    stp x29, x30, [sp, #-80]!\n    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n    str x23, [sp, #48]\n    mov x19, x0\n    mov x20, x1\n    mov x21, x2\n    mov x23, x3\n    mov x22, #0\n__tyrion_app_dict_get_loop:\n    ldr x9, [x20, #8]\n    cmp x22, x9\n    b.hs __tyrion_app_dict_get_missing\n    ldr x9, [x20]\n    add x9, x9, x22, lsl #8\n    str x9, [sp, #64]\n    mov x0, x9\n    mov x1, x21\n    bl __tyrion_app_value_equal\n    cbnz w0, __tyrion_app_dict_get_found\n    add x22, x22, #1\n    b __tyrion_app_dict_get_loop\n__tyrion_app_dict_get_found:\n    ldr x1, [sp, #64]\n    add x1, x1, #128\n    mov x0, x19\n    bl __tyrion_app_slot_copy\n    b __tyrion_app_dict_get_done\n__tyrion_app_dict_get_missing:\n    cbz x23, __tyrion_app_dict_get_none\n    mov x0, x19\n    mov x1, x23\n    bl __tyrion_app_slot_copy\n    b __tyrion_app_dict_get_done\n__tyrion_app_dict_get_none:\n    str xzr, [x19]\n    mov w9, #0\n    strb w9, [x19, #126]\n    mov w9, #0\n    strb w9, [x19, #127]\n__tyrion_app_dict_get_done:\n    ldr x23, [sp, #48]\n    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #80\n    ret\n"
+    text = text + "__tyrion_app_pop:\n    stp x29, x30, [sp, #-96]!\n    mov x29, sp\n    stp x19, x20, [sp, #16]\n    stp x21, x22, [sp, #32]\n    stp x23, x24, [sp, #48]\n    mov x19, x0\n    mov x20, x1\n    mov x21, x2\n    ldrb w9, [x20, #127]\n    cmp w9, #9\n    b.eq __tyrion_app_pop_list\n    cmp w9, #10\n    b.ne __tyrion_app_pop_fail\n    mov x0, x20\n    bl __tyrion_app_slot_detach_shared\n    cbz w0, __tyrion_app_pop_fail\n    ldr x22, [x20, #8]\n    mov x23, #0\n__tyrion_app_pop_dict_loop:\n    cmp x23, x22\n    b.hs __tyrion_app_pop_dict_missing\n    ldr x9, [x20]\n    add x24, x9, x23, lsl #8\n    mov x0, x24\n    mov x1, x21\n    bl __tyrion_app_value_equal\n    cbnz w0, __tyrion_app_pop_dict_found\n    add x23, x23, #1\n    b __tyrion_app_pop_dict_loop\n__tyrion_app_pop_dict_found:\n    add x0, x24, #128\n    mov x1, x19\n    bl __tyrion_app_slot_copy\n    add x9, x23, #1\n    sub x2, x22, x9\n    cbz x2, __tyrion_app_pop_dict_release_last\n    ldr x0, [x20]\n    add x0, x0, x23, lsl #8\n    ldr x1, [x20]\n    add x1, x1, x9, lsl #8\n    lsl x2, x2, #8\n    bl memmove\n__tyrion_app_pop_dict_release_last:\n    sub x9, x22, #1\n    ldr x10, [x20]\n    add x10, x10, x9, lsl #8\n    mov x0, x10\n    bl __tyrion_app_slot_release\n    add x0, x10, #128\n    bl __tyrion_app_slot_release\n    str x9, [x20, #8]\n    mov w0, #1\n    b __tyrion_app_pop_done\n__tyrion_app_pop_dict_missing:\n    cbz x21, __tyrion_app_pop_fail\n    mov x0, x19\n    mov x1, x21\n    bl __tyrion_app_slot_copy\n    mov w0, #1\n    b __tyrion_app_pop_done\n__tyrion_app_pop_list:\n    mov x0, x19\n    mov x1, x20\n    mov x2, x21\n    bl __tyrion_app_list_pop\n    b __tyrion_app_pop_done\n__tyrion_app_pop_fail:\n    mov w0, #0\n__tyrion_app_pop_done:\n    ldp x23, x24, [sp, #48]\n    ldp x21, x22, [sp, #32]\n    ldp x19, x20, [sp, #16]\n    ldp x29, x30, [sp], #96\n    ret\n"
+    text = text + "__tyrion_app_copy:\n    ldrb w9, [x1, #127]\n    cmp w9, #10\n    b.eq __tyrion_app_copy_dict\n    b __tyrion_app_list_copy\n__tyrion_app_copy_dict:\n    b __tyrion_app_dict_clone\n"
     return text
 
 def emit_native_runtime_direct_data_tcp(out, target):
@@ -15868,6 +16086,13 @@ def emit_native_runtime_direct_data_expression_ops(out, target):
     binary_code_12 = binary_code_12 + "1:\n    ldr x13, [sp, #8]\n    add sp, sp, #16\n"
     binary_code_12 = binary_code_12 + "    str x0, [x13]\n    mov w9, #3\n    strb w9, [x13, #127]\n"
     binary_code_13 = numeric_code + "4" + numeric_code_tail
+    binary_code_14 = numeric_code + "5" + numeric_code_tail
+    binary_code_15 = numeric_code + "6" + numeric_code_tail
+    binary_code_16 = numeric_code + "7" + numeric_code_tail
+    binary_code_17 = numeric_code + "8" + numeric_code_tail
+    binary_code_18 = numeric_code + "9" + numeric_code_tail
+    binary_code_19 = numeric_code + "10" + numeric_code_tail
+    binary_code_20 = numeric_code + "11" + numeric_code_tail
     out = asm_cstr(out, "L_native_runtime_direct_expr_pair_a", expr_pair_a)
     out = asm_cstr(out, "L_native_runtime_direct_expr_pair_b", expr_pair_b)
     out = asm_cstr(out, "L_native_runtime_direct_expr_unary_minus", expr_unary_minus)
@@ -15899,6 +16124,13 @@ def emit_native_runtime_direct_data_expression_ops(out, target):
     out = asm_cstr(out, "L_native_runtime_direct_binary_code_" + str(application_binary_operator_id_at(11)), binary_code_11)
     out = asm_cstr(out, "L_native_runtime_direct_binary_code_" + str(application_binary_operator_id_at(12)), binary_code_12)
     out = asm_cstr(out, "L_native_runtime_direct_binary_code_" + str(application_binary_operator_id_at(13)), binary_code_13)
+    out = asm_cstr(out, "L_native_runtime_direct_binary_code_" + str(application_binary_operator_id_at(14)), binary_code_14)
+    out = asm_cstr(out, "L_native_runtime_direct_binary_code_" + str(application_binary_operator_id_at(15)), binary_code_15)
+    out = asm_cstr(out, "L_native_runtime_direct_binary_code_" + str(application_binary_operator_id_at(16)), binary_code_16)
+    out = asm_cstr(out, "L_native_runtime_direct_binary_code_" + str(application_binary_operator_id_at(17)), binary_code_17)
+    out = asm_cstr(out, "L_native_runtime_direct_binary_code_" + str(application_binary_operator_id_at(18)), binary_code_18)
+    out = asm_cstr(out, "L_native_runtime_direct_binary_code_" + str(application_binary_operator_id_at(19)), binary_code_19)
+    out = asm_cstr(out, "L_native_runtime_direct_binary_code_" + str(application_binary_operator_id_at(20)), binary_code_20)
     out = asm_line(out, ".p2align 2")
     return out
 
@@ -16305,13 +16537,6 @@ def emit_native_lex_keyword_runtime(out, target):
     asm_line(out, "bl " + asm_call_name(target, "memcmp"))
     asm_line(out, "cbz w0, L_native_lex_keyword_match_25")
     asm_label(out, "L_native_lex_keyword_next_25")
-    asm_line(out, "cmp x21, #4")
-    asm_line(out, "b.ne L_native_lex_keyword_next_26")
-    asm_line(out, "mov x0, x19")
-    asm_addr(out, target, "x1", "L_native_lex_keyword_text_26")
-    asm_line(out, "mov x2, #4")
-    asm_line(out, "bl " + asm_call_name(target, "memcmp"))
-    asm_line(out, "cbz w0, L_native_lex_keyword_match_26")
     asm_label(out, "L_native_lex_keyword_next_26")
     asm_line(out, "cmp x21, #6")
     asm_line(out, "b.ne L_native_lex_keyword_next_27")
@@ -16417,9 +16642,6 @@ def emit_native_lex_keyword_runtime(out, target):
     asm_label(out, "L_native_lex_keyword_match_25")
     asm_addr(out, target, "x0", "L_native_lex_keyword_kind_25")
     asm_line(out, "b L_native_lex_keyword_return")
-    asm_label(out, "L_native_lex_keyword_match_26")
-    asm_addr(out, target, "x0", "L_native_lex_keyword_kind_26")
-    asm_line(out, "b L_native_lex_keyword_return")
     asm_label(out, "L_native_lex_keyword_match_27")
     asm_addr(out, target, "x0", "L_native_lex_keyword_kind_27")
     asm_line(out, "b L_native_lex_keyword_return")
@@ -16487,8 +16709,6 @@ def emit_native_lex_keyword_runtime(out, target):
     asm_cstr(out, "L_native_lex_keyword_kind_24", "KW_BREAK")
     asm_cstr(out, "L_native_lex_keyword_text_25", "continue")
     asm_cstr(out, "L_native_lex_keyword_kind_25", "KW_CONTINUE")
-    asm_cstr(out, "L_native_lex_keyword_text_26", "next")
-    asm_cstr(out, "L_native_lex_keyword_kind_26", "KW_CONTINUE")
     asm_cstr(out, "L_native_lex_keyword_text_27", "unless")
     asm_cstr(out, "L_native_lex_keyword_kind_27", "KW_UNLESS")
     asm_cstr(out, "L_native_lex_keyword_text_28", "lambda")
@@ -18091,9 +18311,17 @@ def emit_native_pratt_ast_runtime(out, target):
     asm_line(out, "bl " + asm_call_name(target, "strcmp"))
     asm_line(out, "cbz w0, L_native_pratt_bp_12")
     asm_line(out, "mov x0, x19")
+    asm_addr(out, target, "x1", "L_native_pratt_op_14")
+    asm_line(out, "bl " + asm_call_name(target, "strcmp"))
+    asm_line(out, "cbz w0, L_native_pratt_bp_14")
+    asm_line(out, "mov x0, x19")
     asm_addr(out, target, "x1", "L_native_pratt_op_13")
     asm_line(out, "bl " + asm_call_name(target, "strcmp"))
     asm_line(out, "cbz w0, L_native_pratt_bp_13")
+    asm_line(out, "mov x0, x19")
+    asm_addr(out, target, "x1", "L_native_pratt_op_15")
+    asm_line(out, "bl " + asm_call_name(target, "strcmp"))
+    asm_line(out, "cbz w0, L_native_pratt_bp_15")
     asm_line(out, "mov x0, #0")
     asm_line(out, "b L_native_pratt_binding_power_return")
     asm_label(out, "L_native_pratt_bp_0")
@@ -18152,6 +18380,14 @@ def emit_native_pratt_ast_runtime(out, target):
     asm_line(out, "mov x0, #50")
     asm_line(out, "mov x1, #14")
     asm_line(out, "b L_native_pratt_binding_power_return")
+    asm_label(out, "L_native_pratt_bp_14")
+    asm_line(out, "mov x0, #50")
+    asm_line(out, "mov x1, #15")
+    asm_line(out, "b L_native_pratt_binding_power_return")
+    asm_label(out, "L_native_pratt_bp_15")
+    asm_line(out, "mov x0, #60")
+    asm_line(out, "mov x1, #16")
+    asm_line(out, "b L_native_pratt_binding_power_return")
     asm_label(out, "L_native_pratt_binding_power_return")
     asm_line(out, "ldr x19, [sp, #16]")
     asm_line(out, "ldp x29, x30, [sp], #48")
@@ -18170,6 +18406,8 @@ def emit_native_pratt_ast_runtime(out, target):
     asm_cstr(out, "L_native_pratt_op_11", "STAR")
     asm_cstr(out, "L_native_pratt_op_12", "SLASH")
     asm_cstr(out, "L_native_pratt_op_13", "PERCENT")
+    asm_cstr(out, "L_native_pratt_op_14", "FLOOR")
+    asm_cstr(out, "L_native_pratt_op_15", "POW")
     asm_line(out, ".p2align 2")
 
     asm_label(out, "L_native_pratt_parse_prefix")
@@ -19249,10 +19487,20 @@ def emit_native_pratt_ast_runtime(out, target):
     asm_line(out, "str x0, [sp, #80]")
     asm_line(out, "str x1, [sp, #88]")
     asm_line(out, "str x24, [sp, #96]")
+    asm_line(out, "mov x0, x25")
+    asm_addr(out, target, "x1", "L_native_pratt_op_15")
+    asm_line(out, "bl " + asm_call_name(target, "strcmp"))
+    asm_line(out, "cbz w0, L_native_pratt_expr_power_rhs")
     asm_line(out, "mov x0, x19")
     asm_line(out, "add x1, x24, #1")
     asm_line(out, "ldr x2, [sp, #80]")
     asm_line(out, "add x2, x2, #1")
+    asm_line(out, "b L_native_pratt_expr_parse_rhs")
+    asm_label(out, "L_native_pratt_expr_power_rhs")
+    asm_line(out, "mov x0, x19")
+    asm_line(out, "add x1, x24, #1")
+    asm_line(out, "ldr x2, [sp, #80]")
+    asm_label(out, "L_native_pratt_expr_parse_rhs")
     asm_line(out, "mov x3, x22")
     asm_line(out, "bl L_native_pratt_parse_expr")
     asm_line(out, "cbz w0, L_native_pratt_expr_fail")
@@ -20056,6 +20304,75 @@ def emit_native_pratt_ast_runtime(out, target):
     asm_line(out, "b L_native_parse_statement_consume_eol")
 
     asm_label(out, "L_native_parse_statement_expr")
+    # Fast-path a canonical identifier //= target before Pratt parsing. This
+    # avoids relying on every target lexer/parser pair exposing the same
+    # augmented-assignment token shape.
+    asm_line(out, "mov x0, x19")
+    asm_line(out, "add x1, x20, #1")
+    asm_line(out, "bl L_native_token_record_at")
+    asm_line(out, "cbz x0, L_native_parse_statement_expr_floor_probe_done")
+    asm_line(out, "ldr x0, [x0]")
+    asm_addr(out, target, "x1", "L_native_stmt_flooreq_kind")
+    asm_line(out, "bl " + asm_call_name(target, "strcmp"))
+    asm_line(out, "cbnz w0, L_native_parse_statement_expr_floor_probe_done")
+    asm_line(out, "mov x0, x21")
+    asm_line(out, "mov x1, #1")
+    asm_line(out, "mov x2, x20")
+    asm_line(out, "add x3, x20, #1")
+    asm_line(out, "mov x4, x20")
+    asm_line(out, "mov x5, #-1")
+    asm_line(out, "mov x6, x20")
+    asm_line(out, "mov x7, #0")
+    asm_line(out, "bl L_native_ast_arena_append")
+    asm_line(out, "cbz w0, L_native_parse_statement_fail")
+    asm_line(out, "mov x23, x1")
+    asm_line(out, "add x24, x20, #1")
+    asm_line(out, "b L_native_parse_statement_augmented_floor")
+    asm_label(out, "L_native_parse_statement_expr_floor_probe_done")
+    # Some target lexers still expose `//=` as FLOOR followed by EQ. Detect
+    # that legacy token pair before Pratt consumes FLOOR as a binary operator.
+    asm_line(out, "mov x0, x19")
+    asm_line(out, "mov x1, x20")
+    asm_line(out, "bl L_native_token_record_at")
+    asm_line(out, "cbz x0, L_native_parse_statement_expr_normal")
+    asm_line(out, "ldr x0, [x0]")
+    asm_addr(out, target, "x1", "L_native_pratt_op_14")
+    asm_line(out, "bl " + asm_call_name(target, "strcmp"))
+    asm_line(out, "cbnz w0, L_native_parse_statement_expr_normal")
+    asm_line(out, "mov x0, x19")
+    asm_line(out, "add x1, x20, #2")
+    asm_line(out, "bl L_native_token_record_at")
+    asm_line(out, "cbz x0, L_native_parse_statement_expr_normal")
+    asm_line(out, "ldr x0, [x0]")
+    asm_addr(out, target, "x1", "L_native_stmt_eq_kind")
+    asm_line(out, "bl " + asm_call_name(target, "strcmp"))
+    asm_line(out, "cbz w0, L_native_parse_statement_floor_split_assign")
+    asm_line(out, "mov x0, x19")
+    asm_line(out, "add x1, x20, #1")
+    asm_line(out, "bl L_native_token_record_at")
+    asm_line(out, "cbz x0, L_native_parse_statement_expr_normal")
+    asm_line(out, "ldr x0, [x0]")
+    asm_addr(out, target, "x1", "L_native_pratt_op_12")
+    asm_line(out, "bl " + asm_call_name(target, "strcmp"))
+    asm_line(out, "cbnz w0, L_native_parse_statement_expr_normal")
+    asm_line(out, "mov x0, x19")
+    asm_line(out, "add x1, x20, #2")
+    asm_line(out, "bl L_native_token_record_at")
+    asm_line(out, "cbz x0, L_native_parse_statement_expr_normal")
+    asm_line(out, "ldr x0, [x0]")
+    asm_addr(out, target, "x1", "L_native_pratt_op_12")
+    asm_line(out, "bl " + asm_call_name(target, "strcmp"))
+    asm_line(out, "cbnz w0, L_native_parse_statement_expr_normal")
+    asm_line(out, "mov x0, x19")
+    asm_line(out, "add x1, x20, #3")
+    asm_line(out, "bl L_native_token_record_at")
+    asm_line(out, "cbz x0, L_native_parse_statement_expr_normal")
+    asm_line(out, "ldr x0, [x0]")
+    asm_addr(out, target, "x1", "L_native_stmt_eq_kind")
+    asm_line(out, "bl " + asm_call_name(target, "strcmp"))
+    asm_line(out, "cbnz w0, L_native_parse_statement_expr_normal")
+    asm_line(out, "b L_native_parse_statement_floor_double_slash_assign")
+    asm_label(out, "L_native_parse_statement_expr_normal")
     asm_line(out, "mov x0, x19")
     asm_line(out, "mov x1, x20")
     asm_line(out, "mov x2, #1")
@@ -20085,6 +20402,22 @@ def emit_native_pratt_ast_runtime(out, target):
     asm_line(out, "bl L_native_token_record_at")
     asm_line(out, "cbz x0, L_native_parse_statement_expr_append")
     asm_line(out, "ldr x0, [x0]")
+    asm_addr(out, target, "x1", "L_native_stmt_flooreq_kind")
+    asm_line(out, "bl " + asm_call_name(target, "strcmp"))
+    asm_line(out, "cbz w0, L_native_parse_statement_augmented_floor")
+    asm_line(out, "mov x0, x19")
+    asm_line(out, "mov x1, x24")
+    asm_line(out, "bl L_native_token_record_at")
+    asm_line(out, "cbz x0, L_native_parse_statement_expr_append")
+    asm_line(out, "ldr x0, [x0, #8]")
+    asm_addr(out, target, "x1", "L_native_stmt_flooreq_text")
+    asm_line(out, "bl " + asm_call_name(target, "strcmp"))
+    asm_line(out, "cbz w0, L_native_parse_statement_augmented_floor")
+    asm_line(out, "mov x0, x19")
+    asm_line(out, "mov x1, x24")
+    asm_line(out, "bl L_native_token_record_at")
+    asm_line(out, "cbz x0, L_native_parse_statement_expr_append")
+    asm_line(out, "ldr x0, [x0]")
     asm_addr(out, target, "x1", "L_native_stmt_comma_kind")
     asm_line(out, "bl " + asm_call_name(target, "strcmp"))
     asm_line(out, "cbz w0, L_native_parse_statement_unpack_assign")
@@ -20099,6 +20432,72 @@ def emit_native_pratt_ast_runtime(out, target):
     asm_line(out, "mov x7, #0")
     asm_line(out, "bl L_native_ast_arena_append")
     asm_line(out, "cbz w0, L_native_parse_statement_fail")
+    asm_line(out, "b L_native_parse_statement_consume_eol")
+
+    asm_label(out, "L_native_parse_statement_floor_split_assign")
+    asm_line(out, "mov x0, x21")
+    asm_line(out, "mov x1, #1")
+    asm_line(out, "mov x2, x20")
+    asm_line(out, "add x3, x20, #1")
+    asm_line(out, "mov x4, x20")
+    asm_line(out, "mov x5, #-1")
+    asm_line(out, "mov x6, x20")
+    asm_line(out, "mov x7, #0")
+    asm_line(out, "bl L_native_ast_arena_append")
+    asm_line(out, "cbz w0, L_native_parse_statement_fail")
+    asm_line(out, "mov x23, x1")
+    asm_line(out, "mov x0, x19")
+    asm_line(out, "add x1, x20, #3")
+    asm_line(out, "mov x2, #1")
+    asm_line(out, "mov x3, x21")
+    asm_line(out, "bl L_native_pratt_parse_expr")
+    asm_line(out, "cbz w0, L_native_parse_statement_fail")
+    asm_line(out, "mov x25, x1")
+    asm_line(out, "mov x26, x2")
+    asm_line(out, "mov x0, x21")
+    asm_line(out, "mov x1, #100")
+    asm_line(out, "mov x2, x20")
+    asm_line(out, "mov x3, x26")
+    asm_line(out, "mov x4, x23")
+    asm_line(out, "mov x5, x25")
+    asm_line(out, "mov x6, #5")
+    asm_line(out, "mov x7, #0")
+    asm_line(out, "bl L_native_ast_arena_append")
+    asm_line(out, "cbz w0, L_native_parse_statement_fail")
+    asm_line(out, "mov x24, x26")
+    asm_line(out, "b L_native_parse_statement_consume_eol")
+
+    asm_label(out, "L_native_parse_statement_floor_double_slash_assign")
+    asm_line(out, "mov x0, x21")
+    asm_line(out, "mov x1, #1")
+    asm_line(out, "mov x2, x20")
+    asm_line(out, "add x3, x20, #1")
+    asm_line(out, "mov x4, x20")
+    asm_line(out, "mov x5, #-1")
+    asm_line(out, "mov x6, x20")
+    asm_line(out, "mov x7, #0")
+    asm_line(out, "bl L_native_ast_arena_append")
+    asm_line(out, "cbz w0, L_native_parse_statement_fail")
+    asm_line(out, "mov x23, x1")
+    asm_line(out, "mov x0, x19")
+    asm_line(out, "add x1, x20, #4")
+    asm_line(out, "mov x2, #1")
+    asm_line(out, "mov x3, x21")
+    asm_line(out, "bl L_native_pratt_parse_expr")
+    asm_line(out, "cbz w0, L_native_parse_statement_fail")
+    asm_line(out, "mov x25, x1")
+    asm_line(out, "mov x26, x2")
+    asm_line(out, "mov x0, x21")
+    asm_line(out, "mov x1, #100")
+    asm_line(out, "mov x2, x20")
+    asm_line(out, "mov x3, x26")
+    asm_line(out, "mov x4, x23")
+    asm_line(out, "mov x5, x25")
+    asm_line(out, "mov x6, #5")
+    asm_line(out, "mov x7, #0")
+    asm_line(out, "bl L_native_ast_arena_append")
+    asm_line(out, "cbz w0, L_native_parse_statement_fail")
+    asm_line(out, "mov x24, x26")
     asm_line(out, "b L_native_parse_statement_consume_eol")
 
     # kind-20 reverse links describe assignment targets: +24 token index,
@@ -20245,6 +20644,28 @@ def emit_native_pratt_ast_runtime(out, target):
     asm_line(out, "mov x24, x26")
     asm_line(out, "b L_native_parse_statement_consume_eol")
 
+    asm_label(out, "L_native_parse_statement_augmented_floor")
+    asm_line(out, "mov x0, x19")
+    asm_line(out, "add x1, x24, #1")
+    asm_line(out, "mov x2, #1")
+    asm_line(out, "mov x3, x21")
+    asm_line(out, "bl L_native_pratt_parse_expr")
+    asm_line(out, "cbz w0, L_native_parse_statement_fail")
+    asm_line(out, "mov x25, x1")
+    asm_line(out, "mov x26, x2")
+    asm_line(out, "mov x0, x21")
+    asm_line(out, "mov x1, #100")
+    asm_line(out, "mov x2, x20")
+    asm_line(out, "mov x3, x26")
+    asm_line(out, "mov x4, x23")
+    asm_line(out, "mov x5, x25")
+    asm_line(out, "mov x6, #5")
+    asm_line(out, "mov x7, #0")
+    asm_line(out, "bl L_native_ast_arena_append")
+    asm_line(out, "cbz w0, L_native_parse_statement_fail")
+    asm_line(out, "mov x24, x26")
+    asm_line(out, "b L_native_parse_statement_consume_eol")
+
     asm_label(out, "L_native_parse_statement_consume_eol")
     asm_line(out, "mov x23, x1")
     asm_line(out, "mov x0, x19")
@@ -20291,6 +20712,8 @@ def emit_native_pratt_ast_runtime(out, target):
     asm_cstr(out, "L_native_stmt_eq_kind", "EQ")
     asm_cstr(out, "L_native_stmt_dot_kind", "DOT")
     asm_cstr(out, "L_native_stmt_pluseq_kind", "PLUSEQ")
+    asm_cstr(out, "L_native_stmt_flooreq_kind", "FLOOREQ")
+    asm_cstr(out, "L_native_stmt_flooreq_text", "//=")
     asm_cstr(out, "L_native_stmt_newline_kind", "NEWLINE")
     asm_cstr(out, "L_native_stmt_eof_kind", "EOF")
     asm_cstr(out, "L_native_stmt_colon_kind", "COLON")

@@ -83,7 +83,7 @@ def keyword_kind(word):
         return "KW_NONE"
     if word == "break":
         return "KW_BREAK"
-    if word == "continue" or word == "next":
+    if word == "continue":
         return "KW_CONTINUE"
     if word == "unless":
         return "KW_UNLESS"
@@ -91,6 +91,8 @@ def keyword_kind(word):
         return "KW_LAMBDA"
     if word == "yield":
         return "KW_YIELD"
+    if word == "del":
+        return "KW_DEL"
     return "IDENTIFIER"
 
 
@@ -123,6 +125,14 @@ def simple_token_kind(ch):
         return "PERCENT"
     if ch == "+":
         return "PLUS"
+    if ch == "|":
+        return "PIPE"
+    if ch == "&":
+        return "AMP"
+    if ch == "^":
+        return "CARET"
+    if ch == "~":
+        return "TILDE"
     if ch == "=":
         return "EQ"
     if ch == "!":
@@ -135,9 +145,19 @@ def simple_token_kind(ch):
 
 
 def two_char_token_kind(ch, nxt):
+    if ch == "*" and nxt == "*":
+        return "POW"
+    if ch == "/":
+        if nxt == "/":
+            return "FLOOR"
+        if nxt == "=":
+            return "FLOOREQ"
     if ch == "+":
         if nxt == "=":
             return "PLUSEQ"
+    if ch == "|":
+        if nxt == "=":
+            return "PIPEEQ"
     if ch == "=":
         if nxt == "=":
             return "EQEQ"
@@ -145,11 +165,19 @@ def two_char_token_kind(ch, nxt):
         if nxt == "=":
             return "NE"
     if ch == "<":
+        if nxt == "<":
+            return "LSHIFT"
         if nxt == "=":
             return "LE"
     if ch == ">":
+        if nxt == ">":
+            return "RSHIFT"
         if nxt == "=":
             return "GE"
+    if ch == "&" and nxt == "=":
+        return "AMPEQ"
+    if ch == "^" and nxt == "=":
+        return "CARETEQ"
     return ""
 
 
@@ -310,11 +338,10 @@ def lex(source):
                     handled_char = 1
             if handled_char == 0:
                 if ch == "\n":
-                    newline_line = line + 1
                     if bracket_depth == 0:
-                        __tyrion_native_token_builder_append(tokens, "NEWLINE", "NEWLINE", newline_line, column)
+                        __tyrion_native_token_builder_append(tokens, "NEWLINE", "NEWLINE", line, column)
                     i = i + 1
-                    line = newline_line
+                    line = line + 1
                     column = 1
                     at_line_start = True
                     handled_char = 1
@@ -447,7 +474,24 @@ def lex(source):
                 if simple_kind != "":
                     kind = simple_kind
                     text = ch
-                    if i + 1 < n:
+                    if i + 2 < n and ch == "*" and source[i + 1] == "*" and source[i + 2] == "=":
+                        kind = "POWEQ"
+                        text = source[i:i + 3]
+                        i = i + 2
+                        column = column + 2
+                    elif i + 2 < n and ch == "/" and source[i + 1] == "/" and source[i + 2] == "=":
+                        kind = "FLOOREQ"
+                        text = source[i:i + 3]
+                        i = i + 2
+                        column = column + 2
+                    elif i + 2 < n and (ch == "<" or ch == ">") and source[i + 1] == ch and source[i + 2] == "=":
+                        kind = "LSHIFTEQ"
+                        if ch == ">":
+                            kind = "RSHIFTEQ"
+                        text = source[i:i + 3]
+                        i = i + 2
+                        column = column + 2
+                    elif i + 1 < n:
                         next_simple_ch = source[i + 1]
                         two_kind = two_char_token_kind(ch, next_simple_ch)
                         if two_kind != "":
@@ -482,11 +526,11 @@ def lex(source):
 
 def source_inventory(path):
     source = read_text_file(path)
-    lines = source.split("\n")
+    lines = split_inventory_text(source, "\n")
     nonempty = 0
     idx = 0
     while idx < len(lines):
-        if lines[idx].strip() != "":
+        if trim_spaces(lines[idx]) != "":
             nonempty = nonempty + 1
         idx = idx + 1
     return {"line_count": len(lines), "nonempty_line_count": nonempty}

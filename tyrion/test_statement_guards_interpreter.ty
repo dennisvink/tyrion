@@ -1,0 +1,4 @@
+import src.driver
+
+
+tyrion_main(["compiler/tests/statement_guards.ty"])

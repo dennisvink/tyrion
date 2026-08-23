@@ -79,6 +79,8 @@ def application_expr_operation_id(kind):
         return 19
     if kind == "kwarg":
         return 20
+    if kind == "starred":
+        return 21
     return 0
 
 
@@ -195,15 +197,15 @@ def application_call_kind_id(kind):
 
 
 def application_method_names():
-    return ["append", "remove", "add", "keys", "items", "strip", "split", "startswith", "endswith", "read", "write", "flush", "seek", "close"]
+    return ["append", "remove", "add", "extend", "insert", "keys", "items", "strip", "split", "rsplit", "startswith", "endswith", "read", "write", "flush", "seek", "close", "join", "replace", "lower", "upper", "find", "count", "removeprefix", "removesuffix", "partition", "rpartition", "lstrip", "rstrip", "splitlines", "pop", "clear", "copy", "index", "reverse", "sort", "get", "values", "update", "setdefault", "popitem", "fromkeys"]
 
 
 def application_method_ids():
-    return [601, 602, 603, 604, 605, 606, 607, 608, 609, 610, 611, 612, 613, 614]
+    return [601, 602, 603, 630, 631, 604, 605, 606, 607, 627, 608, 609, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, 625, 626, 628, 629, 632, 633, 634, 635, 636, 637, 638, 639, 640, 641, 642]
 
 
 def application_method_count():
-    return 14
+    return 42
 
 
 def application_method_name_at(index):
@@ -214,33 +216,89 @@ def application_method_name_at(index):
     if index == 2:
         return "add"
     if index == 3:
-        return "keys"
+        return "extend"
     if index == 4:
-        return "items"
+        return "insert"
     if index == 5:
-        return "strip"
+        return "keys"
     if index == 6:
-        return "split"
+        return "items"
     if index == 7:
-        return "startswith"
+        return "strip"
     if index == 8:
-        return "endswith"
+        return "split"
     if index == 9:
-        return "read"
+        return "rsplit"
     if index == 10:
-        return "write"
+        return "startswith"
     if index == 11:
-        return "flush"
+        return "endswith"
     if index == 12:
-        return "seek"
+        return "read"
     if index == 13:
+        return "write"
+    if index == 14:
+        return "flush"
+    if index == 15:
+        return "seek"
+    if index == 16:
         return "close"
+    if index == 17:
+        return "join"
+    if index == 18:
+        return "replace"
+    if index == 19:
+        return "lower"
+    if index == 20:
+        return "upper"
+    if index == 21:
+        return "find"
+    if index == 22:
+        return "count"
+    if index == 23:
+        return "removeprefix"
+    if index == 24:
+        return "removesuffix"
+    if index == 25:
+        return "partition"
+    if index == 26:
+        return "rpartition"
+    if index == 27:
+        return "lstrip"
+    if index == 28:
+        return "rstrip"
+    if index == 29:
+        return "splitlines"
+    if index == 30:
+        return "pop"
+    if index == 31:
+        return "clear"
+    if index == 32:
+        return "copy"
+    if index == 33:
+        return "index"
+    if index == 34:
+        return "reverse"
+    if index == 35:
+        return "sort"
+    if index == 36:
+        return "get"
+    if index == 37:
+        return "values"
+    if index == 38:
+        return "update"
+    if index == 39:
+        return "setdefault"
+    if index == 40:
+        return "popitem"
+    if index == 41:
+        return "fromkeys"
     return ""
 
 
 def application_method_id_at(index):
     if index >= 0 and index < application_method_count():
-        return 601 + index
+        return application_method_id(application_method_name_at(index))
     return 0
 
 
@@ -251,14 +309,46 @@ def application_method_id(name):
         return 602
     if name == "add":
         return 603
+    if name == "extend":
+        return 630
+    if name == "insert":
+        return 631
+    if name == "clear":
+        return 632
+    if name == "copy":
+        return 633
+    if name == "index":
+        return 634
+    if name == "reverse":
+        return 635
+    if name == "sort":
+        return 636
     if name == "keys":
         return 604
     if name == "items":
         return 605
+    if name == "get":
+        return 637
+    if name == "values":
+        return 638
+    if name == "update":
+        return 639
+    if name == "setdefault":
+        return 640
+    if name == "popitem":
+        return 641
+    if name == "fromkeys":
+        return 642
     if name == "strip":
         return 606
     if name == "split":
         return 607
+    if name == "rsplit":
+        return 627
+    if name == "splitlines":
+        return 628
+    if name == "pop":
+        return 629
     if name == "startswith":
         return 608
     if name == "endswith":
@@ -273,19 +363,43 @@ def application_method_id(name):
         return 613
     if name == "close":
         return 614
+    if name == "join":
+        return 615
+    if name == "replace":
+        return 616
+    if name == "lower":
+        return 617
+    if name == "upper":
+        return 618
+    if name == "find":
+        return 619
+    if name == "count":
+        return 620
+    if name == "removeprefix":
+        return 621
+    if name == "removesuffix":
+        return 622
+    if name == "partition":
+        return 623
+    if name == "rpartition":
+        return 624
+    if name == "lstrip":
+        return 625
+    if name == "rstrip":
+        return 626
     return 0
 
 
 def application_binary_operator_names():
-    return ["+", "-", "*", "==", "!=", "<", "<=", ">", ">=", "/", "in", "or", "and", "%"]
+    return ["+", "-", "*", "==", "!=", "<", "<=", ">", ">=", "/", "in", "or", "and", "%", "//", "**", "|", "^", "&", "<<", ">>"]
 
 
 def application_binary_operator_ids():
-    return [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014]
+    return [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020, 1021]
 
 
 def application_binary_operator_count():
-    return 14
+    return 21
 
 
 def application_binary_operator_name_at(index):
@@ -317,6 +431,20 @@ def application_binary_operator_name_at(index):
         return "and"
     if index == 13:
         return "%"
+    if index == 14:
+        return "//"
+    if index == 15:
+        return "**"
+    if index == 16:
+        return "|"
+    if index == 17:
+        return "^"
+    if index == 18:
+        return "&"
+    if index == 19:
+        return "<<"
+    if index == 20:
+        return ">>"
     return ""
 
 
@@ -355,6 +483,20 @@ def application_binary_operator_id(name):
         return 1013
     if name == "%":
         return 1014
+    if name == "//":
+        return 1015
+    if name == "**":
+        return 1016
+    if name == "|":
+        return 1017
+    if name == "^":
+        return 1018
+    if name == "&":
+        return 1019
+    if name == "<<":
+        return 1020
+    if name == ">>":
+        return 1021
     return 0
 
 
@@ -363,6 +505,8 @@ def application_unary_operator_id(name):
         return 1101
     if name == "not":
         return 1102
+    if name == "~":
+        return 1103
     return 0
 
 
@@ -568,6 +712,16 @@ def application_direct_operator_supported(op):
 
 
 def application_direct_builtin_supported(name):
+    if name == "iter" or name == "next":
+        return True
+    if name == "dict" or name == "set" or name == "tuple":
+        return True
+    if name == "__tyrion_dict_union" or name == "__tyrion_dict_fromkeys":
+        return True
+    # These public core helpers are lowered through their private aliases in
+    # native IR, but must still be recognized during application analysis.
+    if name == "map" or name == "__tyrion_map" or name == "filter":
+        return True
     if name == "argv":
         return True
     implementation = primitive_schema_impl_key(name)
@@ -585,6 +739,8 @@ def application_direct_builtin_supported(name):
         return True
     if implementation == "terminal_read_key" or implementation == "ansi_escape":
         return True
+    if implementation == "input":
+        return True
     if implementation == "tcp_connect" or implementation == "tcp_write":
         return True
     if implementation == "tcp_read" or implementation == "tcp_close":
@@ -594,6 +750,8 @@ def application_direct_builtin_supported(name):
     if implementation == "host_load" or implementation == "host_call" or implementation == "host_unload":
         return True
     if implementation == "run_tool" or implementation == "run_tool_capture":
+        return True
+    if implementation == "cache_encode" or implementation == "cache_decode":
         return True
     if implementation == "read_text_file" or implementation == "read_module_graph" or implementation == "write_text_file":
         return True
@@ -612,6 +770,32 @@ def application_direct_builtin_supported(name):
     if implementation == "lex" or implementation == "program_has_function":
         return True
     return False
+
+
+def application_direct_builtin_accepts_arity(name, argc):
+    # These are ordinary core-language functions injected by the builtin
+    # module, but they are treated as direct builtins so the analyzer does not
+    # require them to be declared in the user function table.  Keep their
+    # source-level signatures explicit here; they are not primitive-schema
+    # entries and therefore cannot be checked through primitive_schema_*.
+    if name == "iter":
+        return argc == 1
+    if name == "next":
+        return argc == 1 or argc == 2
+    if name == "__tyrion_dict_union":
+        return argc == 2
+    if name == "__tyrion_dict_fromkeys":
+        return argc == 1 or argc == 2
+    if name == "map" or name == "__tyrion_map":
+        # map(function) is a valid construction; the runtime reports the
+        # missing iterable when it is consumed.  Keep the analyzer from
+        # rejecting it as a primitive call so that normal error handling wins.
+        return argc >= 1
+    if name == "filter":
+        return argc == 2
+    if name == "dict" or name == "set" or name == "tuple":
+        return argc <= 1
+    return primitive_schema_accepts_arity(name, argc)
 
 
 def application_expr_iterator_kind(expr):
@@ -660,6 +844,68 @@ def application_name_hash(name):
     if length > 2:
         value = (value * 17 + application_name_char_band(name[1])) % modulus
         value = (value * 17 + application_name_char_band(name[length - 2])) % modulus
+    return value
+
+
+def compiler_cache_path_hash(text):
+    # Cache filenames need a much wider namespace than the 4093-bucket symbol
+    # index, but hashing multi-megabyte compiler records byte by byte would
+    # recreate the old Intel bootstrap bottleneck. Mix bounded prefixes and
+    # suffixes into a large prime instead; the full fingerprint remains inside
+    # every record and is always checked, so a filename collision is safe.
+    modulus = 2147483629
+    length = len(text)
+    value = length % modulus
+    sample_count = length
+    if sample_count > 64:
+        sample_count = 64
+    sample_stride = 1
+    if sample_count > 0 and length > sample_count:
+        sample_stride = int(length / sample_count)
+    index = 0
+    while index < sample_count:
+        value = (value * 131 + compiler_cache_char_code(text[index]) + 1) % modulus
+        reverse_index = length - index - 1
+        if reverse_index != index:
+            value = (value * 131 + compiler_cache_char_code(text[reverse_index]) + 1) % modulus
+        distributed_index = index * sample_stride
+        if distributed_index >= length:
+            distributed_index = length - 1
+        if distributed_index != index and distributed_index != reverse_index:
+            value = (value * 131 + compiler_cache_char_code(text[distributed_index]) + 1) % modulus
+        index = index + 1
+    return value
+
+
+def compiler_cache_char_code(character):
+    # Compiler source and cache records are ASCII today. Preserve every ASCII
+    # distinction rather than collapsing characters into the deliberately
+    # coarse symbol-index bands used by application_name_hash(). Unknown input
+    # remains safe because the complete fingerprint is checked on every load.
+    table = "\t\n\r !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    if character == "\t":
+        return 9
+    if character == "\n":
+        return 10
+    if character == "\r":
+        return 13
+    index = table.find(character)
+    if index >= 3:
+        return index + 29
+    return 255
+
+
+def compiler_cache_short_text_hash(text):
+    # Unit identities such as function and module names are short enough to
+    # hash completely. Combining this with the bounded record hash keeps cache
+    # lookup constant-depth for very large IR while avoiding clustered paths
+    # for otherwise-similar function records.
+    modulus = 2147483629
+    value = len(text) % modulus
+    index = 0
+    while index < len(text):
+        value = (value * 131 + compiler_cache_char_code(text[index]) + 1) % modulus
+        index = index + 1
     return value
 
 
@@ -918,6 +1164,11 @@ def analyze_application_expr(expr, function_names, path):
         analysis = application_analysis_require_component(analysis, "collections")
         analysis["temporary_slots"] = analysis["temporary_slots"] + 2
         return analysis
+    if kind == "starred":
+        # A starred call argument is an argument-shape wrapper, not a value
+        # operation of its own. Analyze its payload and let the call lowering
+        # path validate whether the expansion is statically materializable.
+        return analyze_application_expr(expr["value"], function_names, path + ".value")
     if kind == "lambda":
         # Materialize parser-backed handle fields before recursive calls. The
         # source parser returns dictionaries and the generated parser returns
@@ -950,13 +1201,34 @@ def analyze_application_expr(expr, function_names, path):
         if expr["callee"]["kind"] != "var":
             return application_analysis_fail(operation_id, "unsupported-callee", "call", path + ".callee", expr["callee"]["kind"])
         call_name = expr["callee"]["value"]
+        # A declaration or bound callable shadows the injected core helper.
+        # Resolve lexical names before treating a spelling as a builtin; this
+        # is especially important for `map`/`filter`, whose public names are
+        # ordinary Tyrion functions rather than reserved syntax.
         builtin = application_direct_builtin_supported(call_name)
+        if application_name_index_present(function_names, call_name) or application_name_index_present(function_names, "@bound:" + call_name):
+            builtin = False
         if builtin:
             analysis = application_analysis_require_call(analysis, "builtin")
         else:
             analysis = application_analysis_require_call(analysis, "user")
-        if builtin and call_name != "argv" and not primitive_schema_accepts_arity(call_name, len(expr["args"])):
-            return application_analysis_fail(operation_id, "primitive-arity", kind, path, call_name)
+        if builtin and call_name != "argv":
+            if call_name == "dict":
+                positional_argc = 0
+                for candidate in expr["args"]:
+                    if candidate["kind"] != "kwarg":
+                        positional_argc = positional_argc + 1
+                if positional_argc > 1:
+                    return application_analysis_fail(operation_id, "primitive-arity", kind, path, call_name)
+            elif call_name == "zip":
+                positional_argc = 0
+                for candidate in expr["args"]:
+                    if candidate["kind"] != "kwarg":
+                        positional_argc = positional_argc + 1
+                if positional_argc < 1 or positional_argc > 8:
+                    return application_analysis_fail(operation_id, "primitive-arity", kind, path, call_name)
+            elif not application_direct_builtin_accepts_arity(call_name, len(expr["args"])):
+                return application_analysis_fail(operation_id, "primitive-arity", kind, path, call_name)
         if call_name == "argv" and len(expr["args"]) != 0:
             return application_analysis_fail(operation_id, "primitive-arity", kind, path, call_name)
         if not builtin and not application_name_index_present(function_names, call_name) and not application_name_index_present(function_names, "@bound:" + call_name):
@@ -986,6 +1258,12 @@ def analyze_application_expr(expr, function_names, path):
                         keyword_ok = True
                     if call_name == "sorted" and arg["name"] == "key":
                         keyword_ok = True
+                    if call_name == "zip" and arg["name"] == "strict":
+                        keyword_ok = True
+                    if call_name == "print" and (arg["name"] == "sep" or arg["name"] == "end" or arg["name"] == "file" or arg["name"] == "flush"):
+                        keyword_ok = True
+                    if call_name == "dict":
+                        keyword_ok = True
                     if not keyword_ok:
                         return application_analysis_fail(operation_id, "unsupported-keyword", "kwarg", path + ".arg" + str(arg_idx), arg["name"])
                 analysis = application_analysis_merge(analysis, analyze_application_expr(arg["value"], function_names, path + ".arg" + str(arg_idx)))
@@ -1009,12 +1287,17 @@ def analyze_application_expr(expr, function_names, path):
         for arg in expr["args"]:
             if arg["kind"] == "kwarg":
                 if not object_method:
-                    return application_analysis_fail(operation_id, "unsupported-keyword", "kwarg", path + ".arg" + str(arg_idx), arg["name"])
+                    if method_name != "sort" and method_name != "update" or (method_name == "sort" and arg["name"] != "key" and arg["name"] != "reverse"):
+                        return application_analysis_fail(operation_id, "unsupported-keyword", "kwarg", path + ".arg" + str(arg_idx), arg["name"])
                 analysis = application_analysis_merge(analysis, analyze_application_expr(arg["value"], function_names, path + ".arg" + str(arg_idx)))
             else:
                 analysis = application_analysis_merge(analysis, analyze_application_expr(arg, function_names, path + ".arg" + str(arg_idx)))
             arg_idx = arg_idx + 1
         argc = len(expr["args"])
+        positional_argc = 0
+        for candidate in expr["args"]:
+            if candidate["kind"] != "kwarg":
+                positional_argc = positional_argc + 1
         if not object_method and method_name == "read" and argc != 0 and argc != 1:
             return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
         if not object_method and method_name == "write" and argc != 1:
@@ -1025,7 +1308,17 @@ def analyze_application_expr(expr, function_names, path):
             return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
         if not object_method and method_name == "close" and argc != 0:
             return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "append" and argc != 1:
+        if not object_method and (method_name == "append" or method_name == "extend") and argc != 1:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "insert" and argc != 2:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "reverse" and argc != 0:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "sort" and (argc < 0 or argc > 2):
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "get" and (argc < 1 or argc > 2):
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and (method_name == "clear" or method_name == "copy") and argc != 0:
             return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
         if not object_method and method_name == "remove" and argc != 1:
             return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
@@ -1033,19 +1326,49 @@ def analyze_application_expr(expr, function_names, path):
             return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
         if not object_method and (method_name == "keys" or method_name == "items") and argc != 0:
             return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "strip" and argc != 0:
+        if not object_method and method_name == "values" and argc != 0:
             return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and (method_name == "split" or method_name == "startswith" or method_name == "endswith") and argc != 1:
+        if not object_method and method_name == "update" and positional_argc > 1:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "setdefault" and (argc < 1 or argc > 2):
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "popitem" and argc != 0:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "fromkeys" and (argc < 1 or argc > 2):
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "strip" and (argc < 0 or argc > 1):
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and (method_name == "split" or method_name == "rsplit") and (argc < 0 or argc > 2):
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "splitlines" and (argc < 0 or argc > 1):
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "pop" and (argc < 1 or argc > 2):
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and (method_name == "startswith" or method_name == "endswith") and argc != 1:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "join" and argc != 1:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and method_name == "replace" and (argc < 2 or argc > 3):
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and (method_name == "lower" or method_name == "upper") and argc != 0:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and (method_name == "find" or method_name == "count" or method_name == "index") and (argc < 1 or argc > 3):
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and (method_name == "removeprefix" or method_name == "removesuffix" or method_name == "partition" or method_name == "rpartition") and argc != 1:
+            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
+        if not object_method and (method_name == "lstrip" or method_name == "rstrip") and (argc < 0 or argc > 1):
             return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
         if object_method:
             analysis = application_analysis_require_component(analysis, "objects")
-        elif method_name == "append" or method_name == "remove" or method_name == "add" or method_name == "keys" or method_name == "items" or method_name == "strip" or method_name == "split" or method_name == "startswith" or method_name == "endswith":
+        elif method_name == "append" or method_name == "extend" or method_name == "insert" or method_name == "clear" or method_name == "copy" or method_name == "reverse" or method_name == "sort" or method_name == "remove" or method_name == "add" or method_name == "keys" or method_name == "items" or method_name == "get" or method_name == "values" or method_name == "update" or method_name == "setdefault" or method_name == "popitem" or method_name == "fromkeys" or method_name == "strip" or method_name == "split" or method_name == "rsplit" or method_name == "splitlines" or method_name == "pop" or method_name == "startswith" or method_name == "endswith" or method_name == "join" or method_name == "replace" or method_name == "lower" or method_name == "upper" or method_name == "find" or method_name == "count" or method_name == "index" or method_name == "removeprefix" or method_name == "removesuffix" or method_name == "partition" or method_name == "rpartition" or method_name == "lstrip" or method_name == "rstrip":
             analysis = application_analysis_require_component(analysis, "collections")
         else:
             analysis = application_analysis_require_component(analysis, "file")
             if method_name == "read" or method_name == "write" or method_name == "flush" or method_name == "seek":
                 analysis = application_analysis_require_runtime_operation(analysis, "file." + method_name)
         analysis["temporary_slots"] = analysis["temporary_slots"] + argc + 1
+        if not object_method and method_name == "sort":
+            analysis["temporary_slots"] = analysis["temporary_slots"] + 96
         return analysis
     return application_analysis_fail(operation_id, "unsupported-expression", kind, path, kind)
 
@@ -1121,8 +1444,11 @@ def analyze_application_statement(stmt, function_names, in_function, in_loop, pa
             arg_idx = 0
             for arg in expr["args"]:
                 if arg["kind"] == "kwarg":
-                    return application_analysis_fail(operation_id, "unsupported-keyword", "kwarg", path + ".arg" + str(arg_idx), arg["name"])
-                analysis = application_analysis_merge(analysis, analyze_application_expr(arg, function_names, path + ".arg" + str(arg_idx)))
+                    if arg["name"] != "sep" and arg["name"] != "end" and arg["name"] != "file" and arg["name"] != "flush":
+                        return application_analysis_fail(operation_id, "unsupported-keyword", "kwarg", path + ".arg" + str(arg_idx), arg["name"])
+                    analysis = application_analysis_merge(analysis, analyze_application_expr(arg["value"], function_names, path + ".arg" + str(arg_idx)))
+                else:
+                    analysis = application_analysis_merge(analysis, analyze_application_expr(arg, function_names, path + ".arg" + str(arg_idx)))
                 arg_idx = arg_idx + 1
             return analysis
         return application_analysis_merge(analysis, analyze_application_expr(expr, function_names, path + ".value"))

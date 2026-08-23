@@ -1,0 +1,5 @@
+values = [1, 3, 2]
+values.sort(key=lambda value: 0 - value)
+print(values)
+values.sort(key=lambda value: 0 - value, reverse=True)
+print(values)

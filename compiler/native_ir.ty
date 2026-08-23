@@ -2902,7 +2902,7 @@ def native_ir_v2_constant(constant_id, kind, value):
 
 
 def native_ir_v2_module(functions, constants, externals, components, production_direct):
-    return {"contract": "tyrion-native-ir-v2", "target_independent_abi_version": 2, "production_direct": production_direct, "functions": functions, "globals": [], "constants": constants, "externals": externals, "components": components, "extensions": [], "ownership_manifest": "direct-scalar", "primitive_implementations": [], "primitive_capabilities": []}
+    return {"contract": "tyrion-native-ir-v2", "target_independent_abi_version": 2, "production_direct": production_direct, "functions": functions, "globals": [], "constants": constants, "externals": externals, "components": components, "extensions": [], "ownership_manifest": "direct-scalar", "primitive_implementations": [], "primitive_capabilities": [], "stream_operation_inventory": [], "stream_primitive_ids": [], "stream_primitive_implementations": [], "stream_primitive_capabilities": [], "streaming_verified": False, "constant_count": 0}
 
 
 def native_ir_v2_cfg_probe_module():

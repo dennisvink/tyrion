@@ -1,0 +1,4 @@
+values = {"a": 1, "b": 2}
+print(values.pop("a"))
+print(values)
+print(values.pop("missing", 9))

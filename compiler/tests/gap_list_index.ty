@@ -1,0 +1,5 @@
+values = ["a", "b", "a", "c"]
+print(values.index("a"))
+print(values.index("c", 1))
+print(values.index("a", -2))
+print(values.index("a", 0, 2))

@@ -1,0 +1,2 @@
+# Bitwise operators must reject negative shift counts like Python.
+print(1 << -1)

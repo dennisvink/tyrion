@@ -1,0 +1,2 @@
+text = read_text_file("compiler/tests/fixtures/diagnostic_valid.ty")
+print(text)

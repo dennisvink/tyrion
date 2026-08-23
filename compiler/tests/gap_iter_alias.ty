@@ -1,0 +1,5 @@
+first = iter([1, 2])
+second = iter(first)
+print(next(first))
+print(next(second))
+print(next(first, 99))

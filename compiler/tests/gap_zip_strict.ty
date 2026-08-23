@@ -1,0 +1,4 @@
+# zip(strict=False) follows the shortest iterable; strict=True requires equal lengths.
+print(zip([1, 2], [10, 20], strict=False))
+print(zip([1, 2], [10, 20], [100, 200], strict=True))
+print(zip([1, 2], [10, 20, 30], strict=False))

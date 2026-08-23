@@ -3,6 +3,7 @@
 # Project: https://github.com/dennisvink/
 # SPDX-License-Identifier: MIT
 #
+import core
 import compiler.core
 import compiler.builtin_modules
 import compiler.module_graph
@@ -19,6 +20,7 @@ import compiler.native_ir_lowering
 import compiler.writer
 import compiler.lowering
 import compiler.evaluation
+import compiler.cache_runtime
 import compiler.runtime_plan
 import compiler.runtime_abi
 import compiler.static_extensions

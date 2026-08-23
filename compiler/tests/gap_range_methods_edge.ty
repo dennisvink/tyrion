@@ -1,0 +1,10 @@
+r = range(10, 0, -3)
+print(r.start, r.stop, r.step)
+print(r.count(10), r.count(4), r.count(1))
+print(r.index(10), r.index(1))
+empty = range(3, 3)
+print(empty.count(3))
+try:
+    print(r.index(9))
+except ValueError as error:
+    print("missing-error")

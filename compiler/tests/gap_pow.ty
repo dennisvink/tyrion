@@ -1,0 +1,6 @@
+print(2 ** 3 ** 2)
+print(-2 ** 2)
+print(2.5 ** 2)
+value = 2
+value **= 4
+print(value)

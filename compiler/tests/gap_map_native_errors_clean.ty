@@ -1,0 +1,12 @@
+def double(value):
+    return value * 2
+
+try:
+    print(map(None, [1, 2]))
+except TypeError as error:
+    print("none-error")
+
+try:
+    print(map(double))
+except TypeError as error:
+    print("missing-iterable-error")

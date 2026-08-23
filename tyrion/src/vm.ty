@@ -2,6 +2,34 @@
 # Tyrion user-function frames.
 
 
+def tyrion_augmented_operator(operator):
+    if operator == "+=":
+        return "+"
+    if operator == "-=":
+        return "-"
+    if operator == "*=":
+        return "*"
+    if operator == "/=":
+        return "/"
+    if operator == "//=":
+        return "//"
+    if operator == "%=":
+        return "%"
+    if operator == "**=":
+        return "**"
+    if operator == "|=":
+        return "|"
+    if operator == "&=":
+        return "&"
+    if operator == "^=":
+        return "^"
+    if operator == "<<=":
+        return "<<"
+    if operator == ">>=":
+        return ">>"
+    return operator
+
+
 def tyrion_vm_task(kind):
     return {"kind": kind}
 
@@ -80,20 +108,31 @@ def tyrion_vm_continue_signal(nodes, state, tasks, values, signal, signal_value)
     raise "control flow escaped its boundary: " + signal
 
 
-def tyrion_vm_schedule_call(tasks, environment, node):
+def tyrion_vm_schedule_call(nodes, tasks, environment, node):
     keyword_names = []
+    arg_stars = []
     keyword_index = 0
     while keyword_index < len(node["kwargs"]):
-        keyword_names.append(node["kwargs"][keyword_index]["name"])
+        # Keep call metadata construction free of mutating method dispatch.
+        # This path runs inside the interpreter VM itself; using `append`
+        # here would recurse through the same argument-bearing method route
+        # that is being scheduled.  Value concatenation is small and stable.
+        keyword_names = keyword_names + [node["kwargs"][keyword_index]["name"]]
         keyword_index = keyword_index + 1
-    tasks = tyrion_vm_push(tasks, {"kind": "call_apply", "environment": environment, "argc": len(node["args"]), "keyword_names": keyword_names})
+    index = 0
+    while index < len(node["args"]):
+        argument_entry = node["args"][index]
+        arg_stars = arg_stars + [argument_entry["kind"] == "starred"]
+        index = index + 1
+    tasks = tyrion_vm_push(tasks, {"kind": "call_apply", "environment": environment, "argc": len(node["args"]), "keyword_names": keyword_names, "arg_stars": arg_stars})
     index = len(node["kwargs"]) - 1
     while index >= 0:
         tasks = tyrion_vm_schedule_expression(tasks, environment, node["kwargs"][index]["value"])
         index = index - 1
     index = len(node["args"]) - 1
     while index >= 0:
-        tasks = tyrion_vm_schedule_expression(tasks, environment, node["args"][index])
+        argument_entry = node["args"][index]
+        tasks = tyrion_vm_schedule_expression(tasks, environment, argument_entry["value"])
         index = index - 1
     return tyrion_vm_schedule_expression(tasks, environment, node["callee"])
 
@@ -128,6 +167,8 @@ def tyrion_vm_schedule_comp_produce(tasks, task):
 
 def tyrion_vm_schedule_eval(nodes, tasks, environment, node):
     kind = node["kind"]
+    if kind == "starred":
+        return tyrion_vm_schedule_expression(tasks, environment, node["value"])
     if kind == "unary":
         tasks = tyrion_vm_push(tasks, {"kind": "unary_apply", "op": node["op"]})
         return tyrion_vm_schedule_expression(tasks, environment, node["value"])
@@ -158,7 +199,7 @@ def tyrion_vm_schedule_eval(nodes, tasks, environment, node):
         tasks = tyrion_vm_push(tasks, {"kind": "attr_apply", "name": node["name"]})
         return tyrion_vm_schedule_expression(tasks, environment, node["receiver"])
     if kind == "call":
-        return tyrion_vm_schedule_call(tasks, environment, node)
+        return tyrion_vm_schedule_call(nodes, tasks, environment, node)
     return tasks
 
 
@@ -176,7 +217,13 @@ def tyrion_vm_values_tail(values, count):
 def tyrion_vm_start_function_call(nodes, state, tasks, function_value, args, kwargs):
     function_data = function_value["value"]
     node = nodes[function_data["node"]["id"]]
-    if len(args) > len(node["params"]):
+    vararg_index = -1
+    param_scan = 0
+    while param_scan < len(node["params"]):
+        if node["params"][param_scan]["vararg"]:
+            vararg_index = param_scan
+        param_scan = param_scan + 1
+    if vararg_index < 0 and len(args) > len(node["params"]):
         raise "TypeError: too many positional arguments for " + node["name"]
     keyword_index = 0
     while keyword_index < len(kwargs):
@@ -232,10 +279,22 @@ def tyrion_vm_apply_call(nodes, state, tasks, values, task):
     values = tail_result["values"]
     call_values = tail_result["tail"]
     callee = call_values[0]
-    args = []
+    raw_args = []
     index = 0
     while index < task["argc"]:
-        args.append(call_values[index + 1])
+        raw_args.append(call_values[index + 1])
+        index = index + 1
+    args = []
+    index = 0
+    while index < len(raw_args):
+        if index < len(task["arg_stars"]) and task["arg_stars"][index]:
+            expanded = tyrion_collection_items(state, raw_args[index])
+            item_index = 0
+            while item_index < len(expanded):
+                args.append(expanded[item_index])
+                item_index = item_index + 1
+        else:
+            args.append(raw_args[index])
         index = index + 1
     kwargs = []
     index = 0
@@ -296,7 +355,35 @@ def tyrion_vm_apply_call(nodes, state, tasks, values, task):
             return {"state": state, "tasks": tasks, "values": values}
         result = tyrion_call_builtin(state, callee["value"], args, kwargs)
     elif callee["kind"] == "bound_method":
-        result = tyrion_call_method(state, callee["value"]["receiver"], callee["value"]["name"], args)
+        if callee["value"]["receiver"]["kind"] == "builtin" and callee["value"]["receiver"]["value"] == "dict" and callee["value"]["name"] == "fromkeys":
+            if len(args) < 1 or len(args) > 2:
+                raise "TypeError: dict.fromkeys expects one or two arguments"
+            default = tyrion_none()
+            if len(args) == 2:
+                default = args[1]
+            result = tyrion_call_builtin(state, "__tyrion_dict_fromkeys", [args[0], default], [])
+            values = tyrion_vm_push(values, result["value"])
+            return {"state": result["state"], "tasks": tasks, "values": values}
+        if callee["value"]["name"] == "sort" and len(kwargs) > 0:
+            key_value = tyrion_none()
+            reverse_value = tyrion_bool(False)
+            if len(args) > 0:
+                key_value = args[0]
+            keyword_index = 0
+            while keyword_index < len(kwargs):
+                if kwargs[keyword_index]["name"] == "key":
+                    key_value = kwargs[keyword_index]["value"]
+                elif kwargs[keyword_index]["name"] == "reverse":
+                    reverse_value = kwargs[keyword_index]["value"]
+                keyword_index = keyword_index + 1
+            if key_value["kind"] != "lambda":
+                raise "TypeError: sort key must be a lambda"
+            if reverse_value["kind"] != "bool":
+                raise "TypeError: sort reverse must be bool"
+            source = tyrion_collection_items(state, callee["value"]["receiver"])
+            tasks = tyrion_vm_push(tasks, {"kind": "sorted_key_iter", "items": source, "index": 0, "key": key_value, "decorated": [], "receiver": callee["value"]["receiver"], "reverse": reverse_value["value"]})
+            return {"state": state, "tasks": tasks, "values": values}
+        result = tyrion_call_method(state, callee["value"]["receiver"], callee["value"]["name"], args, kwargs)
     else:
         raise "TypeError: value is not callable: " + callee["kind"]
     values = tyrion_vm_push(values, result["value"])
@@ -353,7 +440,7 @@ def tyrion_vm_assign(nodes, state, tasks, values, task):
         if target["kind"] != "var":
             raise "augmented assignment currently requires a variable target"
         old = tyrion_env_get(state, task["environment"], target["name"])
-        result = tyrion_eval_binary_values(state, task["op"][0], old, value)
+        result = tyrion_eval_binary_values(state, tyrion_augmented_operator(task["op"]), old, value)
         state = result["state"]
         value = result["value"]
     if target["kind"] == "var":
@@ -461,7 +548,11 @@ def tyrion_execute_vm(program, path, args):
             elif node_kind == "var":
                 values = tyrion_vm_push(values, tyrion_env_get(state, task["environment"], node["name"]))
             elif node_kind == "lambda":
-                lambda_node = {"id": task["node"], "param": node["param"]}
+                # Keep the complete AST node in the closure.  Lambda calls
+                # resolve the body from this node; retaining only the id and
+                # parameter made every inline lambda fail at runtime while
+                # named functions continued to work.
+                lambda_node = {"id": task["node"], "param": node["param"], "body": node["body"]}
                 values = tyrion_vm_push(values, tyrion_lambda(lambda_node, 0))
             else:
                 tasks = tyrion_vm_schedule_eval(nodes, tasks, task["environment"], node)
@@ -476,6 +567,8 @@ def tyrion_execute_vm(program, path, args):
                 values = tyrion_vm_push(values, tyrion_bool(not tyrion_truthy(state, value)))
             elif task["op"] == "-":
                 values = tyrion_vm_push(values, tyrion_numeric_result(value, 0 - value["value"]))
+            elif task["op"] == "~":
+                values = tyrion_vm_push(values, tyrion_int(0 - value["value"] - 1))
             else:
                 values = tyrion_vm_push(values, value)
         elif kind == "binary_apply":
@@ -573,7 +666,10 @@ def tyrion_execute_vm(program, path, args):
                 while left < len(decorated):
                     right = left + 1
                     while right < len(decorated):
-                        if decorated[right]["key"]["value"] < decorated[left]["key"]["value"]:
+                        should_swap = decorated[right]["key"]["value"] < decorated[left]["key"]["value"]
+                        if task["reverse"]:
+                            should_swap = decorated[left]["key"]["value"] < decorated[right]["key"]["value"]
+                        if should_swap:
                             swap = decorated[left]
                             decorated[left] = decorated[right]
                             decorated[right] = swap
@@ -584,11 +680,17 @@ def tyrion_execute_vm(program, path, args):
                 while index < len(decorated):
                     sorted_items.append(decorated[index]["item"])
                     index = index + 1
-                result = tyrion_heap_alloc(state, "list", sorted_items)
-                state = result["state"]
-                values = tyrion_vm_push(values, result["value"])
+                if task["receiver"]["kind"] != "none":
+                    object_value = tyrion_heap_get(state, task["receiver"])
+                    object_value["items"] = sorted_items
+                    state = tyrion_heap_set(state, task["receiver"], object_value)
+                    values = tyrion_vm_push(values, tyrion_none())
+                else:
+                    result = tyrion_heap_alloc(state, "list", sorted_items)
+                    state = result["state"]
+                    values = tyrion_vm_push(values, result["value"])
             else:
-                next_task = {"kind": "sorted_key_iter", "items": task["items"], "index": task["index"] + 1, "key": task["key"], "decorated": task["decorated"]}
+                next_task = {"kind": "sorted_key_iter", "items": task["items"], "index": task["index"] + 1, "key": task["key"], "decorated": task["decorated"], "receiver": task["receiver"], "reverse": task["reverse"]}
                 tasks = tyrion_vm_push(tasks, {"kind": "sorted_key_collect", "item": task["items"][task["index"]], "next_task": next_task})
                 started = tyrion_vm_start_lambda_call(nodes, state, tasks, task["key"], [task["items"][task["index"]]], [])
                 state = started["state"]
@@ -616,16 +718,27 @@ def tyrion_execute_vm(program, path, args):
             receiver_pop = tyrion_vm_pop(index_pop["items"])
             values = receiver_pop["items"]
             old_value = tyrion_index_get(state, receiver_pop["value"], index_pop["value"])
-            result = tyrion_eval_binary_values(state, task["op"][0], old_value, task["value"])
+            result = tyrion_eval_binary_values(state, tyrion_augmented_operator(task["op"]), old_value, task["value"])
             state = result["state"]
             state = tyrion_index_set(state, receiver_pop["value"], index_pop["value"], result["value"])
         elif kind == "attr_apply":
             receiver_pop = tyrion_vm_pop(values)
             values = receiver_pop["items"]
-            if receiver_pop["value"]["kind"] == "object":
-                values = tyrion_vm_push(values, tyrion_object_get_attr(state, receiver_pop["value"], task["name"]))
+            receiver_value = receiver_pop["value"]
+            if receiver_value["kind"] == "object":
+                values = tyrion_vm_push(values, tyrion_object_get_attr(state, receiver_value, task["name"]))
+            elif receiver_value["kind"] == "range" and task["name"] in ["start", "stop", "step"]:
+                values = tyrion_vm_push(values, tyrion_int(receiver_value["value"][task["name"]]))
+            elif receiver_value["kind"] == "file" and task["name"] in ["closed", "mode", "name"]:
+                file_data = tyrion_heap_get(state, receiver_value)["items"]
+                if task["name"] == "closed":
+                    values = tyrion_vm_push(values, tyrion_bool(file_data["closed"]))
+                elif task["name"] == "mode":
+                    values = tyrion_vm_push(values, tyrion_string(file_data["mode"]))
+                else:
+                    values = tyrion_vm_push(values, tyrion_string(file_data["path"]))
             else:
-                values = tyrion_vm_push(values, tyrion_bound_method(receiver_pop["value"], task["name"]))
+                values = tyrion_vm_push(values, tyrion_bound_method(receiver_value, task["name"]))
         elif kind == "attr_set_apply":
             receiver_pop = tyrion_vm_pop(values)
             values = receiver_pop["items"]
@@ -635,7 +748,7 @@ def tyrion_execute_vm(program, path, args):
             attribute_value = task["value"]
             if task["op"] != "=":
                 old_value = tyrion_object_get_attr(state, receiver, task["name"])
-                result = tyrion_eval_binary_values(state, task["op"][0], old_value, attribute_value)
+                result = tyrion_eval_binary_values(state, tyrion_augmented_operator(task["op"]), old_value, attribute_value)
                 state = result["state"]
                 attribute_value = result["value"]
             state = tyrion_object_set_attr(state, receiver, task["name"], attribute_value)
@@ -650,6 +763,17 @@ def tyrion_execute_vm(program, path, args):
                 tasks = tyrion_vm_schedule_block(tasks, task["environment"], nodes[function_node["body"]]["body"])
             else:
                 param = function_node["params"][task["index"]]
+                if param["vararg"]:
+                    collected = []
+                    collect_index = task["index"]
+                    while collect_index < len(task["args"]):
+                        collected.append(task["args"][collect_index])
+                        collect_index = collect_index + 1
+                    allocated = tyrion_heap_alloc(state, "list", collected)
+                    state = allocated["state"]
+                    state = tyrion_env_set(state, task["environment"], param["name"], allocated["value"])
+                    tasks = tyrion_vm_push(tasks, {"kind": "bind_params", "environment": task["environment"], "function": task["function"], "args": task["args"], "kwargs": task["kwargs"], "index": len(function_node["params"])})
+                    continue
                 found = False
                 value = tyrion_none()
                 if task["index"] < len(task["args"]):

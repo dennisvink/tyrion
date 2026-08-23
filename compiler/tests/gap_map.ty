@@ -1,0 +1,26 @@
+import core
+
+def add(left, right):
+    return left + right
+
+def add3(first, second, third):
+    return first + second + third
+
+def double(value):
+    return value * 2
+
+print("one", map(double, [1, 2, 3]))
+print("many", map(add, [1, 2, 3], [10, 20, 30]))
+print("shortest", map(add, [1, 2], [10, 20, 30]))
+print("three", map(add3, [1, 2], [10, 20], [100, 200]))
+print("empty", map(double, []))
+try:
+    print("none", map(None, [1, 2]))
+except TypeError as error:
+    # Keep this fixture focused on map's error contract.  type() is a
+    # separate, intentionally later GAP item.
+    print("none-error")
+try:
+    print("missing-iterable", map(add))
+except TypeError as error:
+    print("missing-iterable-error")

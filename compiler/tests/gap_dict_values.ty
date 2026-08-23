@@ -1,0 +1,4 @@
+values = {"a": 1, "b": "two", "c": None}
+print(values.values())
+empty = {}
+print(empty.values())

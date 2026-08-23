@@ -1,0 +1,10 @@
+def add(left, right):
+    return left + right
+
+def double(value):
+    return value * 2
+
+print("one", map(double, [1, 2, 3]))
+print("many", map(add, [1, 2, 3], [10, 20, 30]))
+print("shortest", map(add, [1, 2], [10, 20, 30]))
+print("empty", map(double, []))

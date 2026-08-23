@@ -1,0 +1,9 @@
+values = [1, 3]
+values.insert(1, 2)
+print(values)
+values.insert(-1, 4)
+print(values)
+values.insert(-99, 0)
+print(values)
+values.insert(99, 5)
+print(values)

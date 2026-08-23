@@ -1,0 +1,7 @@
+it = iter([1, 2])
+print(next(it))
+print(next(it, 99))
+print(next(it, 99))
+print(next(iter("ab")))
+print(next(iter([]), "done"))
+print(next(iter((7, 8)), 0))

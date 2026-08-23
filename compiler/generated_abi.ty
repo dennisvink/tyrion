@@ -70,7 +70,7 @@ def generated_builder_token_column_offset():
 
 
 def generated_token_kind_names():
-    return ["EOF", "NEWLINE", "INDENT", "DEDENT", "IDENTIFIER", "STRING", "INT", "FLOAT", "KW_DEF", "KW_CLASS", "KW_IF", "KW_ELIF", "KW_ELSE", "KW_WHILE", "KW_FOR", "KW_IN", "KW_RETURN", "KW_RAISE", "KW_TRY", "KW_EXCEPT", "KW_FINALLY", "KW_WITH", "KW_AS", "KW_AND", "KW_OR", "KW_NOT", "KW_TRUE", "KW_FALSE", "KW_NONE", "KW_BREAK", "KW_CONTINUE", "KW_UNLESS", "KW_LAMBDA", "KW_YIELD", "LPAREN", "RPAREN", "LBRACE", "RBRACE", "LBRACKET", "RBRACKET", "COMMA", "COLON", "DOT", "MINUS", "STAR", "SLASH", "PERCENT", "PLUS", "EQ", "UNKNOWN", "LT", "GT", "PLUSEQ", "EQEQ", "NE", "LE", "GE"]
+    return ["EOF", "NEWLINE", "INDENT", "DEDENT", "IDENTIFIER", "STRING", "INT", "FLOAT", "KW_DEF", "KW_DEL", "KW_CLASS", "KW_IF", "KW_ELIF", "KW_ELSE", "KW_WHILE", "KW_FOR", "KW_IN", "KW_RETURN", "KW_RAISE", "KW_TRY", "KW_EXCEPT", "KW_FINALLY", "KW_WITH", "KW_AS", "KW_AND", "KW_OR", "KW_NOT", "KW_TRUE", "KW_FALSE", "KW_NONE", "KW_BREAK", "KW_CONTINUE", "KW_UNLESS", "KW_LAMBDA", "KW_YIELD", "LPAREN", "RPAREN", "LBRACE", "RBRACE", "LBRACKET", "RBRACKET", "COMMA", "COLON", "DOT", "MINUS", "STAR", "SLASH", "FLOOR", "PERCENT", "PLUS", "PIPE", "EQ", "UNKNOWN", "LT", "GT", "PLUSEQ", "FLOOREQ", "PIPEEQ", "EQEQ", "NE", "LE", "GE", "POW", "POWEQ", "AMP", "CARET", "TILDE", "LSHIFT", "RSHIFT", "AMPEQ", "CARETEQ", "LSHIFTEQ", "RSHIFTEQ"]
 
 
 def generated_token_kind_id(name):
@@ -695,6 +695,12 @@ def generated_value_tag_closure():
     # Owned closure descriptor containing a retained AST handle, lambda record
     # index, and retained defining lexical environment.
     return 22
+
+
+def generated_value_tag_iterator():
+    # Owned snapshot iterator record. Byte 0 points to a refcounted record
+    # containing the mutable index and one retained source value slot.
+    return 23
 
 
 def generated_closure_refcount_offset():

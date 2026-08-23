@@ -6,6 +6,7 @@
 # Target/backend contract and host-target discovery.
 
 
+
 def target_spec(os_name, arch):
     backend = ""
     entry = "_start"
@@ -95,7 +96,7 @@ def target_validate(target):
 
 def target_has_capability(target, capability):
     target_validate(target)
-    entries = target["capabilities"].split(",")
+    entries = split_inventory_text(target["capabilities"], ",")
     idx = 0
     while idx < len(entries):
         if entries[idx] == capability:
@@ -113,7 +114,7 @@ def backend_require_implemented(target):
 
 def backend_has_operation(target, operation):
     target_validate(target)
-    entries = target["operations"].split(",")
+    entries = split_inventory_text(target["operations"], ",")
     idx = 0
     while idx < len(entries):
         if entries[idx] == operation:

@@ -127,6 +127,56 @@ def tyrion_binary_contains(state, needle, haystack):
     return False
 
 
+def tyrion_bitwise_result(left_value, right_value, op):
+    maximum = left_value
+    if maximum < 0 - maximum:
+        maximum = 0 - maximum
+    right_absolute = right_value
+    if right_absolute < 0 - right_absolute:
+        right_absolute = 0 - right_absolute
+    if right_absolute > maximum:
+        maximum = right_absolute
+    width = 2
+    limit = 2
+    while limit <= maximum:
+        width = width + 1
+        limit = limit * 2
+    modulus = 1
+    index = 0
+    while index < width:
+        modulus = modulus * 2
+        index = index + 1
+    left_normal = left_value
+    right_normal = right_value
+    if left_normal < 0:
+        left_normal = left_normal + modulus
+    if right_normal < 0:
+        right_normal = right_normal + modulus
+    result = 0
+    power = 1
+    index = 0
+    while index < width:
+        left_bit = int(left_normal / power) % 2
+        right_bit = int(right_normal / power) % 2
+        bit = 0
+        if op == "&":
+            if left_bit == 1 and right_bit == 1:
+                bit = 1
+        elif op == "|":
+            if left_bit == 1 or right_bit == 1:
+                bit = 1
+        elif op == "^":
+            if left_bit != right_bit:
+                bit = 1
+        if bit == 1:
+            result = result + power
+        power = power * 2
+        index = index + 1
+    if result >= modulus / 2:
+        result = result - modulus
+    return result
+
+
 def tyrion_eval_binary_values(state, op, left, right):
     if op == "==":
         return tyrion_eval_result(state, tyrion_bool(tyrion_value_equal(state, left, right)))
@@ -157,9 +207,57 @@ def tyrion_eval_binary_values(state, op, left, right):
     if op == "/":
         return tyrion_eval_result(state, tyrion_float(float(left["value"]) / float(right["value"])))
     if op == "//":
-        return tyrion_eval_result(state, tyrion_int(int(left["value"] / right["value"])))
+        quotient = int(left["value"] / right["value"])
+        if quotient * right["value"] != left["value"]:
+            if (left["value"] < 0 and right["value"] > 0) or (left["value"] > 0 and right["value"] < 0):
+                quotient = quotient - 1
+        return tyrion_eval_result(state, tyrion_int(quotient))
     if op == "%":
         return tyrion_eval_result(state, tyrion_binary_numeric_result(left, right, "%"))
+    if op == "|" and left["kind"] == "dict" and right["kind"] == "dict":
+        entries = []
+        left_items = tyrion_heap_get(state, left)["items"]
+        right_items = tyrion_heap_get(state, right)["items"]
+        index = 0
+        while index < len(left_items):
+            entries.append({"key": left_items[index]["key"], "value": left_items[index]["value"]})
+            index = index + 1
+        index = 0
+        while index < len(right_items):
+            replaced = False
+            key_index = 0
+            while key_index < len(entries):
+                if tyrion_value_equal(state, entries[key_index]["key"], right_items[index]["key"]):
+                    entries[key_index] = {"key": right_items[index]["key"], "value": right_items[index]["value"]}
+                    replaced = True
+                key_index = key_index + 1
+            if not replaced:
+                entries.append({"key": right_items[index]["key"], "value": right_items[index]["value"]})
+            index = index + 1
+        return tyrion_heap_alloc(state, "dict", entries)
+    if op == "&" or op == "|" or op == "^":
+        return tyrion_eval_result(state, tyrion_int(tyrion_bitwise_result(left["value"], right["value"], op)))
+    if op == "<<":
+        if right["value"] < 0:
+            raise "ValueError: negative shift count"
+        factor = 1
+        shift = 0
+        while shift < right["value"]:
+            factor = factor * 2
+            shift = shift + 1
+        return tyrion_eval_result(state, tyrion_int(left["value"] * factor))
+    if op == ">>":
+        if right["value"] < 0:
+            raise "ValueError: negative shift count"
+        factor = 1
+        shift = 0
+        while shift < right["value"]:
+            factor = factor * 2
+            shift = shift + 1
+        quotient = int(left["value"] / factor)
+        if left["value"] < 0 and quotient * factor != left["value"]:
+            quotient = quotient - 1
+        return tyrion_eval_result(state, tyrion_int(quotient))
     if op == "<":
         return tyrion_eval_result(state, tyrion_bool(left["value"] < right["value"]))
     if op == "<=":

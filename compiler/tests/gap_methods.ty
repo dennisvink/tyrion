@@ -1,0 +1,27 @@
+values = [3, 1, 2]
+values.extend([4, 5])
+values.insert(1, 9)
+print("pop", values.pop(), values.pop(1))
+print("count", values.count(2), values.index(2))
+copy = values.copy()
+copy.reverse()
+print("reverse", copy)
+copy.sort()
+print("sort", copy)
+
+house = {"name": "Stark", "seat": "Winterfell"}
+print("get", house.get("name"), house.get("missing", "unknown"))
+print("values", house.values())
+print("default", house.setdefault("words", "Winter is coming"))
+house.update({"seat": "The North", "members": 5})
+print("pop-dict", house.pop("members"), house.popitem())
+print("dict", house, house.copy())
+
+text = "  Winter IS coming. Winter!  "
+print("trim", text.strip(), text.lstrip(), text.rstrip())
+print("case", text.lower(), text.upper())
+print("join", "-".join(["Arya", "Sansa"]))
+print("find", text.find("Winter"), text.rfind("Winter"), text.count("Winter"))
+print("replace", text.replace("Winter", "Summer", 1))
+print("remove", "Winterfell".removeprefix("Winter"), "Winterfell".removesuffix("fell"))
+print("partition", "north:south".partition(":"), "north:south".rpartition(":"))

@@ -1,0 +1,6 @@
+values = {"a": 1}
+result = values.update({"b": 2}, c=3)
+print(result)
+print(values)
+values.update(d=4)
+print(values)

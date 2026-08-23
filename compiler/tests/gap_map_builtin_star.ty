@@ -1,0 +1,9 @@
+def add(first, second):
+    return first + second
+
+def add3(first, second, third):
+    return first + second + third
+
+print("two", map(add, *[[1, 2], [10, 20]]))
+print("three", map(add3, *[[1, 2], [10, 20], [100, 200]]))
+print("shortest", map(add, *[[1, 2, 3], [10, 20]]))

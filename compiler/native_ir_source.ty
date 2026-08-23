@@ -56,6 +56,18 @@ def native_source_operator_code(op):
         return 12
     if op == "%":
         return 13
+    if op == "**":
+        return 14
+    if op == "|":
+        return 15
+    if op == "^":
+        return 16
+    if op == "&":
+        return 17
+    if op == "<<":
+        return 18
+    if op == ">>":
+        return 19
     fail("native source lowering rejected operator: " + op)
 
 
@@ -88,6 +100,18 @@ def native_source_operator_token_kind(op):
         return generated_token_kind_id("SLASH")
     if op == "%":
         return generated_token_kind_id("PERCENT")
+    if op == "**":
+        return generated_token_kind_id("POW")
+    if op == "|":
+        return generated_token_kind_id("PIPE")
+    if op == "^":
+        return generated_token_kind_id("CARET")
+    if op == "&":
+        return generated_token_kind_id("AMP")
+    if op == "<<":
+        return generated_token_kind_id("LSHIFT")
+    if op == ">>":
+        return generated_token_kind_id("RSHIFT")
     fail("native source lowering rejected operator token: " + op)
 
 
@@ -133,6 +157,10 @@ def native_source_string_token_text(value):
 
 def native_source_expression(state, node):
     kind = node["kind"]
+    if kind == "starred":
+        # Starred call arguments carry their expansion bit on the argument
+        # link.  The value itself remains an ordinary expression record.
+        return native_source_expression(state, node["value"])
     if kind == "var" or kind == "int" or kind == "float" or kind == "string" or kind == "bool" or kind == "none":
         token_result = native_source_leaf_token(state, node)
         state = token_result["state"]
@@ -210,15 +238,20 @@ def native_source_expression(state, node):
         while idx < len(node["args"]):
             argument = node["args"][idx]
             keyword_token = -1
+            star = 0
+            value_node = argument
             if argument["kind"] == "kwarg":
                 value_result = native_source_expression(state, argument["value"])
                 token_result = native_source_add_token(value_result["state"], generated_token_kind_identifier(), argument["name"])
                 state = token_result["state"]
                 keyword_token = token_result["token"]
             else:
-                value_result = native_source_expression(state, argument)
+                if argument["kind"] == "starred":
+                    star = 1
+                    value_node = argument["value"]
+                value_result = native_source_expression(state, value_node)
                 state = value_result["state"]
-            link_result = native_source_add_record(state, generated_ast_kind_argument_link(), value_result["record"], head, idx, keyword_token, 0)
+            link_result = native_source_add_record(state, generated_ast_kind_argument_link(), value_result["record"], head, idx, keyword_token, star)
             state = link_result["state"]
             head = link_result["record"]
             idx = idx + 1
@@ -231,10 +264,15 @@ def native_source_expression(state, node):
         idx = 0
         while idx < len(node["args"]):
             argument = node["args"][idx]
+            star = 0
+            value_node = argument
             if argument["kind"] == "kwarg":
                 fail("native source lowering rejected keyword method argument: " + argument["name"])
-            value_result = native_source_expression(state, argument)
-            link_result = native_source_add_record(value_result["state"], generated_ast_kind_argument_link(), value_result["record"], head, idx, -1, 0)
+            if argument["kind"] == "starred":
+                star = 1
+                value_node = argument["value"]
+            value_result = native_source_expression(state, value_node)
+            link_result = native_source_add_record(value_result["state"], generated_ast_kind_argument_link(), value_result["record"], head, idx, -1, star)
             state = link_result["state"]
             head = link_result["record"]
             idx = idx + 1
@@ -287,10 +325,15 @@ def native_source_print_statement(state, call):
     idx = 0
     while idx < len(call["args"]):
         argument = call["args"][idx]
+        keyword_token = -1
+        value_node = argument
         if argument["kind"] == "kwarg":
-            fail("native source lowering rejected keyword print argument")
-        value_result = native_source_expression(state, argument)
-        link_result = native_source_add_record(value_result["state"], generated_ast_kind_argument_link(), value_result["record"], head, idx, -1, 0)
+            value_node = argument["value"]
+            token_result = native_source_add_token(state, generated_token_kind_identifier(), argument["name"])
+            state = token_result["state"]
+            keyword_token = token_result["token"]
+        value_result = native_source_expression(state, value_node)
+        link_result = native_source_add_record(value_result["state"], generated_ast_kind_argument_link(), value_result["record"], head, idx, keyword_token, 0)
         state = link_result["state"]
         head = link_result["record"]
         idx = idx + 1

@@ -21,6 +21,15 @@ def lowered_function_append_compiler_component_sources(program, names):
         idx = idx + 1
     return names
 
+def lowered_function_append_target_sources(program, names):
+    target = host_target()
+    if target["os"] == "darwin":
+        names = lowered_function_append_source_if_present(program, names, "emit_darwin_aarch64_compiler_cli_asm_into")
+    if target["os"] == "linux":
+        names = lowered_function_append_source_if_present(program, names, "emit_linux_aarch64_compiler_cli_asm_into")
+        names = lowered_function_append_source_if_present(program, names, "emit_linux_x86_64_compiler_cli_asm_into")
+    return names
+
 def collect_lowered_function_table_plan_payload_seed(program, build_plan):
     names = []
     names = lowered_function_append_name(names, "asm_writer_open")
@@ -30,9 +39,7 @@ def collect_lowered_function_table_plan_payload_seed(program, build_plan):
     names = lowered_function_append_name(names, "asm_writer_set_backend")
     names = lowered_function_append_name(names, "asm_writer_is_x86")
     names = lowered_function_append_name(names, "runtime_native_linux_aarch64_asm_text")
-    names = lowered_function_append_source_if_present(program, names, "emit_darwin_aarch64_compiler_cli_asm_into")
-    names = lowered_function_append_source_if_present(program, names, "emit_linux_aarch64_compiler_cli_asm_into")
-    names = lowered_function_append_source_if_present(program, names, "emit_linux_x86_64_compiler_cli_asm_into")
+    names = lowered_function_append_target_sources(program, names)
     if program_has_function(program, "usage"):
         names = lowered_function_append_name(names, "usage")
     if program_has_function(program, "version"):
@@ -349,12 +356,15 @@ def block_source_simple(body, depth):
 
 def param_source_simple(param):
     if "name" in param:
+        prefix = ""
+        if "vararg" in param and param["vararg"]:
+            prefix = "*"
         if param["has_default"]:
             value = expr_source_simple(param["default"])
             if value == "":
                 return ""
-            return param["name"] + "=" + value
-        return param["name"]
+            return prefix + param["name"] + "=" + value
+        return prefix + param["name"]
     return param
 
 def params_source_simple(params):
@@ -1154,11 +1164,11 @@ def lowered_function_body_plan(build_plan, name):
     if name == "asm_cstr":
         return {"native": name}
     if name == "keyword_kind":
-        return {"default": "IDENTIFIER", "entries": [["def", "KW_DEF"], ["class", "KW_CLASS"], ["if", "KW_IF"], ["elif", "KW_ELIF"], ["else", "KW_ELSE"], ["while", "KW_WHILE"], ["for", "KW_FOR"], ["in", "KW_IN"], ["return", "KW_RETURN"], ["raise", "KW_RAISE"], ["try", "KW_TRY"], ["except", "KW_EXCEPT"], ["finally", "KW_FINALLY"], ["with", "KW_WITH"], ["as", "KW_AS"], ["and", "KW_AND"], ["or", "KW_OR"], ["not", "KW_NOT"], ["True", "KW_TRUE"], ["true", "KW_TRUE"], ["False", "KW_FALSE"], ["false", "KW_FALSE"], ["None", "KW_NONE"], ["none", "KW_NONE"], ["break", "KW_BREAK"], ["continue", "KW_CONTINUE"], ["next", "KW_CONTINUE"], ["unless", "KW_UNLESS"], ["lambda", "KW_LAMBDA"], ["yield", "KW_YIELD"]]}
+        return {"default": "IDENTIFIER", "entries": [["def", "KW_DEF"], ["class", "KW_CLASS"], ["if", "KW_IF"], ["elif", "KW_ELIF"], ["else", "KW_ELSE"], ["while", "KW_WHILE"], ["for", "KW_FOR"], ["in", "KW_IN"], ["return", "KW_RETURN"], ["raise", "KW_RAISE"], ["try", "KW_TRY"], ["except", "KW_EXCEPT"], ["finally", "KW_FINALLY"], ["with", "KW_WITH"], ["as", "KW_AS"], ["and", "KW_AND"], ["or", "KW_OR"], ["not", "KW_NOT"], ["True", "KW_TRUE"], ["true", "KW_TRUE"], ["False", "KW_FALSE"], ["false", "KW_FALSE"], ["None", "KW_NONE"], ["none", "KW_NONE"], ["break", "KW_BREAK"], ["continue", "KW_CONTINUE"], ["unless", "KW_UNLESS"], ["lambda", "KW_LAMBDA"], ["yield", "KW_YIELD"]]}
     if name == "simple_token_kind":
-        return {"default": "", "entries": [["(", "LPAREN"], [")", "RPAREN"], ["{", "LBRACE"], ["}", "RBRACE"], ["[", "LBRACKET"], ["]", "RBRACKET"], [",", "COMMA"], [":", "COLON"], [".", "DOT"], ["-", "MINUS"], ["*", "STAR"], ["/", "SLASH"], ["%", "PERCENT"], ["+", "PLUS"], ["=", "EQ"], ["!", "UNKNOWN"], ["<", "LT"], [">", "GT"]]}
+        return {"default": "", "entries": [["(", "LPAREN"], [")", "RPAREN"], ["{", "LBRACE"], ["}", "RBRACE"], ["[", "LBRACKET"], ["]", "RBRACKET"], [",", "COMMA"], [":", "COLON"], [".", "DOT"], ["-", "MINUS"], ["*", "STAR"], ["/", "SLASH"], ["%", "PERCENT"], ["+", "PLUS"], ["|", "PIPE"], ["&", "AMP"], ["^", "CARET"], ["~", "TILDE"], ["=", "EQ"], ["!", "UNKNOWN"], ["<", "LT"], [">", "GT"]]}
     if name == "two_char_token_kind":
-        return {"default": "", "entries": [[43, 61, "PLUSEQ"], [61, 61, "EQEQ"], [33, 61, "NE"], [60, 61, "LE"], [62, 61, "GE"], [45, 62, "ARROW"]]}
+        return {"default": "", "entries": [[42, 42, "POW"], [47, 47, "FLOOR"], [47, 61, "FLOOREQ"], [43, 61, "PLUSEQ"], [124, 61, "PIPEEQ"], [38, 61, "AMPEQ"], [94, 61, "CARETEQ"], [60, 60, "LSHIFT"], [60, 61, "LE"], [62, 62, "RSHIFT"], [62, 61, "GE"], [61, 61, "EQEQ"], [33, 61, "NE"], [45, 62, "ARROW"]]}
     if name == "token":
         return {"native": name}
     if name == "token_field_at":
@@ -1601,8 +1611,8 @@ def lowered_function_should_skip_generic(name):
     # x86-64 descendants use Native IR v2 directly, so retaining and traversing
     # their compiler builder here both changes AArch64 output and pulls the
     # complete x86 lowering graph into an unreachable target branch.
-    if name == "build_runtime_native_x86_program" or name == "emit_linux_x86_64_direct_program_asm_into":
-        return True
+    # The x86 successor carries the Native IR v2 application builder in its
+    # lowered graph; it no longer depends on the removed semantic emitter.
     if name == "collect_build_native_plan" or name == "collect_lowered_function_table_plan":
         return True
     if name == "collect_cli_spec":
@@ -1751,6 +1761,15 @@ def lowered_function_append_known_direct_calls(program, names, name):
     if name == "build_compiler_cli_native" and not compiler_cli_minimal_helpers_available(program):
         return names
     calls = lowered_function_known_direct_calls(name)
+    if name == "emit_compiler_cli_asm_into":
+        target = host_target()
+        calls = ["fail"]
+        if target["backend"] == "darwin-aarch64":
+            calls = method_append(calls, "emit_darwin_aarch64_compiler_cli_asm_into")
+        elif target["backend"] == "linux-aarch64":
+            calls = method_append(calls, "emit_linux_aarch64_compiler_cli_asm_into")
+        elif target["backend"] == "linux-x86_64":
+            calls = method_append(calls, "emit_linux_x86_64_compiler_cli_asm_into")
     idx = 0
     while idx < len(calls):
         names = lowered_function_append_reachable_call(program, names, calls[idx])
@@ -1904,9 +1923,7 @@ def collect_lowered_function_table_plan(program, build_plan):
     names = lowered_function_append_name(names, "asm_writer_set_backend")
     names = lowered_function_append_name(names, "asm_writer_is_x86")
     names = lowered_function_append_name(names, "runtime_native_linux_aarch64_asm_text")
-    names = lowered_function_append_source_if_present(program, names, "emit_darwin_aarch64_compiler_cli_asm_into")
-    names = lowered_function_append_source_if_present(program, names, "emit_linux_aarch64_compiler_cli_asm_into")
-    names = lowered_function_append_source_if_present(program, names, "emit_linux_x86_64_compiler_cli_asm_into")
+    names = lowered_function_append_target_sources(program, names)
     if program_has_function(program, "usage"):
         names = lowered_function_append_name(names, "usage")
     if program_has_function(program, "version"):
@@ -1925,6 +1942,7 @@ def collect_lowered_function_table_plan(program, build_plan):
     names = lowered_function_append_source_if_present(program, names, "generated_value_owner_mem")
     names = lowered_function_append_source_if_present(program, names, "generated_value_tag_mem")
     names = lowered_function_append_name(names, "build_runtime_native_program_if_needed")
+    names = lowered_function_append_source_if_present(program, names, "build_runtime_native_x86_program_from_source")
     names = lowered_function_append_name(names, "runtime_native_append_unique")
     # AST-native runtime emitter helpers require the shared lexer/Pratt arena
     # runtime even in reduced compiler fixtures with no source lex() body.

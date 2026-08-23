@@ -1,0 +1,34 @@
+enabled = True
+disabled = False
+
+print("if-true") if enabled
+print("if-false") if disabled
+print("unless-true") unless disabled
+print("unless-false") unless enabled
+
+
+def choose(flag):
+    return "chosen" if flag
+    return "fallback"
+
+
+def guarded_raise(flag):
+    try:
+        raise "guarded" if flag
+    except:
+        return "raised"
+    return "not-raised"
+
+
+value = 1
+value = 2 if enabled
+value = 3 unless enabled
+print(choose(True), choose(False), value)
+print(guarded_raise(True), guarded_raise(False))
+
+seen = []
+for number in range(7):
+    continue if number == 1
+    break if number == 5
+    seen.append(number)
+print(seen)

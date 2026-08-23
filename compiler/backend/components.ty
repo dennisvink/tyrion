@@ -17,7 +17,9 @@ def link_asm(asm_path, output_path):
     object_path = output_path + ".o"
     if not run_tool("cc", "-c", asm_path, "-o" + object_path):
         fail("native-tool rejected code=assemble-failed;path=" + asm_path + ";output=" + object_path)
-    if not run_tool("cc", object_path, "-o", output_path):
+    # Keep the native link lane ready for numeric builtins (notably **), whose
+    # floating-point implementation uses the platform libm.
+    if not run_tool("cc", object_path, "-o" + output_path, "-lm"):
         fail("native-tool rejected code=link-failed;path=" + object_path + ";output=" + output_path)
     return True
 
@@ -546,7 +548,11 @@ def emit_direct_value_collection_templates(out, target):
     multi_max = "\n    bl __tyrion_app_builtin_max\n"
     multi_any = "\n    bl __tyrion_app_builtin_any\n"
     multi_all = "\n    bl __tyrion_app_builtin_all\n"
-    multi_zip = "\n    bl __tyrion_app_builtin_zip\n"
+    # The general builtin emitter does not carry keyword metadata into the
+    # compact multi-call ABI. Give zip an explicit false ValueSlot and use a
+    # second reference for its exception slot so the helper sees a valid ABI
+    # even for ordinary zip(a, b) calls emitted through this path.
+    multi_zip = "\n    add x3, sp, #384\n    str xzr, [x3]\n    mov w9, #3\n    strb w9, [x3, #127]\n    add x4, sp, #400\n    bl __tyrion_app_builtin_zip\n    ldrb w9, [x4, #127]\n    cbz w9, L_native_runtime_direct_multi_zip_ok\n    mov x0, x4\n    bl __tyrion_app_unhandled_exception\nL_native_runtime_direct_multi_zip_ok:\n"
     multi_end = "    mov x0, sp\n    mov x1, #512\n"
     multi_end = multi_end + "    bl __tyrion_app_cleanup_region\n    add sp, sp, #512\n"
     list_new_a = "    ldr x15, ="
@@ -1254,17 +1260,23 @@ def emit_runtime_native_direct_call_plan(out, fn_plan, args, call_context):
         out = emit_runtime_native_direct_expr(out, arg_value, temp + arg_idx, temp + arg_count + param_count + 1, plan, state)
         arg_idx = arg_idx + 1
     bound_base = temp + arg_count
+    # The top-level legacy route can hand us a destination that aliases the
+    # first temporary slot. Keep the callee's bound-argument frame distinct;
+    # otherwise its prologue releases the result slot before the call and the
+    # return value is lost (or the caller crashes during cleanup).
+    if bound_base == dst:
+        bound_base = bound_base + 1
     if receiver_slot >= 0:
-        out = runtime_native_direct_slot_addr(out, "x0", bound_base)
-        out = runtime_native_direct_slot_addr(out, "x1", receiver_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", bound_base)
+        out = runtime_native_direct_slot_addr_v2(out, "x1", receiver_slot)
         out = asm_line(out, "bl __tyrion_app_slot_copy")
         bound_actuals[0] = -2
     param_idx = first_user_param
     while param_idx < param_count:
         actual_idx = bound_actuals[param_idx]
         if actual_idx >= 0:
-            out = runtime_native_direct_slot_addr(out, "x0", bound_base + param_idx)
-            out = runtime_native_direct_slot_addr(out, "x1", temp + actual_idx)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", bound_base + param_idx)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp + actual_idx)
             out = asm_line(out, "bl __tyrion_app_slot_move")
         else:
             param = fn_plan["parameter_records"][param_idx]
@@ -1276,14 +1288,14 @@ def emit_runtime_native_direct_call_plan(out, fn_plan, args, call_context):
             out = emit_runtime_native_direct_expr(out, param["default"], bound_base + param_idx, temp + arg_count + param_count + 1, plan, state)
         param_idx = param_idx + 1
     call_exception_slot = bound_base + param_count
-    out = runtime_native_direct_slot_addr(out, "x0", call_exception_slot)
+    out = runtime_native_direct_slot_addr_v2(out, "x0", call_exception_slot)
     out = asm_line(out, "bl __tyrion_app_slot_release")
-    out = runtime_native_direct_slot_addr(out, "x0", bound_base)
+    out = runtime_native_direct_slot_addr_v2(out, "x0", bound_base)
     out = asm_line(out, "mov x1, #" + str(param_count))
-    out = runtime_native_direct_slot_addr(out, "x2", dst)
-    out = runtime_native_direct_slot_addr(out, "x3", call_exception_slot)
+    out = runtime_native_direct_slot_addr_v2(out, "x2", dst)
+    out = runtime_native_direct_slot_addr_v2(out, "x3", call_exception_slot)
     out = asm_line(out, "bl " + fn_plan["label"])
-    out = runtime_native_direct_slot_addr(out, "x9", call_exception_slot)
+    out = runtime_native_direct_slot_addr_v2(out, "x9", call_exception_slot)
     out = asm_line(out, "ldrb w10, " + generated_value_tag_mem("x9"))
     out = asm_line(out, "cbz w10, 97f")
     if state["raise_label"] == "":
@@ -1292,13 +1304,76 @@ def emit_runtime_native_direct_call_plan(out, fn_plan, args, call_context):
         out = asm_line(out, "mov x0, x9")
         out = asm_line(out, "b __tyrion_app_unhandled_exception")
     else:
-        out = runtime_native_direct_slot_addr(out, "x0", state["exception_slot"])
-        out = runtime_native_direct_slot_addr(out, "x1", call_exception_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", state["exception_slot"])
+        out = runtime_native_direct_slot_addr_v2(out, "x1", call_exception_slot)
         out = asm_line(out, "bl __tyrion_app_slot_copy")
-        out = runtime_native_direct_slot_addr(out, "x0", call_exception_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", call_exception_slot)
         out = asm_line(out, "bl __tyrion_app_slot_release")
         out = asm_line(out, "b " + state["raise_label"])
     return asm_label(out, "97")
+
+def runtime_native_direct_has_function(plan, name):
+    for candidate in plan["functions"]:
+        if candidate["name"] == name:
+            return True
+    return False
+
+def emit_runtime_native_direct_static_vector_call(out, fn_plan, vector_expr, dst, temp, plan, state):
+    # AArch64's legacy direct ABI has no first-class closure object.  This
+    # static-vector lane still supports `add(*values)` without inventing a
+    # target-local value tag: the callee label is known at compile time and
+    # the vector is expanded into its fixed parameter frame at runtime.
+    if len(fn_plan["params"]) == 0:
+        fail("runtime-native direct starred call requires parameters: " + fn_plan["name"])
+    vector_slot = temp
+    item_slot = temp + 1
+    exception_slot = temp + 2
+    bound_base = temp + 3
+    out = emit_runtime_native_direct_expr(out, vector_expr, vector_slot, temp + 4, plan, state)
+    out = runtime_native_direct_slot_addr_v2(out, "x0", vector_slot)
+    out = asm_line(out, "bl __tyrion_app_iter_len")
+    vector_id = __tyrion_native_ast_builder_len(state["branch_ids"], 0)
+    __tyrion_native_ast_builder_append(state["branch_ids"], 0, vector_id)
+    vector_label = "__tyrion_app_vector_call_" + str(state["frame"]["id"]) + "_" + str(vector_id)
+    out = asm_line(out, "cmp x0, #" + str(len(fn_plan["params"])))
+    out = asm_line(out, "b.ne " + vector_label + "_arity_fail")
+    param_idx = 0
+    while param_idx < len(fn_plan["params"]):
+        out = runtime_native_direct_slot_addr_v2(out, "x0", item_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x1", vector_slot)
+        out = asm_line(out, "mov x2, #" + str(param_idx))
+        out = asm_line(out, "bl __tyrion_app_iter_at")
+        out = runtime_native_direct_slot_addr_v2(out, "x0", bound_base + param_idx)
+        out = runtime_native_direct_slot_addr_v2(out, "x1", item_slot)
+        out = asm_line(out, "bl __tyrion_app_slot_move")
+        param_idx = param_idx + 1
+    out = runtime_native_direct_slot_addr_v2(out, "x0", exception_slot)
+    out = asm_line(out, "bl __tyrion_app_slot_release")
+    out = runtime_native_direct_slot_addr_v2(out, "x0", bound_base)
+    out = asm_line(out, "mov x1, #" + str(len(fn_plan["params"])))
+    out = runtime_native_direct_slot_addr_v2(out, "x2", dst)
+    out = runtime_native_direct_slot_addr_v2(out, "x3", exception_slot)
+    out = asm_line(out, "bl " + fn_plan["label"])
+    out = asm_line(out, "b " + vector_label + "_exception")
+    out = asm_label(out, vector_label + "_arity_fail")
+    # Keep the fixed direct ABI's existing failure convention for now. A
+    # dedicated dynamic-arity diagnostic belongs with the eventual first-class
+    # closure descriptor rather than introducing an unregistered literal here.
+    out = asm_line(out, "b " + vector_label + "_done")
+    out = asm_label(out, vector_label + "_exception")
+    out = runtime_native_direct_slot_addr_v2(out, "x9", exception_slot)
+    out = asm_line(out, "ldrb w10, " + generated_value_tag_mem("x9"))
+    out = asm_line(out, "cbz w10, " + vector_label + "_done")
+    if state["raise_label"] == "":
+        out = asm_line(out, "mov x0, x9")
+        out = asm_line(out, "b __tyrion_app_unhandled_exception")
+    else:
+        out = runtime_native_direct_slot_addr_v2(out, "x0", state["exception_slot"])
+        out = runtime_native_direct_slot_addr_v2(out, "x1", exception_slot)
+        out = asm_line(out, "bl __tyrion_app_slot_copy")
+        out = asm_line(out, "b " + state["raise_label"])
+    out = asm_label(out, vector_label + "_done")
+    return out
 
 def runtime_native_direct_classes_with_method(plan, method_name):
     matches = []
@@ -1309,55 +1384,230 @@ def runtime_native_direct_classes_with_method(plan, method_name):
     return matches
 
 def runtime_native_direct_var_addr(out, register, expr, plan, state):
+    synthetic_index = 0
+    while synthetic_index < len(state["synthetic_slots"]):
+        synthetic = state["synthetic_slots"][synthetic_index]
+        if synthetic["name"] == expr["value"]:
+            return runtime_native_direct_slot_addr_v2(out, register, synthetic["slot"])
+        synthetic_index = synthetic_index + 1
     source = runtime_native_direct_local_index_or_none(state["frame"], expr["value"])
     if source >= 0:
-        return runtime_native_direct_slot_addr(out, register, source)
+        return runtime_native_direct_slot_addr_v2(out, register, source)
     global_index = runtime_native_direct_global_index(plan, expr["value"])
     out = asm_addr(out, state["target"], register, "__tyrion_app_global_base")
     out = asm_line(out, "ldr " + register + ", [" + register + "]")
-    out = asm_line(out, "ldr x15, =" + str(runtime_native_direct_slot_offset(global_index)))
+    out = emit_runtime_native_immediate(out, "x15", runtime_native_direct_slot_offset_v2(global_index), state["target"])
     return asm_line(out, "add " + register + ", " + register + ", x15")
+
+def emit_aarch64_immediate(out, register, value):
+    # Darwin's assembler cannot keep a literal-pool load in range in the
+    # generated compiler-sized object. Materialise constants in the register
+    # instead, which is valid for both AArch64 targets.
+    negative = value < 0
+    magnitude = value
+    if negative:
+        magnitude = 0 - value - 1
+    low = magnitude & 65535
+    if negative:
+        out = asm_line(out, "movn " + register + ", #" + str(low))
+    else:
+        out = asm_line(out, "movz " + register + ", #" + str(low))
+    shift = 16
+    while shift < 64:
+        chunk = (magnitude >> shift) & 65535
+        if chunk != 0:
+            out = asm_line(out, "movk " + register + ", #" + str(chunk) + ", lsl #" + str(shift))
+        shift = shift + 16
+    return out
+
+def emit_runtime_native_immediate(out, register, value, target):
+    if target["backend"] == "darwin-aarch64" or target["backend"] == "linux-aarch64":
+        return emit_aarch64_immediate(out, register, value)
+    return asm_line(out, "ldr " + register + ", =" + str(value))
+
+def runtime_native_direct_synthetic_var(name, slot):
+    return {"kind": "var", "value": name, "items": []}
+
+def runtime_native_direct_synthetic_call(name, args):
+    return {"kind": "call", "callee": runtime_native_direct_synthetic_var(name, -1), "args": args, "items": []}
+
+def runtime_native_direct_expr_fingerprint(expr):
+    kind = expr["kind"]
+    if kind == "var":
+        return application_name_hash(expr["value"])
+    if kind == "int":
+        return expr["value"]
+    if kind == "string":
+        return application_name_hash(expr["value"])
+    if kind == "list" or kind == "tuple":
+        value = len(expr["items"]) + 1
+        idx = 0
+        while idx < len(expr["items"]):
+            value = value * 131 + runtime_native_direct_expr_fingerprint(expr["items"][idx])
+            idx = idx + 1
+        return value
+    if kind == "call":
+        value = application_name_hash(expr["callee"]["value"]) + len(expr["args"])
+        idx = 0
+        while idx < len(expr["args"]):
+            value = value * 131 + runtime_native_direct_expr_fingerprint(expr["args"][idx])
+            idx = idx + 1
+        return value
+    return 0
+
+def runtime_native_direct_raise_builtin_error(out, dst, state, plan, message):
+    # Builtin argument errors must remain catchable.  Materialize the class
+    # token in the expression destination, then route it through the same
+    # exception slot used by declared calls and zip/next.
+    label = "L_tyrion_direct_builtin_typeerror"
+    if message != "TypeError":
+        fail("unsupported native builtin error token: " + message)
+    out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+    out = asm_line(out, "bl __tyrion_app_slot_release")
+    out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
+    out = asm_addr(out, state["target"], "x9", label)
+    out = asm_line(out, "str x9, [x13]")
+    out = asm_line(out, "mov x9, #9")
+    out = asm_line(out, "str x9, [x13, #8]")
+    out = asm_line(out, "mov w9, #4")
+    out = asm_line(out, "strb w9, " + generated_value_tag_mem("x13"))
+    if state["raise_label"] == "":
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+        return asm_line(out, "b __tyrion_app_unhandled_exception")
+    out = runtime_native_direct_slot_addr_v2(out, "x0", state["exception_slot"])
+    out = runtime_native_direct_slot_addr_v2(out, "x1", dst)
+    out = asm_line(out, "bl __tyrion_app_slot_copy")
+    out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+    out = asm_line(out, "bl __tyrion_app_slot_release")
+    return asm_line(out, "b " + state["raise_label"])
+
+def runtime_native_direct_lower_map_filter_expr(out, expr, dst, temp, plan, state, map_mode):
+    # AArch64's legacy direct ABI cannot dispatch an arbitrary closure from
+    # the core map/filter implementation. Lower the public call directly to
+    # the already-supported comprehension emitter instead. Named callbacks
+    # remain statically resolvable, while the synthetic iteration variable is
+    # assigned a temporary frame slot (never a source-level local).
+    if len(expr["args"]) < 2 and map_mode:
+        return runtime_native_direct_raise_builtin_error(out, dst, state, plan, "TypeError")
+    if len(expr["args"]) != 2 and not map_mode:
+        return runtime_native_direct_raise_builtin_error(out, dst, state, plan, "TypeError")
+    callback = expr["args"][0]
+    if (callback["kind"] == "none" and map_mode) or callback["kind"] == "int" or callback["kind"] == "float" or callback["kind"] == "bool" or callback["kind"] == "string":
+        return runtime_native_direct_raise_builtin_error(out, dst, state, plan, "TypeError")
+    callback_name = ""
+    callback_label = "callback"
+    known_callback_plan = none
+    if callback["kind"] == "lambda":
+        callback_plan = runtime_native_direct_lambda_plan_for_expr(plan, state["frame"]["name"], callback, state["lambda_index"])
+        known_callback_plan = callback_plan
+        state["lambda_index"] = state["lambda_index"] + 1
+        callback_name = callback_plan["name"]
+        callback_label = callback_plan["label"]
+        callback = runtime_native_direct_synthetic_var(callback_name, -1)
+    elif callback["kind"] == "var":
+        callback_name = callback["value"]
+        callback_plan = runtime_native_direct_function_plan(plan, callback_name)
+        callback_label = callback_plan["label"]
+    iterable_args = []
+    arg_idx = 1
+    while arg_idx < len(expr["args"]):
+        argument = expr["args"][arg_idx]
+        if argument["kind"] == "starred":
+            # Literal packs can be expanded directly. A dynamic pack is
+            # lowered below into fixed indexed lanes when callback arity is
+            # statically known.
+            if argument["value"]["kind"] == "list":
+                for packed in argument["value"]["items"]:
+                    iterable_args = method_append(iterable_args, packed)
+            else:
+                # A dynamic pack still has a statically known callback arity
+                # for named functions and lambdas. Materialize the required
+                # iterable lanes as indexed views of the pack; this preserves
+                # map's shortest-input behavior without inventing a dynamic
+                # closure ABI for the legacy AArch64 emitter.
+                callback_plan = known_callback_plan
+                if callback_plan == none and callback["kind"] == "var":
+                    callback_plan = runtime_native_direct_function_plan(plan, callback["value"])
+                if callback_plan == none:
+                    fail("map dynamic starred iterables require a statically known callback")
+                required = len(callback_plan["params"]) - len(iterable_args)
+                if required < 1:
+                    fail("map dynamic starred iterable arity mismatch")
+                pack_idx = 0
+                while pack_idx < required:
+                    iterable_args = method_append(iterable_args, {"kind": "index", "receiver": argument["value"], "index": {"kind": "int", "value": pack_idx}, "items": []})
+                    pack_idx = pack_idx + 1
+        else:
+            iterable_args = method_append(iterable_args, argument)
+        arg_idx = arg_idx + 1
+    item_name = "__tyrion_direct_item_" + str(state["frame"]["id"]) + "_" + str(dst) + "_" + callback_label
+    # Keep the synthetic item outside the callback's normal temporary window;
+    # filter must retain the item while evaluating its predicate.
+    item_slot = temp + plan["temporary_slots"] + 4
+    state["synthetic_slots"] = []
+    state["synthetic_slots"] = method_append(state["synthetic_slots"], {"name": item_name, "slot": item_slot})
+    item_var = runtime_native_direct_synthetic_var(item_name, item_slot)
+    iterable = iterable_args[0]
+    callback_args = [item_var]
+    if len(iterable_args) > 1:
+        zip_args = []
+        for argument in iterable_args:
+            zip_args = method_append(zip_args, argument)
+        iterable = runtime_native_direct_synthetic_call("zip", zip_args)
+        callback_args = [{"kind": "starred", "value": item_var, "items": []}]
+    if map_mode:
+        mapped = {"kind": "call", "callee": callback, "args": callback_args, "items": []}
+        condition = {"kind": "bool", "value": True, "items": []}
+        comprehension = {"kind": "comprehension", "out_kind": "list", "expr": mapped, "key": none, "value": none, "target": item_name, "iterable": iterable, "condition": condition, "items": []}
+    else:
+        condition = item_var
+        if callback["kind"] != "none":
+            condition = {"kind": "call", "callee": callback, "args": callback_args, "items": []}
+        comprehension = {"kind": "comprehension", "out_kind": "list", "expr": item_var, "key": none, "value": none, "target": item_name, "iterable": iterable, "condition": condition, "items": []}
+    if "source_pos" in expr:
+        comprehension["source_pos"] = expr["source_pos"]
+    return emit_runtime_native_direct_expr(out, comprehension, dst, temp, plan, state)
 
 def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
     value_tag_x13 = generated_value_tag_mem("x13")
 
     kind = expr["kind"]
-    out = runtime_native_direct_slot_addr(out, "x13", dst)
+    out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
     if kind == "none":
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
         out = asm_line(out, "bl __tyrion_app_slot_release")
-        out = runtime_native_direct_slot_addr(out, "x13", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
         out = asm_line(out, "str xzr, [x13]")
         return asm_line(out, "strb wzr, " + value_tag_x13)
     if kind == "bool":
         value = 0
         if expr["value"]:
             value = 1
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
         out = asm_line(out, "bl __tyrion_app_slot_release")
-        out = runtime_native_direct_slot_addr(out, "x13", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
         out = asm_line(out, "mov x9, #" + str(value))
         out = asm_line(out, "str x9, [x13]")
         out = asm_line(out, "mov w9, #3")
         return asm_line(out, "strb w9, " + value_tag_x13)
     if kind == "int":
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
         out = asm_line(out, "bl __tyrion_app_slot_release")
-        out = runtime_native_direct_slot_addr(out, "x13", dst)
-        out = asm_line(out, "ldr x9, =" + str(expr["value"]))
+        out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
+        out = emit_runtime_native_immediate(out, "x9", expr["value"], state["target"])
         out = asm_line(out, "str x9, [x13]")
         out = asm_line(out, "mov w9, #2")
         return asm_line(out, "strb w9, " + value_tag_x13)
     if kind == "float":
         literal_id = runtime_native_direct_literal_id(plan, "float", expr["value"])
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
         out = asm_addr(out, state["target"], "x1", "__tyrion_app_lit_" + str(literal_id))
         return asm_line(out, "bl __tyrion_app_float_from_text")
     if kind == "string":
         literal_id = runtime_native_direct_literal_id(plan, "string", expr["value"])
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
         out = asm_line(out, "bl __tyrion_app_slot_release")
-        out = runtime_native_direct_slot_addr(out, "x13", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
         out = asm_addr(out, state["target"], "x9", "__tyrion_app_lit_" + str(literal_id))
         out = asm_line(out, "str x9, [x13]")
         out = asm_line(out, "mov x9, #" + str(len(expr["value"])))
@@ -1371,64 +1621,82 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
                 seek_value = 1
             elif expr["value"] == "SEEK_END":
                 seek_value = 2
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             out = asm_line(out, "bl __tyrion_app_slot_release")
-            out = runtime_native_direct_slot_addr(out, "x13", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
             out = asm_line(out, "mov x9, #" + str(seek_value))
             out = asm_line(out, "str x9, [x13]")
             out = asm_line(out, "mov w9, #2")
             return asm_line(out, "strb w9, " + value_tag_x13)
         source = runtime_native_direct_local_index_or_none(state["frame"], expr["value"])
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
-        if source >= 0:
-            out = runtime_native_direct_slot_addr(out, "x1", source)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+        synthetic_source = -1
+        synthetic_idx = 0
+        while synthetic_idx < len(state["synthetic_slots"]):
+            synthetic = state["synthetic_slots"][synthetic_idx]
+            if synthetic["name"] == expr["value"]:
+                synthetic_source = synthetic["slot"]
+                break
+            synthetic_idx = synthetic_idx + 1
+        if synthetic_source >= 0:
+            out = runtime_native_direct_slot_addr_v2(out, "x1", synthetic_source)
+        elif source >= 0:
+            out = runtime_native_direct_slot_addr_v2(out, "x1", source)
         else:
             global_index = runtime_native_direct_global_index(plan, expr["value"])
             out = asm_addr(out, state["target"], "x1", "__tyrion_app_global_base")
             out = asm_line(out, "ldr x1, [x1]")
-            out = asm_line(out, "ldr x15, =" + str(runtime_native_direct_slot_offset(global_index)))
+            out = emit_runtime_native_immediate(out, "x15", runtime_native_direct_slot_offset_v2(global_index), state["target"])
             out = asm_line(out, "add x1, x1, x15")
         return asm_line(out, "bl __tyrion_app_slot_copy")
     if kind == "list" or kind == "tuple":
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
         out = asm_line(out, "mov x1, #" + str(len(expr["items"])))
-        out = asm_line(out, "bl __tyrion_app_list_new")
+        if kind == "tuple" and state["frame"]["name"] == "divmod":
+            out = asm_line(out, "bl __tyrion_app_tuple_new")
+        else:
+            out = asm_line(out, "bl __tyrion_app_list_new")
         item_idx = 0
         for item in expr["items"]:
             out = emit_runtime_native_direct_expr(out, item, temp, temp + 1, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             out = asm_line(out, "mov x1, #" + str(item_idx))
-            out = runtime_native_direct_slot_addr(out, "x2", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp)
             out = asm_line(out, "bl __tyrion_app_list_set")
             item_idx = item_idx + 1
         return out
     if kind == "dict":
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
         out = asm_line(out, "mov x1, #" + str(len(expr["entries"])))
         out = asm_line(out, "bl __tyrion_app_dict_new")
         for entry in expr["entries"]:
             out = emit_runtime_native_direct_expr(out, entry["key"], temp, temp + 2, plan, state)
             out = emit_runtime_native_direct_expr(out, entry["value"], temp + 1, temp + 2, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
-            out = runtime_native_direct_slot_addr(out, "x2", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
             out = asm_line(out, "bl __tyrion_app_dict_set")
         return out
     if kind == "set":
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
         out = asm_line(out, "mov x1, #" + str(len(expr["items"])))
         out = asm_line(out, "bl __tyrion_app_set_new")
         for item in expr["items"]:
             out = emit_runtime_native_direct_expr(out, item, temp, temp + 1, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
             out = asm_line(out, "bl __tyrion_app_set_insert")
         return out
     if kind == "comprehension":
-        # Emitter arguments are value records, so mutating state here does not
-        # allocate a caller-visible label id. Frame plus destination is stable
-        # and remains distinct for nested temporary expressions.
-        expr_id = state["frame"]["id"] * 100000 + dst
+        # State is passed as value records, so mutable counters do not survive
+        # sibling expressions. Parser source positions are stable per call.
+        expr_id = str(state["frame"]["id"]) + "_" + str(dst) + "_" + expr["target"]
+        if "source_pos" in expr:
+            expr_id = str(state["frame"]["id"]) + "_" + str(expr["source_pos"])
+        fingerprint = runtime_native_direct_expr_fingerprint(expr["iterable"])
+        if fingerprint < 0:
+            fingerprint = 0 - fingerprint
+        expr_id = expr_id + "_" + str(fingerprint)
         test_label = "__tyrion_app_comp_test_" + str(expr_id)
         advance_label = "__tyrion_app_comp_advance_" + str(expr_id)
         end_label = "__tyrion_app_comp_end_" + str(expr_id)
@@ -1440,52 +1708,62 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
         result_b_slot = temp + 5
         out = emit_runtime_native_direct_expr(out, expr["iterable"], iterable_slot, temp + 6, plan, state)
         if expr["out_kind"] == "list":
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             out = asm_line(out, "mov x1, #0")
             out = asm_line(out, "bl __tyrion_app_list_new")
         elif expr["out_kind"] == "dict":
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             out = asm_line(out, "mov x1, #0")
             out = asm_line(out, "bl __tyrion_app_dict_new")
         else:
             fail("unsupported runtime-native comprehension kind: " + expr["out_kind"])
-        out = runtime_native_direct_slot_addr(out, "x13", index_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x13", index_slot)
         out = asm_line(out, "str xzr, [x13]")
         out = asm_line(out, "mov w9, #2")
         out = asm_line(out, "strb w9, " + value_tag_x13)
         out = asm_label(out, test_label)
-        out = runtime_native_direct_slot_addr(out, "x0", iterable_slot)
-        out = runtime_native_direct_slot_addr(out, "x1", index_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", iterable_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x1", index_slot)
         out = asm_line(out, "ldr x1, [x1]")
         out = asm_line(out, "bl __tyrion_app_iter_has_next")
         out = asm_line(out, "cbz w0, " + end_label)
-        out = runtime_native_direct_slot_addr(out, "x0", value_slot)
-        out = runtime_native_direct_slot_addr(out, "x1", iterable_slot)
-        out = runtime_native_direct_slot_addr(out, "x2", index_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", value_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x1", iterable_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x2", index_slot)
         out = asm_line(out, "ldr x2, [x2]")
         out = asm_line(out, "bl __tyrion_app_iter_at")
-        target_slot = runtime_native_direct_local_index(state["frame"], expr["target"])
-        out = runtime_native_direct_slot_addr(out, "x0", target_slot)
-        out = runtime_native_direct_slot_addr(out, "x1", value_slot)
+        target_slot = runtime_native_direct_local_index_or_none(state["frame"], expr["target"])
+        if target_slot < 0:
+            synthetic_idx = 0
+            while synthetic_idx < len(state["synthetic_slots"]):
+                synthetic = state["synthetic_slots"][synthetic_idx]
+                if synthetic["name"] == expr["target"]:
+                    target_slot = synthetic["slot"]
+                    break
+                synthetic_idx = synthetic_idx + 1
+        if target_slot < 0:
+            fail("runtime-native direct comprehension target not found: " + expr["target"])
+        out = runtime_native_direct_slot_addr_v2(out, "x0", target_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x1", value_slot)
         out = asm_line(out, "bl __tyrion_app_slot_copy")
         out = emit_runtime_native_direct_expr(out, expr["condition"], condition_slot, temp + 6, plan, state)
-        out = runtime_native_direct_slot_addr(out, "x0", condition_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", condition_slot)
         out = asm_line(out, "bl __tyrion_app_truthy")
         out = asm_line(out, "cbz w0, " + advance_label)
         if expr["out_kind"] == "list":
             out = emit_runtime_native_direct_expr(out, expr["expr"], result_a_slot, temp + 6, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", result_a_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", result_a_slot)
             out = asm_line(out, "bl __tyrion_app_list_append")
         else:
             out = emit_runtime_native_direct_expr(out, expr["key"], result_a_slot, temp + 6, plan, state)
             out = emit_runtime_native_direct_expr(out, expr["value"], result_b_slot, temp + 6, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", result_a_slot)
-            out = runtime_native_direct_slot_addr(out, "x2", result_b_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", result_a_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", result_b_slot)
             out = asm_line(out, "bl __tyrion_app_dict_set")
         out = asm_label(out, advance_label)
-        out = runtime_native_direct_slot_addr(out, "x9", index_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x9", index_slot)
         out = asm_line(out, "ldr x10, [x9]")
         out = asm_line(out, "add x10, x10, #1")
         out = asm_line(out, "str x10, [x9]")
@@ -1493,13 +1771,13 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
         return asm_label(out, end_label)
     if kind == "unary":
         out = emit_runtime_native_direct_expr(out, expr["value"], temp, temp + 1, plan, state)
-        out = runtime_native_direct_slot_addr(out, "x10", temp)
+        out = runtime_native_direct_slot_addr_v2(out, "x10", temp)
         out = asm_line(out, "ldr x9, [x10]")
         out = asm_line(out, "mov x22, x9")
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
         out = asm_line(out, "bl __tyrion_app_slot_release")
         out = asm_line(out, "mov x9, x22")
-        out = runtime_native_direct_slot_addr(out, "x13", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
         if expr["op"] == "-":
             out = asm_line(out, "neg x9, x9")
             out = asm_line(out, "str x9, [x13]")
@@ -1511,6 +1789,11 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             out = asm_line(out, "str x9, [x13]")
             out = asm_line(out, "mov w9, #3")
             return asm_line(out, "strb w9, " + value_tag_x13)
+        if expr["op"] == "~":
+            out = asm_line(out, "mvn x9, x9")
+            out = asm_line(out, "str x9, [x13]")
+            out = asm_line(out, "mov w9, #2")
+            return asm_line(out, "strb w9, " + value_tag_x13)
         fail("unsupported runtime-native direct unary operator: " + expr["op"])
     if kind == "binary":
         op = expr["op"]
@@ -1521,7 +1804,7 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             eval_right_label = label_base + "_right"
             done_label = label_base + "_done"
             out = emit_runtime_native_direct_expr(out, expr["left"], temp, temp + 1, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
             out = asm_line(out, "bl __tyrion_app_truthy")
             if op == "and":
                 out = asm_line(out, "cbnz w0, " + eval_right_label)
@@ -1532,49 +1815,63 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             out = asm_line(out, "b " + done_label)
             out = asm_label(out, eval_right_label)
             out = emit_runtime_native_direct_expr(out, expr["right"], temp + 1, temp + 2, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 1)
             out = asm_line(out, "bl __tyrion_app_truthy")
             out = asm_line(out, "mov x9, x0")
             out = asm_label(out, done_label)
             out = asm_line(out, "mov x22, x9")
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             out = asm_line(out, "bl __tyrion_app_slot_release")
             out = asm_line(out, "mov x9, x22")
-            out = runtime_native_direct_slot_addr(out, "x13", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
             out = asm_line(out, "str x9, [x13]")
             out = asm_line(out, "mov w9, #2")
             return asm_line(out, "strb w9, " + value_tag_x13)
         out = emit_runtime_native_direct_expr(out, expr["left"], temp, temp + 2, plan, state)
         out = emit_runtime_native_direct_expr(out, expr["right"], temp + 1, temp + 2, plan, state)
-        out = runtime_native_direct_slot_addr(out, "x10", temp)
-        out = runtime_native_direct_slot_addr(out, "x11", temp + 1)
-        out = runtime_native_direct_slot_addr(out, "x13", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x10", temp)
+        out = runtime_native_direct_slot_addr_v2(out, "x11", temp + 1)
+        out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
         operation_id = application_binary_operator_id(op)
         if operation_id == application_binary_operator_id("+"):
             out = asm_line(out, "mov x0, x13")
             out = asm_line(out, "mov x1, x10")
             out = asm_line(out, "mov x2, x11")
             out = asm_line(out, "bl __tyrion_app_add")
-            out = runtime_native_direct_slot_addr(out, "x0", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
             out = asm_line(out, "bl __tyrion_app_slot_release")
-            out = runtime_native_direct_slot_addr(out, "x0", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 1)
             return asm_line(out, "bl __tyrion_app_slot_release")
-        if operation_id == application_binary_operator_id("-") or operation_id == application_binary_operator_id("*") or operation_id == application_binary_operator_id("/") or operation_id == application_binary_operator_id("%"):
+        if operation_id == application_binary_operator_id("-") or operation_id == application_binary_operator_id("*") or operation_id == application_binary_operator_id("/") or operation_id == application_binary_operator_id("//") or operation_id == application_binary_operator_id("%") or operation_id == application_binary_operator_id("**") or operation_id == application_binary_operator_id("|") or operation_id == application_binary_operator_id("^") or operation_id == application_binary_operator_id("&") or operation_id == application_binary_operator_id("<<") or operation_id == application_binary_operator_id(">>"):
             operation = 1
             if operation_id == application_binary_operator_id("*"):
                 operation = 2
             elif operation_id == application_binary_operator_id("/"):
                 operation = 3
+            elif operation_id == application_binary_operator_id("//"):
+                operation = 5
+            elif operation_id == application_binary_operator_id("**"):
+                operation = 6
             elif operation_id == application_binary_operator_id("%"):
                 operation = 4
+            elif operation_id == application_binary_operator_id("|"):
+                operation = 7
+            elif operation_id == application_binary_operator_id("^"):
+                operation = 8
+            elif operation_id == application_binary_operator_id("&"):
+                operation = 9
+            elif operation_id == application_binary_operator_id("<<"):
+                operation = 10
+            elif operation_id == application_binary_operator_id(">>"):
+                operation = 11
             out = asm_line(out, "mov x0, x13")
             out = asm_line(out, "mov x1, x10")
             out = asm_line(out, "mov x2, x11")
             out = asm_line(out, "mov x3, #" + str(operation))
             out = asm_line(out, "bl __tyrion_app_numeric_binary")
-            out = runtime_native_direct_slot_addr(out, "x0", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
             out = asm_line(out, "bl __tyrion_app_slot_release")
-            out = runtime_native_direct_slot_addr(out, "x0", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 1)
             return asm_line(out, "bl __tyrion_app_slot_release")
         if operation_id == application_binary_operator_id("in"):
             out = asm_line(out, "mov x0, x10")
@@ -1610,13 +1907,13 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
                 cond = "ge"
             out = asm_line(out, "cset w9, " + cond)
         out = asm_line(out, "mov x22, x9")
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
         out = asm_line(out, "bl __tyrion_app_slot_release")
         out = asm_line(out, "mov x9, x22")
-        out = runtime_native_direct_slot_addr(out, "x13", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
         out = asm_line(out, "str x9, [x13]")
         tag = 2
-        if operation_id >= application_binary_operator_id("=="):
+        if operation_id == application_binary_operator_id("==") or operation_id == application_binary_operator_id("!=") or operation_id == application_binary_operator_id("<") or operation_id == application_binary_operator_id("<=") or operation_id == application_binary_operator_id(">") or operation_id == application_binary_operator_id(">="):
             tag = 3
         out = asm_line(out, "mov w9, #" + str(tag))
         return asm_line(out, "strb w9, " + value_tag_x13)
@@ -1629,12 +1926,12 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
         else:
             out = emit_runtime_native_direct_expr(out, receiver, receiver_slot, temp + 2, plan, state)
         out = emit_runtime_native_direct_expr(out, expr["index"], index_slot, temp + 2, plan, state)
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
         if receiver["kind"] == "var":
             out = runtime_native_direct_var_addr(out, "x1", receiver, plan, state)
         else:
-            out = runtime_native_direct_slot_addr(out, "x1", receiver_slot)
-        out = runtime_native_direct_slot_addr(out, "x2", index_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", receiver_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x2", index_slot)
         return asm_line(out, "bl __tyrion_app_index")
     if kind == "slice":
         receiver = expr["receiver"]
@@ -1648,38 +1945,166 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             out = emit_runtime_native_direct_expr(out, receiver, receiver_slot, temp + 3, plan, state)
         out = emit_runtime_native_direct_expr(out, expr["start"], start_slot, temp + 3, plan, state)
         out = emit_runtime_native_direct_expr(out, expr["stop"], stop_slot, temp + 3, plan, state)
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
         if receiver["kind"] == "var":
             out = runtime_native_direct_var_addr(out, "x1", receiver, plan, state)
         else:
-            out = runtime_native_direct_slot_addr(out, "x1", receiver_slot)
-        out = runtime_native_direct_slot_addr(out, "x2", start_slot)
-        out = runtime_native_direct_slot_addr(out, "x3", stop_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", receiver_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x2", start_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x3", stop_slot)
         return asm_line(out, "bl __tyrion_app_slice")
     if kind == "attr":
+        if expr["receiver"]["kind"] == "var":
+            descriptor = runtime_native_direct_range_descriptor(state, expr["receiver"]["value"])
+            if descriptor != none and (expr["name"] == "start" or expr["name"] == "stop" or expr["name"] == "step"):
+                descriptor_index = 0
+                if expr["name"] == "stop":
+                    descriptor_index = 1
+                elif expr["name"] == "step":
+                    descriptor_index = 2
+                out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
+                out = asm_line(out, "mov x9, #" + str(descriptor[descriptor_index]))
+                out = asm_line(out, "str x9, [x13]")
+                out = asm_line(out, "mov w9, #2")
+                out = asm_line(out, "strb w9, " + generated_value_tag_mem("x13"))
+                return out
         out = emit_runtime_native_direct_expr(out, expr["receiver"], temp, temp + 2, plan, state)
         literal_id = runtime_native_direct_literal_id(plan, "string", expr["name"])
-        out = runtime_native_direct_slot_addr(out, "x13", temp + 1)
+        out = runtime_native_direct_slot_addr_v2(out, "x13", temp + 1)
         out = asm_addr(out, state["target"], "x9", "__tyrion_app_lit_" + str(literal_id))
         out = asm_line(out, "str x9, [x13]")
         out = asm_line(out, "mov x9, #" + str(len(expr["name"])))
         out = asm_line(out, "str x9, [x13, #8]")
         out = asm_line(out, "mov w9, #4")
         out = asm_line(out, "strb w9, " + generated_value_tag_mem("x13"))
-        out = runtime_native_direct_slot_addr(out, "x0", dst)
-        out = runtime_native_direct_slot_addr(out, "x1", temp)
-        out = runtime_native_direct_slot_addr(out, "x2", temp + 1)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+        out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+        out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
         return asm_line(out, "bl __tyrion_app_object_attr_get")
     if kind == "call":
         call_name = expr["callee"]["value"]
+        if expr["callee"]["kind"] == "var" and call_name == "map":
+            return runtime_native_direct_lower_map_filter_expr(out, expr, dst, temp, plan, state, True)
+        if expr["callee"]["kind"] == "var" and call_name == "filter":
+            return runtime_native_direct_lower_map_filter_expr(out, expr, dst, temp, plan, state, False)
+        if expr["callee"]["kind"] == "var" and len(expr["args"]) == 1 and expr["args"][0]["kind"] == "starred" and runtime_native_direct_has_function(plan, call_name):
+            vector_plan = runtime_native_direct_function_plan(plan, call_name)
+            return emit_runtime_native_direct_static_vector_call(out, vector_plan, expr["args"][0]["value"], dst, temp, plan, state)
+        if call_name == "iter":
+            if len(expr["args"]) != 1:
+                fail("iter expects one argument")
+            out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 1, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            return asm_line(out, "bl __tyrion_app_iter_new")
+        if call_name == "next":
+            if len(expr["args"]) < 1 or len(expr["args"]) > 2:
+                fail("next expects one or two arguments")
+            iterator_slot = temp
+            default_slot = temp + 1
+            exception_slot = temp + 2
+            out = emit_runtime_native_direct_expr(out, expr["args"][0], iterator_slot, temp + 3, plan, state)
+            out = emit_runtime_native_direct_expr(out, {"kind": "string", "value": "StopIteration", "items": []}, exception_slot, temp + 3, plan, state)
+            if len(expr["args"]) == 2:
+                out = emit_runtime_native_direct_expr(out, expr["args"][1], default_slot, temp + 3, plan, state)
+                out = runtime_native_direct_slot_addr_v2(out, "x2", default_slot)
+            else:
+                out = asm_line(out, "mov x2, #0")
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", iterator_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x3", exception_slot)
+            out = asm_line(out, "bl __tyrion_app_next")
+            out = asm_line(out, "cbz w0, 97f")
+            if state["raise_label"] == "":
+                out = runtime_native_direct_slot_addr_v2(out, "x0", exception_slot)
+                out = asm_line(out, "b __tyrion_app_unhandled_exception")
+            else:
+                out = runtime_native_direct_slot_addr_v2(out, "x0", state["exception_slot"])
+                out = runtime_native_direct_slot_addr_v2(out, "x1", exception_slot)
+                out = asm_line(out, "bl __tyrion_app_slot_copy")
+                out = asm_line(out, "b " + state["raise_label"])
+            return asm_label(out, "97")
+        if call_name == "set":
+            if len(expr["args"]) > 1 or (len(expr["args"]) == 1 and expr["args"][0]["kind"] == "kwarg"):
+                fail("set expects zero or one positional argument")
+            if len(expr["args"]) == 1:
+                iterable_slot = temp
+                index_slot = temp + 1
+                item_slot = temp + 2
+                test_label = "__tyrion_app_set_ctor_test_" + str(state["frame"]["id"]) + "_" + str(dst)
+                end_label = "__tyrion_app_set_ctor_end_" + str(state["frame"]["id"]) + "_" + str(dst)
+                out = emit_runtime_native_direct_expr(out, expr["args"][0], iterable_slot, temp + 3, plan, state)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", iterable_slot)
+                out = asm_line(out, "bl __tyrion_app_iter_len")
+                out = asm_line(out, "mov x1, x0")
+                out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+                out = asm_line(out, "bl __tyrion_app_set_new")
+                out = emit_runtime_native_direct_expr(out, {"kind": "int", "value": 0, "items": []}, index_slot, temp + 3, plan, state)
+                out = asm_label(out, test_label)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", iterable_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", index_slot)
+                out = asm_line(out, "ldr x1, [x1]")
+                out = asm_line(out, "bl __tyrion_app_iter_has_next")
+                out = asm_line(out, "cbz w0, " + end_label)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", item_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", iterable_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x2", index_slot)
+                out = asm_line(out, "ldr x2, [x2]")
+                out = asm_line(out, "bl __tyrion_app_iter_at")
+                out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", item_slot)
+                out = asm_line(out, "bl __tyrion_app_set_insert")
+                out = runtime_native_direct_slot_addr_v2(out, "x9", index_slot)
+                out = asm_line(out, "ldr x10, [x9]")
+                out = asm_line(out, "add x10, x10, #1")
+                out = asm_line(out, "str x10, [x9]")
+                out = asm_line(out, "b " + test_label)
+                out = asm_label(out, end_label)
+            else:
+                out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+                out = asm_line(out, "mov x1, #0")
+                out = asm_line(out, "bl __tyrion_app_set_new")
+            return out
         if call_name == "argv":
             if len(expr["args"]) != 0:
                 fail("argv expects no arguments")
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             return asm_line(out, "bl __tyrion_app_process_argv")
         primitive_impl = primitive_schema_impl_key(call_name)
+        if primitive_impl == "read_text_file":
+            if len(expr["args"]) != 1:
+                fail("read_text_file expects one argument")
+            # Use the ordinary application file runtime. The path lives in
+            # temp, dst temporarily holds the borrowed "r" mode, and temp+1
+            # owns the file handle until it is closed after the read.
+            out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 2, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
+            out = asm_addr(out, state["target"], "x9", "__tyrion_app_mode_r")
+            out = asm_line(out, "str x9, [x13]")
+            out = asm_line(out, "mov x9, #1")
+            out = asm_line(out, "str x9, [x13, #8]")
+            out = asm_line(out, "mov w9, #4")
+            out = asm_line(out, "strb w9, " + value_tag_x13)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            out = asm_line(out, "bl __tyrion_app_file_open")
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 1)
+            out = asm_line(out, "mov x1, #-1")
+            out = runtime_native_direct_slot_addr_v2(out, "x2", dst)
+            out = asm_line(out, "bl __tyrion_app_file_read")
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            return asm_line(out, "bl __tyrion_app_file_close")
+        if primitive_impl == "cache_encode" or primitive_impl == "cache_decode":
+            if len(expr["args"]) != 1:
+                fail("compiler cache codec expects one argument")
+            out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 1, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            return asm_line(out, "bl __tyrion_app_" + primitive_impl)
         if primitive_impl == "ast_builder_create":
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             return asm_line(out, "bl __tyrion_app_ast_builder_create")
         if primitive_impl == "ast_builder_len" or primitive_impl == "ast_builder_append" or primitive_impl == "ast_builder_finish" or primitive_impl == "ast_builder_get" or primitive_impl == "token_builder_count" or primitive_impl == "token_builder_append" or primitive_impl == "token_builder_field":
             arg_count = len(expr["args"])
@@ -1687,10 +2112,10 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             while arg_idx < arg_count:
                 out = emit_runtime_native_direct_expr(out, expr["args"][arg_idx], temp + arg_idx, temp + arg_count, plan, state)
                 arg_idx = arg_idx + 1
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             arg_idx = 0
             while arg_idx < arg_count:
-                out = runtime_native_direct_slot_addr(out, "x" + str(arg_idx + 1), temp + arg_idx)
+                out = runtime_native_direct_slot_addr_v2(out, "x" + str(arg_idx + 1), temp + arg_idx)
                 arg_idx = arg_idx + 1
             return asm_line(out, "bl __tyrion_app_" + primitive_impl)
         if primitive_impl == "run_tool":
@@ -1698,18 +2123,18 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             while arg_idx < 4:
                 out = emit_runtime_native_direct_expr(out, expr["args"][arg_idx], temp + arg_idx, temp + 4, plan, state)
                 arg_idx = arg_idx + 1
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
-            out = runtime_native_direct_slot_addr(out, "x2", temp + 1)
-            out = runtime_native_direct_slot_addr(out, "x3", temp + 2)
-            out = runtime_native_direct_slot_addr(out, "x4", temp + 3)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x3", temp + 2)
+            out = runtime_native_direct_slot_addr_v2(out, "x4", temp + 3)
             return asm_line(out, "bl __tyrion_app_run_tool")
         if primitive_impl == "run_tool_capture":
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 2, plan, state)
             out = emit_runtime_native_direct_expr(out, expr["args"][1], temp + 1, temp + 2, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
-            out = runtime_native_direct_slot_addr(out, "x2", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
             return asm_line(out, "bl __tyrion_app_run_tool_capture")
         if primitive_impl == "host_load":
             if len(expr["args"]) != 1:
@@ -1717,63 +2142,81 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             if expr["args"][0]["kind"] == "string" and len(plan["extensions"]) > 0:
                 extension_id = static_extension_id(plan, expr["args"][0]["value"])
                 extension = plan["extensions"][extension_id]
-                out = runtime_native_direct_slot_addr(out, "x0", dst)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
                 out = asm_line(out, "mov x1, #" + str(extension_id))
                 out = asm_addr(out, state["target"], "x2", state["target"]["symbol_prefix"] + extension["call_symbol"])
                 return asm_line(out, "bl __tyrion_app_host_load_static")
             if plan["dynamic_extension_mode"] != "allowed":
                 fail("non-literal host load requires --ext-dynamic=allowed")
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 1, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
             return asm_line(out, "bl __tyrion_app_host_load")
         if primitive_impl == "host_call":
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 4, plan, state)
             out = emit_runtime_native_direct_expr(out, expr["args"][1], temp + 1, temp + 4, plan, state)
             out = emit_runtime_native_direct_expr(out, expr["args"][2], temp + 2, temp + 4, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
-            out = runtime_native_direct_slot_addr(out, "x2", temp + 1)
-            out = runtime_native_direct_slot_addr(out, "x3", temp + 2)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x3", temp + 2)
             return asm_line(out, "bl __tyrion_app_host_call")
         if primitive_impl == "host_unload":
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 1, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
             return asm_line(out, "bl __tyrion_app_host_unload")
         if primitive_impl == "tcp_connect" or primitive_impl == "tcp_write" or primitive_impl == "tcp_read":
             arg_idx = 0
             while arg_idx < 3:
                 out = emit_runtime_native_direct_expr(out, expr["args"][arg_idx], temp + arg_idx, temp + 3, plan, state)
                 arg_idx = arg_idx + 1
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
-            out = runtime_native_direct_slot_addr(out, "x2", temp + 1)
-            out = runtime_native_direct_slot_addr(out, "x3", temp + 2)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x3", temp + 2)
             return asm_line(out, "bl __tyrion_app_" + primitive_impl)
         if primitive_impl == "tcp_close":
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 1, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
             return asm_line(out, "bl __tyrion_app_tcp_close")
         if primitive_impl == "tls_write" or primitive_impl == "tls_read":
             arg_idx = 0
             while arg_idx < 3:
                 out = emit_runtime_native_direct_expr(out, expr["args"][arg_idx], temp + arg_idx, temp + 3, plan, state)
                 arg_idx = arg_idx + 1
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
-            out = runtime_native_direct_slot_addr(out, "x2", temp + 1)
-            out = runtime_native_direct_slot_addr(out, "x3", temp + 2)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x3", temp + 2)
             return asm_line(out, "bl __tyrion_app_" + primitive_impl)
         if primitive_impl == "ascii_text":
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 1, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
             return asm_line(out, "bl __tyrion_app_ascii_text")
+        if primitive_impl == "input":
+            if len(expr["args"]) == 1:
+                out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 1, plan, state)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            else:
+                out = asm_line(out, "mov x1, #0")
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = asm_line(out, "bl __tyrion_app_input")
+            out = asm_line(out, "cbnz w0, 96f")
+            if state["raise_label"] == "":
+                out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+                out = asm_line(out, "b __tyrion_app_unhandled_exception")
+            else:
+                out = runtime_native_direct_slot_addr_v2(out, "x0", state["exception_slot"])
+                out = runtime_native_direct_slot_addr_v2(out, "x1", dst)
+                out = asm_line(out, "bl __tyrion_app_slot_copy")
+                out = asm_line(out, "b " + state["raise_label"])
+            return asm_label(out, "96")
         if runtime_native_is_class_name(plan, call_name):
             class_plan = runtime_native_class_plan(plan, call_name)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             out = asm_line(out, "mov x1, #" + str(class_plan["id"]))
             out = asm_line(out, "bl __tyrion_app_object_new")
             has_init = False
@@ -1790,28 +2233,28 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
         if call_name == "read_key":
             if len(expr["args"]) != 0:
                 fail("read_key expects no arguments")
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             return asm_line(out, "bl __tyrion_app_terminal_read_key")
         if call_name == "ansi_escape":
             if len(expr["args"]) != 0:
                 fail("ansi_escape expects no arguments")
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             return asm_line(out, "bl __tyrion_app_ansi_escape")
         if call_name == "open":
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 2, plan, state)
             if len(expr["args"]) == 2:
                 out = emit_runtime_native_direct_expr(out, expr["args"][1], temp + 1, temp + 2, plan, state)
             else:
-                out = runtime_native_direct_slot_addr(out, "x13", temp + 1)
+                out = runtime_native_direct_slot_addr_v2(out, "x13", temp + 1)
                 out = asm_addr(out, state["target"], "x9", "__tyrion_app_mode_r")
                 out = asm_line(out, "str x9, [x13]")
                 out = asm_line(out, "mov x9, #1")
                 out = asm_line(out, "str x9, [x13, #8]")
                 out = asm_line(out, "mov w9, #4")
                 out = asm_line(out, "strb w9, " + value_tag_x13)
-            out = runtime_native_direct_slot_addr(out, "x0", temp)
-            out = runtime_native_direct_slot_addr(out, "x1", temp + 1)
-            out = runtime_native_direct_slot_addr(out, "x2", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", dst)
             return asm_line(out, "bl __tyrion_app_file_open")
         if call_name == "len":
             len_arg = expr["args"][0]
@@ -1819,11 +2262,11 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
                 out = runtime_native_direct_var_addr(out, "x1", len_arg, plan, state)
             else:
                 out = emit_runtime_native_direct_expr(out, len_arg, temp, temp + 1, plan, state)
-                out = runtime_native_direct_slot_addr(out, "x1", temp)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
             # Nested argument evaluation may call runtime helpers and clobber
             # x0. Materialize the result pointer only after the argument is
             # fully evaluated.
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             return asm_line(out, "bl __tyrion_app_len")
         if call_name == "range":
             arg_count = len(expr["args"])
@@ -1831,8 +2274,8 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             while arg_idx < arg_count:
                 out = emit_runtime_native_direct_expr(out, expr["args"][arg_idx], temp + arg_idx, temp + arg_count, plan, state)
                 arg_idx = arg_idx + 1
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
             out = asm_line(out, "mov x2, #" + str(arg_count))
             return asm_line(out, "bl __tyrion_app_range_full")
         if call_name == "enumerate":
@@ -1844,19 +2287,19 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
                     arg = arg["value"]
                 out = emit_runtime_native_direct_expr(out, arg, temp + arg_idx, temp + arg_count, plan, state)
                 arg_idx = arg_idx + 1
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
             out = asm_line(out, "mov x2, #" + str(arg_count))
             return asm_line(out, "bl __tyrion_app_enumerate")
         if call_name == "bool":
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 1, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
             out = asm_line(out, "bl __tyrion_app_truthy")
             out = asm_line(out, "mov x22, x0")
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             out = asm_line(out, "bl __tyrion_app_slot_release")
             out = asm_line(out, "mov x9, x22")
-            out = runtime_native_direct_slot_addr(out, "x13", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
             out = asm_line(out, "str x9, [x13]")
             out = asm_line(out, "mov w9, #3")
             return asm_line(out, "strb w9, " + value_tag_x13)
@@ -1864,31 +2307,66 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             out = asm_line(out, "mov x0, #0")
             out = asm_line(out, "bl " + asm_call_name(state["target"], "time"))
             out = asm_line(out, "mov x22, x0")
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
             out = asm_line(out, "bl __tyrion_app_slot_release")
             out = asm_line(out, "mov x9, x22")
-            out = runtime_native_direct_slot_addr(out, "x13", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
             out = asm_line(out, "scvtf d0, x9")
             out = asm_line(out, "str d0, [x13]")
             out = asm_line(out, "mov w9, #19")
             return asm_line(out, "strb w9, " + value_tag_x13)
         if call_name == "sum" or call_name == "min" or call_name == "max" or call_name == "any" or call_name == "all" or call_name == "zip":
-            arg_count = len(expr["args"])
+            builtin_args = []
+            strict_expr = {"kind": "bool", "value": False, "items": []}
+            arg_idx = 0
+            while arg_idx < len(expr["args"]):
+                candidate = expr["args"][arg_idx]
+                if candidate["kind"] == "kwarg":
+                    if call_name != "zip" or candidate["name"] != "strict":
+                        fail("runtime-native unsupported builtin keyword: " + call_name + "." + candidate["name"])
+                    strict_expr = candidate["value"]
+                else:
+                    builtin_args = method_append(builtin_args, candidate)
+                arg_idx = arg_idx + 1
+            arg_count = len(builtin_args)
             arg_idx = 0
             while arg_idx < arg_count:
-                arg = expr["args"][arg_idx]
-                if arg["kind"] == "kwarg":
-                    arg = arg["value"]
+                arg = builtin_args[arg_idx]
                 out = emit_runtime_native_direct_expr(out, arg, temp + arg_idx, temp + arg_count + 1, plan, state)
                 arg_idx = arg_idx + 1
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
+            strict_slot = temp + arg_count
+            zip_exception_slot = temp + arg_count + 1
+            if call_name == "zip":
+                out = emit_runtime_native_direct_expr(out, strict_expr, strict_slot, temp + arg_count + 2, plan, state)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", zip_exception_slot)
+                out = asm_line(out, "bl __tyrion_app_slot_release")
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
             out = asm_line(out, "mov x2, #" + str(arg_count))
+            if call_name == "zip":
+                out = runtime_native_direct_slot_addr_v2(out, "x3", strict_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x4", zip_exception_slot)
+                out = asm_line(out, "bl __tyrion_app_builtin_zip")
+                out = runtime_native_direct_slot_addr_v2(out, "x9", zip_exception_slot)
+                out = asm_line(out, "ldrb w10, " + generated_value_tag_mem("x9"))
+                out = asm_line(out, "cbz w10, 96f")
+                if state["raise_label"] == "":
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", zip_exception_slot)
+                    out = asm_line(out, "b __tyrion_app_unhandled_exception")
+                else:
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", state["exception_slot"])
+                    out = runtime_native_direct_slot_addr_v2(out, "x1", zip_exception_slot)
+                    out = asm_line(out, "bl __tyrion_app_slot_copy")
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", zip_exception_slot)
+                    out = asm_line(out, "bl __tyrion_app_slot_release")
+                    out = asm_line(out, "b " + state["raise_label"])
+                out = asm_label(out, "96")
+                return out
             return asm_line(out, "bl __tyrion_app_builtin_" + call_name)
         if call_name == "sorted":
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 2, plan, state)
             sorted_exception_slot = temp + 1
-            out = runtime_native_direct_slot_addr(out, "x0", sorted_exception_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", sorted_exception_slot)
             out = asm_line(out, "bl __tyrion_app_slot_release")
             callback_name = ""
             if len(expr["args"]) == 2:
@@ -1903,26 +2381,26 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
                     callback_name = key_arg["value"]
                 elif key_arg["kind"] != "none":
                     fail("runtime-native sorted key must be callable")
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
             out = asm_line(out, "mov x2, #" + str(len(expr["args"])))
             if callback_name == "":
                 out = asm_line(out, "mov x3, #0")
             else:
                 callback_plan = runtime_native_direct_function_plan(plan, callback_name)
                 out = asm_addr(out, state["target"], "x3", callback_plan["label"])
-            out = runtime_native_direct_slot_addr(out, "x4", sorted_exception_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x4", sorted_exception_slot)
             out = asm_line(out, "bl __tyrion_app_builtin_sorted")
-            out = runtime_native_direct_slot_addr(out, "x9", sorted_exception_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x9", sorted_exception_slot)
             out = asm_line(out, "ldrb w10, " + generated_value_tag_mem("x9"))
             out = asm_line(out, "cbz w10, 96f")
             if state["raise_label"] == "":
                 out = asm_line(out, "b __tyrion_app_unhandled_exception")
             else:
-                out = runtime_native_direct_slot_addr(out, "x0", state["exception_slot"])
-                out = runtime_native_direct_slot_addr(out, "x1", sorted_exception_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", state["exception_slot"])
+                out = runtime_native_direct_slot_addr_v2(out, "x1", sorted_exception_slot)
                 out = asm_line(out, "bl __tyrion_app_slot_copy")
-                out = runtime_native_direct_slot_addr(out, "x0", sorted_exception_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", sorted_exception_slot)
                 out = asm_line(out, "bl __tyrion_app_slot_release")
                 out = asm_line(out, "b " + state["raise_label"])
             return asm_label(out, "96")
@@ -1930,8 +2408,8 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             if len(expr["args"]) != 1:
                 fail(call_name + " expects one argument")
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp, temp + 1, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
             if call_name == "int":
                 return asm_line(out, "bl __tyrion_app_int")
             if call_name == "float":
@@ -1939,11 +2417,174 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             if call_name == "str":
                 return asm_line(out, "bl __tyrion_app_str")
             fail("unreachable runtime-native direct conversion")
+        if call_name == "dict":
+            rewritten = native_direct_rewrite_dict_constructor(expr)
+            return emit_runtime_native_direct_expr(out, rewritten, dst, temp, plan, state)
         fn_plan = runtime_native_direct_function_plan(plan, call_name)
         call_context = {"receiver_slot": -1, "dst": dst, "temp": temp, "plan": plan, "state": state}
         return emit_runtime_native_direct_call_plan(out, fn_plan, expr["args"], call_context)
     if kind == "method_call":
         name = expr["name"]
+        if name == "index":
+            helper_args = [expr["receiver"]]
+            helper_idx = 0
+            while helper_idx < len(expr["args"]):
+                helper_arg = expr["args"][helper_idx]
+                if helper_arg["kind"] == "kwarg":
+                    helper_arg = helper_arg["value"]
+                helper_args = method_append(helper_args, helper_arg)
+                helper_idx = helper_idx + 1
+            helper = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_list_index"}, "args": helper_args}
+            return emit_runtime_native_direct_expr(out, helper, dst, temp, plan, state)
+        if name == "reverse":
+            if expr["receiver"]["kind"] == "var":
+                receiver_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["value"])
+                out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", receiver_slot)
+                out = asm_line(out, "bl __tyrion_app_list_reverse")
+                out = asm_line(out, "cbz w0, __tyrion_app_object_fail")
+                out = runtime_native_direct_slot_addr_v2(out, "x0", receiver_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+                out = asm_line(out, "bl __tyrion_app_slot_copy")
+                out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+                return asm_line(out, "bl __tyrion_app_slot_release")
+            fail("runtime-native direct reverse requires a list variable receiver")
+        if name == "sort":
+            if expr["receiver"]["kind"] != "var":
+                fail("runtime-native direct sort requires a list variable receiver")
+            key_expr = none
+            reverse_expr = {"kind": "bool", "value": False, "items": []}
+            has_key = False
+            helper_idx = 0
+            while helper_idx < len(expr["args"]):
+                helper_arg = expr["args"][helper_idx]
+                if helper_arg["kind"] == "kwarg":
+                    if helper_arg["name"] == "key":
+                        key_expr = helper_arg["value"]
+                        has_key = True
+                    elif helper_arg["name"] == "reverse":
+                        reverse_expr = helper_arg["value"]
+                elif helper_arg["kind"] == "lambda" or helper_arg["kind"] == "var":
+                    key_expr = helper_arg
+                    has_key = True
+                else:
+                    reverse_expr = helper_arg
+                helper_idx = helper_idx + 1
+            if has_key:
+                sorted_expr = {"kind": "call", "callee": {"kind": "var", "value": "sorted"}, "args": [expr["receiver"], key_expr]}
+                out = emit_runtime_native_direct_expr(out, sorted_expr, temp, temp + len(expr["args"]) + 3, plan, state)
+                if reverse_expr["kind"] == "bool" and reverse_expr["value"]:
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 1)
+                    out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+                    out = asm_line(out, "bl __tyrion_app_list_reverse")
+                    out = asm_line(out, "cbz w0, __tyrion_app_object_fail")
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
+                    out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 1)
+                    out = asm_line(out, "bl __tyrion_app_slot_copy")
+            else:
+                helper_args = [expr["receiver"], reverse_expr]
+                helper = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_list_sort_plain"}, "args": helper_args}
+                out = emit_runtime_native_direct_expr(out, helper, temp, temp + len(expr["args"]) + 2, plan, state)
+            receiver_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["value"])
+            out = runtime_native_direct_slot_addr_v2(out, "x0", receiver_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            out = asm_line(out, "bl __tyrion_app_slot_copy")
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            return asm_line(out, "bl __tyrion_app_slot_release")
+        if name == "join" or name == "replace" or name == "lower" or name == "upper" or name == "find" or name == "count" or name == "removeprefix" or name == "removesuffix" or name == "partition" or name == "rpartition" or name == "lstrip" or name == "rstrip" or name == "strip" or name == "split" or name == "rsplit" or name == "splitlines":
+            helper_args = [expr["receiver"]]
+            helper_idx = 0
+            while helper_idx < len(expr["args"]):
+                helper_args = method_append(helper_args, expr["args"][helper_idx])
+                helper_idx = helper_idx + 1
+            helper = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_" + name}, "args": helper_args}
+            return emit_runtime_native_direct_expr(out, helper, dst, temp, plan, state)
+        if name == "setdefault" and expr["receiver"]["kind"] == "var":
+            helper_args = [expr["receiver"]]
+            for helper_arg in expr["args"]:
+                helper_args.append(helper_arg)
+            if len(helper_args) == 2:
+                helper_args.append({"kind": "none", "value": none, "items": []})
+            helper = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_dict_setdefault_pair"}, "args": helper_args}
+            pair_slot = temp
+            out = emit_runtime_native_direct_expr(out, helper, pair_slot, temp + 5, plan, state)
+            out = emit_runtime_native_direct_expr(out, {"kind": "int", "value": 0, "items": []}, temp + 1, temp + 5, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", pair_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            out = asm_line(out, "bl __tyrion_app_index")
+            receiver_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["value"])
+            out = emit_runtime_native_direct_expr(out, {"kind": "int", "value": 1, "items": []}, temp + 1, temp + 5, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", receiver_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", pair_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            return asm_line(out, "bl __tyrion_app_index")
+        if name == "popitem" and expr["receiver"]["kind"] == "var":
+            helper = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_dict_popitem_pair"}, "args": [expr["receiver"]]}
+            pair_slot = temp
+            out = emit_runtime_native_direct_expr(out, helper, pair_slot, temp + 5, plan, state)
+            out = emit_runtime_native_direct_expr(out, {"kind": "int", "value": 0, "items": []}, temp + 1, temp + 5, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", pair_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            out = asm_line(out, "bl __tyrion_app_index")
+            receiver_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["value"])
+            out = emit_runtime_native_direct_expr(out, {"kind": "int", "value": 1, "items": []}, temp + 1, temp + 5, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", receiver_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", pair_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            return asm_line(out, "bl __tyrion_app_index")
+        if name == "pop":
+            if expr["receiver"]["kind"] == "var" and len(expr["args"]) >= 1:
+                helper_args = [expr["receiver"], expr["args"][0]]
+                if len(expr["args"]) == 2:
+                    helper_args.append(expr["args"][1])
+                    helper_args.append({"kind": "bool", "value": True, "items": []})
+                else:
+                    helper_args.append({"kind": "none", "value": none, "items": []})
+                    helper_args.append({"kind": "bool", "value": False, "items": []})
+                helper = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_dict_pop_rebuild"}, "args": helper_args}
+                tuple_slot = temp
+                out = emit_runtime_native_direct_expr(out, helper, tuple_slot, temp + 5, plan, state)
+                out = emit_runtime_native_direct_expr(out, {"kind": "int", "value": 0, "items": []}, temp + 1, temp + 5, plan, state)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", tuple_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+                out = asm_line(out, "bl __tyrion_app_index")
+                receiver_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["value"])
+                out = emit_runtime_native_direct_expr(out, {"kind": "int", "value": 1, "items": []}, temp + 1, temp + 5, plan, state)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", receiver_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", tuple_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+                return asm_line(out, "bl __tyrion_app_index")
+            if expr["receiver"]["kind"] == "var":
+                receiver_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["value"])
+            else:
+                receiver_slot = temp
+                out = emit_runtime_native_direct_expr(out, expr["receiver"], receiver_slot, temp + 2, plan, state)
+            if len(expr["args"]) == 1:
+                out = emit_runtime_native_direct_expr(out, expr["args"][0], temp + 1, temp + 3, plan, state)
+                out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            else:
+                out = asm_line(out, "mov x2, #0")
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", receiver_slot)
+            out = asm_line(out, "bl __tyrion_app_pop")
+            out = asm_line(out, "cbz w0, __tyrion_app_object_fail")
+            return out
+        if name == "extend":
+            if expr["receiver"]["kind"] == "var":
+                receiver_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["value"])
+            else:
+                receiver_slot = temp
+                out = emit_runtime_native_direct_expr(out, expr["receiver"], receiver_slot, temp + 2, plan, state)
+            out = emit_runtime_native_direct_expr(out, expr["args"][0], temp + 1, temp + 3, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", receiver_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            out = asm_line(out, "bl __tyrion_app_list_extend")
+            out = asm_line(out, "cbz w0, __tyrion_app_object_fail")
+            return out
         object_classes = runtime_native_direct_classes_with_method(plan, name)
         if len(object_classes) > 0:
             # Numeric local labels may be repeated by the assembler and bind to
@@ -1952,7 +2593,7 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             done_label = "99f"
             fail_label = "98f"
             out = emit_runtime_native_direct_expr(out, expr["receiver"], temp, temp + len(expr["args"]) + 4, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x9", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x9", temp)
             out = asm_line(out, "ldrb w10, " + generated_value_tag_mem("x9"))
             out = asm_line(out, "cmp w10, #6")
             out = asm_line(out, "b.ne " + fail_label)
@@ -1973,27 +2614,94 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             out = asm_label(out, "98")
             out = asm_line(out, "b __tyrion_app_object_fail")
             return asm_label(out, "99")
+        if name == "insert":
+            if expr["receiver"]["kind"] == "var":
+                receiver_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["value"])
+                out = emit_runtime_native_direct_expr(out, expr["args"][0], temp + 1, temp + 3, plan, state)
+                out = emit_runtime_native_direct_expr(out, expr["args"][1], temp + 2, temp + 4, plan, state)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 3)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", receiver_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+                out = runtime_native_direct_slot_addr_v2(out, "x3", temp + 2)
+                out = asm_line(out, "bl __tyrion_app_list_insert")
+                out = asm_line(out, "cbz w0, __tyrion_app_object_fail")
+                out = runtime_native_direct_slot_addr_v2(out, "x0", receiver_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 3)
+                out = asm_line(out, "bl __tyrion_app_slot_copy")
+                out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", receiver_slot)
+                return asm_line(out, "bl __tyrion_app_slot_copy")
+            out = emit_runtime_native_direct_expr(out, expr["receiver"], temp, temp + 4, plan, state)
+            out = emit_runtime_native_direct_expr(out, expr["args"][0], temp + 1, temp + 4, plan, state)
+            out = emit_runtime_native_direct_expr(out, expr["args"][1], temp + 2, temp + 4, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 3)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x3", temp + 2)
+            out = asm_line(out, "bl __tyrion_app_list_insert")
+            out = asm_line(out, "cbz w0, __tyrion_app_object_fail")
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 3)
+            return asm_line(out, "bl __tyrion_app_slot_copy")
+        if name == "copy":
+            if expr["receiver"]["kind"] == "var":
+                receiver_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["value"])
+            else:
+                receiver_slot = temp
+                out = emit_runtime_native_direct_expr(out, expr["receiver"], receiver_slot, temp + 2, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", receiver_slot)
+            out = asm_line(out, "bl __tyrion_app_copy")
+            out = asm_line(out, "cbz w0, __tyrion_app_object_fail")
+            return out
+        if name == "clear" and expr["receiver"]["kind"] == "var":
+            helper = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_dict_clear_pair"}, "args": [expr["receiver"]]}
+            pair_slot = temp
+            out = emit_runtime_native_direct_expr(out, helper, pair_slot, temp + 5, plan, state)
+            out = emit_runtime_native_direct_expr(out, {"kind": "int", "value": 0, "items": []}, temp + 1, temp + 5, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", pair_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            out = asm_line(out, "bl __tyrion_app_index")
+            receiver_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["value"])
+            out = emit_runtime_native_direct_expr(out, {"kind": "int", "value": 1, "items": []}, temp + 1, temp + 5, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", receiver_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", pair_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            return asm_line(out, "bl __tyrion_app_index")
+        if name == "clear":
+            if expr["receiver"]["kind"] == "var":
+                receiver_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["value"])
+            else:
+                receiver_slot = temp
+                out = emit_runtime_native_direct_expr(out, expr["receiver"], receiver_slot, temp + 2, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", receiver_slot)
+            out = asm_line(out, "mov x1, #0")
+            out = asm_line(out, "bl __tyrion_app_list_new")
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = asm_line(out, "bl __tyrion_app_slot_release")
+            return out
         if name == "append" or name == "remove" or name == "add":
             if expr["receiver"]["kind"] == "var":
                 receiver_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["value"])
                 out = emit_runtime_native_direct_expr(out, expr["args"][0], temp + 1, temp + 3, plan, state)
                 if name == "append":
-                    out = runtime_native_direct_slot_addr(out, "x0", receiver_slot)
-                    out = runtime_native_direct_slot_addr(out, "x1", temp + 1)
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", receiver_slot)
+                    out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 1)
                     out = asm_line(out, "bl __tyrion_app_list_append")
                 else:
-                    out = runtime_native_direct_slot_addr(out, "x0", temp + 2)
-                    out = runtime_native_direct_slot_addr(out, "x1", receiver_slot)
-                    out = runtime_native_direct_slot_addr(out, "x2", temp + 1)
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 2)
+                    out = runtime_native_direct_slot_addr_v2(out, "x1", receiver_slot)
+                    out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
                     if name == "remove":
                         out = asm_line(out, "bl __tyrion_app_list_removed")
                     else:
                         out = asm_line(out, "bl __tyrion_app_set_added")
-                    out = runtime_native_direct_slot_addr(out, "x0", receiver_slot)
-                    out = runtime_native_direct_slot_addr(out, "x1", temp + 2)
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", receiver_slot)
+                    out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 2)
                     out = asm_line(out, "bl __tyrion_app_slot_copy")
-                out = runtime_native_direct_slot_addr(out, "x0", dst)
-                out = runtime_native_direct_slot_addr(out, "x1", receiver_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", receiver_slot)
                 return asm_line(out, "bl __tyrion_app_slot_copy")
             if expr["receiver"]["kind"] == "index" and expr["receiver"]["receiver"]["kind"] == "var":
                 # Mutating an indexed collection must write the detached value
@@ -2001,67 +2709,116 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
                 # expression only mutates a temporary after copy-on-write.
                 owner_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["receiver"]["value"])
                 out = emit_runtime_native_direct_expr(out, expr["receiver"]["index"], temp, temp + 4, plan, state)
-                out = runtime_native_direct_slot_addr(out, "x0", temp + 1)
-                out = runtime_native_direct_slot_addr(out, "x1", owner_slot)
-                out = runtime_native_direct_slot_addr(out, "x2", temp)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 1)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", owner_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x2", temp)
                 out = asm_line(out, "bl __tyrion_app_index")
                 out = emit_runtime_native_direct_expr(out, expr["args"][0], temp + 2, temp + 4, plan, state)
                 if name == "append":
-                    out = runtime_native_direct_slot_addr(out, "x0", temp + 1)
-                    out = runtime_native_direct_slot_addr(out, "x1", temp + 2)
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 1)
+                    out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 2)
                     out = asm_line(out, "bl __tyrion_app_list_append")
                 else:
-                    out = runtime_native_direct_slot_addr(out, "x0", temp + 3)
-                    out = runtime_native_direct_slot_addr(out, "x1", temp + 1)
-                    out = runtime_native_direct_slot_addr(out, "x2", temp + 2)
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 3)
+                    out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 1)
+                    out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 2)
                     if name == "remove":
                         out = asm_line(out, "bl __tyrion_app_list_removed")
                     else:
                         out = asm_line(out, "bl __tyrion_app_set_added")
-                    out = runtime_native_direct_slot_addr(out, "x0", temp + 1)
-                    out = runtime_native_direct_slot_addr(out, "x1", temp + 3)
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 1)
+                    out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 3)
                     out = asm_line(out, "bl __tyrion_app_slot_copy")
-                out = runtime_native_direct_slot_addr(out, "x0", owner_slot)
-                out = runtime_native_direct_slot_addr(out, "x1", temp)
-                out = runtime_native_direct_slot_addr(out, "x2", temp + 1)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", owner_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+                out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
                 out = asm_line(out, "bl __tyrion_app_set_index")
-                out = runtime_native_direct_slot_addr(out, "x0", dst)
-                out = runtime_native_direct_slot_addr(out, "x1", temp + 1)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 1)
                 return asm_line(out, "bl __tyrion_app_slot_copy")
             out = emit_runtime_native_direct_expr(out, expr["receiver"], temp, temp + 3, plan, state)
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp + 1, temp + 3, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", temp + 2)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
-            out = runtime_native_direct_slot_addr(out, "x2", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 2)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
             if name == "append":
                 out = asm_line(out, "bl __tyrion_app_list_appended")
             elif name == "remove":
                 out = asm_line(out, "bl __tyrion_app_list_removed")
             else:
                 out = asm_line(out, "bl __tyrion_app_set_added")
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp + 2)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 2)
             return asm_line(out, "bl __tyrion_app_slot_copy")
         if name == "keys" or name == "items":
             out = emit_runtime_native_direct_expr(out, expr["receiver"], temp, temp + 1, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
             if name == "keys":
                 return asm_line(out, "bl __tyrion_app_dict_keys")
             return asm_line(out, "bl __tyrion_app_dict_items")
-        if name == "strip":
+        if name == "values":
             out = emit_runtime_native_direct_expr(out, expr["receiver"], temp, temp + 1, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
-            return asm_line(out, "bl __tyrion_app_string_strip")
-        if name == "split" or name == "startswith" or name == "endswith":
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            return asm_line(out, "bl __tyrion_app_dict_values")
+        if name == "update":
+            out = emit_runtime_native_direct_expr(out, expr["receiver"], temp, temp + 4, plan, state)
+            positional = none
+            for argument in expr["args"]:
+                if argument["kind"] != "kwarg":
+                    positional = argument
+            if positional != none:
+                if positional["kind"] == "dict":
+                    for entry in positional["entries"]:
+                        out = emit_runtime_native_direct_expr(out, entry["key"], temp + 1, temp + 4, plan, state)
+                        out = emit_runtime_native_direct_expr(out, entry["value"], temp + 2, temp + 4, plan, state)
+                        out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
+                        out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 1)
+                        out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 2)
+                        out = asm_line(out, "bl __tyrion_app_dict_set")
+                else:
+                    out = emit_runtime_native_direct_expr(out, positional, temp + 1, temp + 4, plan, state)
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
+                    out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 1)
+                    out = asm_line(out, "bl __tyrion_app_dict_update")
+            for argument in expr["args"]:
+                if argument["kind"] == "kwarg":
+                    key_expr = {"kind": "string", "value": argument["name"]}
+                    out = emit_runtime_native_direct_expr(out, key_expr, temp + 1, temp + 4, plan, state)
+                    out = emit_runtime_native_direct_expr(out, argument["value"], temp + 2, temp + 4, plan, state)
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
+                    out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 1)
+                    out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 2)
+                    out = asm_line(out, "bl __tyrion_app_dict_set")
+            if expr["receiver"]["kind"] == "var":
+                receiver_slot = runtime_native_direct_local_index(state["frame"], expr["receiver"]["value"])
+                out = runtime_native_direct_slot_addr_v2(out, "x0", receiver_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+                out = asm_line(out, "bl __tyrion_app_slot_copy")
+            return emit_runtime_native_direct_expr(out, {"kind": "none"}, dst, temp + 4, plan, state)
+        if name == "get":
+            if len(expr["args"]) < 1:
+                fail("runtime-native direct get requires a key")
             out = emit_runtime_native_direct_expr(out, expr["receiver"], temp, temp + 2, plan, state)
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp + 1, temp + 2, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", dst)
-            out = runtime_native_direct_slot_addr(out, "x1", temp)
-            out = runtime_native_direct_slot_addr(out, "x2", temp + 1)
-            if name == "split":
-                return asm_line(out, "bl __tyrion_app_string_split")
+            if len(expr["args"]) > 1:
+                out = emit_runtime_native_direct_expr(out, expr["args"][1], temp + 2, temp + 3, plan, state)
+                out = runtime_native_direct_slot_addr_v2(out, "x3", temp + 2)
+            else:
+                out = asm_line(out, "mov x3, #0")
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
+            if len(expr["args"]) > 1:
+                out = runtime_native_direct_slot_addr_v2(out, "x3", temp + 2)
+            return asm_line(out, "bl __tyrion_app_dict_get")
+        if name == "startswith" or name == "endswith":
+            out = emit_runtime_native_direct_expr(out, expr["receiver"], temp, temp + 2, plan, state)
+            out = emit_runtime_native_direct_expr(out, expr["args"][0], temp + 1, temp + 2, plan, state)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 1)
             if name == "startswith":
                 return asm_line(out, "bl __tyrion_app_string_startswith")
             return asm_line(out, "bl __tyrion_app_string_endswith")
@@ -2070,53 +2827,139 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
             out = asm_line(out, "mov x1, #-1")
             if len(expr["args"]) == 1:
                 out = emit_runtime_native_direct_expr(out, expr["args"][0], temp + 1, temp + 3, plan, state)
-                out = runtime_native_direct_slot_addr(out, "x9", temp + 1)
+                out = runtime_native_direct_slot_addr_v2(out, "x9", temp + 1)
                 out = asm_line(out, "ldr x1, [x9]")
-            out = runtime_native_direct_slot_addr(out, "x0", temp)
-            out = runtime_native_direct_slot_addr(out, "x2", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", dst)
             return asm_line(out, "bl __tyrion_app_file_read")
         if name == "write":
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp + 1, temp + 3, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", temp)
-            out = runtime_native_direct_slot_addr(out, "x1", temp + 1)
-            out = runtime_native_direct_slot_addr(out, "x2", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", dst)
             return asm_line(out, "bl __tyrion_app_file_write")
         if name == "flush":
-            out = runtime_native_direct_slot_addr(out, "x0", temp)
-            out = runtime_native_direct_slot_addr(out, "x1", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", dst)
             return asm_line(out, "bl __tyrion_app_file_flush")
         if name == "seek":
             out = emit_runtime_native_direct_expr(out, expr["args"][0], temp + 1, temp + 4, plan, state)
             out = emit_runtime_native_direct_expr(out, expr["args"][1], temp + 2, temp + 4, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", temp)
-            out = runtime_native_direct_slot_addr(out, "x1", temp + 1)
-            out = runtime_native_direct_slot_addr(out, "x2", temp + 2)
-            out = runtime_native_direct_slot_addr(out, "x3", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 2)
+            out = runtime_native_direct_slot_addr_v2(out, "x3", dst)
             return asm_line(out, "bl __tyrion_app_file_seek")
         if name == "close":
-            out = runtime_native_direct_slot_addr(out, "x0", temp)
-            out = runtime_native_direct_slot_addr(out, "x1", dst)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", dst)
             return asm_line(out, "bl __tyrion_app_file_close")
         fail("unsupported runtime-native direct method: " + name)
     fail("unsupported runtime-native direct expression: " + kind)
 
 def emit_runtime_native_direct_print(out, expr, temp, plan, state):
-    arg_count = len(expr["args"])
+    positional = []
+    separator_expr = {"kind": "none"}
+    ending_expr = {"kind": "none"}
+    file_expr = {"kind": "none"}
+    flush_requested = False
+    idx = 0
+    while idx < len(expr["args"]):
+        arg = expr["args"][idx]
+        if arg["kind"] == "kwarg":
+            if arg["name"] == "sep":
+                separator_expr = arg["value"]
+            elif arg["name"] == "end":
+                ending_expr = arg["value"]
+            elif arg["name"] == "file":
+                file_expr = arg["value"]
+            elif arg["name"] == "flush":
+                if arg["value"]["kind"] == "bool":
+                    flush_requested = arg["value"]["value"]
+                elif arg["value"]["kind"] != "none":
+                    fail("runtime-native direct print flush must be a boolean or None")
+            else:
+                fail("runtime-native direct print unknown keyword: " + arg["name"])
+        else:
+            positional = method_append(positional, arg)
+        idx = idx + 1
+    arg_count = len(positional)
+    separator_slot = temp + arg_count
+    ending_slot = temp + arg_count + 1
     idx = 0
     while idx < arg_count:
-        out = emit_runtime_native_direct_expr(out, expr["args"][idx], temp + idx, temp + arg_count, plan, state)
+        out = emit_runtime_native_direct_expr(out, positional[idx], temp + idx, ending_slot + 1, plan, state)
         idx = idx + 1
+    separator_dynamic = separator_expr["kind"] == "string"
+    ending_dynamic = ending_expr["kind"] == "string"
+    if separator_expr["kind"] != "none" and not separator_dynamic:
+        fail("runtime-native direct print sep must be None or a string literal")
+    if ending_expr["kind"] != "none" and not ending_dynamic:
+        fail("runtime-native direct print end must be None or a string literal")
+
+    # File targets use the same canonical stringification path as `str()` and
+    # the existing file-write runtime. `file_write` flushes the stream after
+    # each write, so `flush=True` is naturally satisfied for redirected output.
+    if file_expr["kind"] != "none":
+        file_slot = temp + arg_count + 2
+        output_base = file_slot + 1
+        out = emit_runtime_native_direct_expr(out, file_expr, file_slot, output_base + arg_count + 4, plan, state)
+        output_exprs = []
+        idx = 0
+        while idx < arg_count:
+            if idx > 0:
+                if separator_dynamic:
+                    output_exprs = method_append(output_exprs, separator_expr)
+                else:
+                    output_exprs = method_append(output_exprs, {"kind": "string", "value": " ", "items": []})
+            output_exprs = method_append(output_exprs, positional[idx])
+            idx = idx + 1
+        if ending_dynamic:
+            output_exprs = method_append(output_exprs, ending_expr)
+        else:
+            output_exprs = method_append(output_exprs, {"kind": "string", "value": "\n", "items": []})
+        idx = 0
+        while idx < len(output_exprs):
+            text_slot = output_base + idx
+            out = emit_runtime_native_direct_expr(out, {"kind": "call", "callee": {"kind": "var", "value": "str"}, "args": [output_exprs[idx]]}, text_slot, output_base + len(output_exprs) + 2, plan, state)
+            result_slot = output_base + len(output_exprs) + 1
+            out = runtime_native_direct_slot_addr_v2(out, "x0", file_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", text_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", result_slot)
+            out = asm_line(out, "bl __tyrion_app_file_write")
+            idx = idx + 1
+        if flush_requested:
+            flush_slot = output_base + len(output_exprs) + 2
+            out = runtime_native_direct_slot_addr_v2(out, "x0", file_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", flush_slot)
+            out = asm_line(out, "bl __tyrion_app_file_flush")
+        return out
+
+    if separator_dynamic:
+        out = emit_runtime_native_direct_expr(out, separator_expr, separator_slot, ending_slot + 1, plan, state)
+    if ending_dynamic:
+        out = emit_runtime_native_direct_expr(out, ending_expr, ending_slot, ending_slot + 1, plan, state)
     idx = 0
     while idx < arg_count:
         if idx > 0:
-            out = asm_addr(out, state["target"], "x0", "__tyrion_app_space")
-            out = asm_line(out, "mov x1, #1")
+            if separator_dynamic:
+                out = runtime_native_direct_slot_addr_v2(out, "x9", separator_slot)
+                out = asm_line(out, "ldr x0, [x9]")
+                out = asm_line(out, "ldr x1, [x9, #8]")
+            else:
+                out = asm_addr(out, state["target"], "x0", "__tyrion_app_space")
+                out = asm_line(out, "mov x1, #1")
             out = asm_line(out, "bl __tyrion_app_write")
-        out = runtime_native_direct_slot_addr(out, "x0", temp + idx)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", temp + idx)
         out = asm_line(out, "bl __tyrion_app_print_value")
         idx = idx + 1
-    out = asm_addr(out, state["target"], "x0", "__tyrion_app_newline")
-    out = asm_line(out, "mov x1, #1")
+    if ending_dynamic:
+        out = runtime_native_direct_slot_addr_v2(out, "x9", ending_slot)
+        out = asm_line(out, "ldr x0, [x9]")
+        out = asm_line(out, "ldr x1, [x9, #8]")
+    else:
+        out = asm_addr(out, state["target"], "x0", "__tyrion_app_newline")
+        out = asm_line(out, "mov x1, #1")
     return asm_line(out, "bl __tyrion_app_write")
 
 def emit_runtime_native_direct_statements(out, items, plan, state, path):
@@ -2165,7 +3008,7 @@ def runtime_native_direct_yield_id(paths, path):
     fail("runtime-native generator yield path not found: " + path)
 
 def emit_runtime_native_direct_control_value(out, slot, kind):
-    out = runtime_native_direct_slot_addr(out, "x13", slot)
+    out = runtime_native_direct_slot_addr_v2(out, "x13", slot)
     out = asm_line(out, "mov x9, #" + str(kind))
     out = asm_line(out, "str x9, [x13]")
     out = asm_line(out, "mov w9, #2")
@@ -2182,13 +3025,85 @@ def emit_runtime_native_direct_control_forward(out, state, kind, target_label):
         return asm_line(out, "b " + state["finally_label"])
     return asm_line(out, "b " + target_label)
 
+def runtime_native_direct_range_descriptor(state, name):
+    index = 0
+    while index < len(state["range_names"]):
+        if state["range_names"][index] == name:
+            return state["range_descriptors"][index]
+        index = index + 1
+    return none
+
+def runtime_native_direct_literal_int(expression):
+    if expression["kind"] == "int":
+        return {"ok": True, "value": expression["value"]}
+    if expression["kind"] == "unary" and expression["op"] == "-" and expression["value"]["kind"] == "int":
+        return {"ok": True, "value": 0 - expression["value"]["value"]}
+    if expression["kind"] == "binary" and expression["op"] == "-" and expression["left"]["kind"] == "int" and expression["right"]["kind"] == "int" and expression["left"]["value"] == 0:
+        return {"ok": True, "value": 0 - expression["right"]["value"]}
+    return {"ok": False, "value": 0}
+
+def runtime_native_direct_record_range(state, name, expression):
+    if expression["kind"] != "call" or expression["callee"]["kind"] != "var" or expression["callee"]["value"] != "range":
+        return state
+    args = expression["args"]
+    if len(args) < 1 or len(args) > 3:
+        return state
+    values = []
+    index = 0
+    while index < len(args):
+        literal = runtime_native_direct_literal_int(args[index])
+        if not literal["ok"]:
+            return state
+        values = method_append(values, literal["value"])
+        index = index + 1
+    if len(values) == 1:
+        descriptor = [0, values[0], 1]
+    elif len(values) == 2:
+        descriptor = [values[0], values[1], 1]
+    else:
+        descriptor = [values[0], values[1], values[2]]
+    index = 0
+    while index < len(state["range_names"]):
+        if state["range_names"][index] == name:
+            replacement = []
+            replacement_index = 0
+            while replacement_index < len(state["range_descriptors"]):
+                if replacement_index == index:
+                    replacement.append(descriptor)
+                else:
+                    replacement.append(state["range_descriptors"][replacement_index])
+                replacement_index = replacement_index + 1
+            state["range_descriptors"] = replacement
+            return state
+        index = index + 1
+    state["range_names"] = method_append(state["range_names"], name)
+    state["range_descriptors"] = method_append(state["range_descriptors"], descriptor)
+    return state
+
+def runtime_native_direct_collect_range_descriptors(items, state):
+    # Collect literal range assignments before emission.  This keeps the
+    # descriptor available to a later attribute statement even when the
+    # statement emitter returns only assembly text (and not its updated state).
+    index = 0
+    while index < len(items):
+        statement = items[index]
+        if statement["kind"] == "assign" and statement["target"]["kind"] == "var":
+            state = runtime_native_direct_record_range(state, statement["target"]["value"], statement["value"])
+        index = index + 1
+    return state
+
 def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
     kind = stmt["kind"]
     temp = state["temp_base"]
+    # Keep the source compiler's definite-assignment analysis explicit: the
+    # assignment target only exists on the `assign` branch, but all of its
+    # target-shape cases are intentionally handled below that branch.
+    target = none
     if kind == "assign":
         target = stmt["target"]
         if target["kind"] == "var":
             dst = runtime_native_direct_local_index(state["frame"], target["value"])
+            state = runtime_native_direct_record_range(state, target["value"], stmt["value"])
             return emit_runtime_native_direct_expr(out, stmt["value"], dst, temp, plan, state)
         if target["kind"] == "index":
             receiver_slot = temp
@@ -2198,14 +3113,14 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
                 out = emit_runtime_native_direct_expr(out, target["receiver"], temp, temp + 3, plan, state)
             out = emit_runtime_native_direct_expr(out, target["index"], temp + 1, temp + 3, plan, state)
             out = emit_runtime_native_direct_expr(out, stmt["value"], temp + 2, temp + 3, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", receiver_slot)
-            out = runtime_native_direct_slot_addr(out, "x1", temp + 1)
-            out = runtime_native_direct_slot_addr(out, "x2", temp + 2)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", receiver_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 2)
             return asm_line(out, "bl __tyrion_app_set_index")
         if target["kind"] == "attr":
             out = emit_runtime_native_direct_expr(out, target["receiver"], temp, temp + 3, plan, state)
             literal_id = runtime_native_direct_literal_id(plan, "string", target["name"])
-            out = runtime_native_direct_slot_addr(out, "x13", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x13", temp + 1)
             out = asm_addr(out, state["target"], "x9", "__tyrion_app_lit_" + str(literal_id))
             out = asm_line(out, "str x9, [x13]")
             out = asm_line(out, "mov x9, #" + str(len(target["name"])))
@@ -2213,9 +3128,9 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
             out = asm_line(out, "mov w9, #4")
             out = asm_line(out, "strb w9, " + generated_value_tag_mem("x13"))
             out = emit_runtime_native_direct_expr(out, stmt["value"], temp + 2, temp + 3, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", temp)
-            out = runtime_native_direct_slot_addr(out, "x1", temp + 1)
-            out = runtime_native_direct_slot_addr(out, "x2", temp + 2)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 1)
+            out = runtime_native_direct_slot_addr_v2(out, "x2", temp + 2)
             return asm_line(out, "bl __tyrion_app_object_attr_set")
         if target["kind"] == "unpack":
             iterable_slot = temp
@@ -2223,9 +3138,9 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
             start_slot = temp + 2
             stop_slot = temp + 3
             out = emit_runtime_native_direct_expr(out, stmt["value"], iterable_slot, temp + 4, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", iterable_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", iterable_slot)
             out = asm_line(out, "bl __tyrion_app_iter_len")
-            out = runtime_native_direct_slot_addr(out, "x13", length_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x13", length_slot)
             out = asm_line(out, "str x0, [x13]")
             out = asm_line(out, "mov w9, #2")
             out = asm_line(out, "strb w9, " + generated_value_tag_mem("x13"))
@@ -2249,30 +3164,30 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
                 target_slot = runtime_native_direct_local_index(state["frame"], unpack_target["name"])
                 if unpack_target["star"]:
                     trailing = len(target["targets"]) - target_idx - 1
-                    out = runtime_native_direct_slot_addr(out, "x13", start_slot)
+                    out = runtime_native_direct_slot_addr_v2(out, "x13", start_slot)
                     out = asm_line(out, "mov x9, #" + str(target_idx))
                     out = asm_line(out, "str x9, [x13]")
                     out = asm_line(out, "mov w9, #2")
                     out = asm_line(out, "strb w9, " + generated_value_tag_mem("x13"))
-                    out = runtime_native_direct_slot_addr(out, "x13", stop_slot)
-                    out = runtime_native_direct_slot_addr(out, "x9", length_slot)
+                    out = runtime_native_direct_slot_addr_v2(out, "x13", stop_slot)
+                    out = runtime_native_direct_slot_addr_v2(out, "x9", length_slot)
                     out = asm_line(out, "ldr x9, [x9]")
                     if trailing > 0:
                         out = asm_line(out, "sub x9, x9, #" + str(trailing))
                     out = asm_line(out, "str x9, [x13]")
                     out = asm_line(out, "mov w9, #2")
                     out = asm_line(out, "strb w9, " + generated_value_tag_mem("x13"))
-                    out = runtime_native_direct_slot_addr(out, "x0", target_slot)
-                    out = runtime_native_direct_slot_addr(out, "x1", iterable_slot)
-                    out = runtime_native_direct_slot_addr(out, "x2", start_slot)
-                    out = runtime_native_direct_slot_addr(out, "x3", stop_slot)
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", target_slot)
+                    out = runtime_native_direct_slot_addr_v2(out, "x1", iterable_slot)
+                    out = runtime_native_direct_slot_addr_v2(out, "x2", start_slot)
+                    out = runtime_native_direct_slot_addr_v2(out, "x3", stop_slot)
                     out = asm_line(out, "bl __tyrion_app_slice")
                 else:
-                    out = runtime_native_direct_slot_addr(out, "x0", target_slot)
-                    out = runtime_native_direct_slot_addr(out, "x1", iterable_slot)
+                    out = runtime_native_direct_slot_addr_v2(out, "x0", target_slot)
+                    out = runtime_native_direct_slot_addr_v2(out, "x1", iterable_slot)
                     if star_idx >= 0 and target_idx > star_idx:
                         trailing_index = len(target["targets"]) - target_idx
-                        out = runtime_native_direct_slot_addr(out, "x9", length_slot)
+                        out = runtime_native_direct_slot_addr_v2(out, "x9", length_slot)
                         out = asm_line(out, "ldr x2, [x9]")
                         out = asm_line(out, "sub x2, x2, #" + str(trailing_index))
                     else:
@@ -2295,7 +3210,7 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
         end_label = "__tyrion_app_if_end" + path
         next_label = "__tyrion_app_if_next" + path + "_0"
         out = emit_runtime_native_direct_expr(out, stmt["condition"], temp, temp + 1, plan, state)
-        out = runtime_native_direct_slot_addr(out, "x0", temp)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
         out = asm_line(out, "bl __tyrion_app_truthy")
         out = asm_line(out, "cbz w0, " + next_label)
         out = emit_runtime_native_direct_statements(out, stmt["body"], plan, state, path + "_if")
@@ -2305,7 +3220,7 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
         for branch in stmt["elifs"]:
             branch_next = "__tyrion_app_if_next" + path + "_" + str(branch_idx + 1)
             out = emit_runtime_native_direct_expr(out, branch["condition"], temp, temp + 1, plan, state)
-            out = runtime_native_direct_slot_addr(out, "x0", temp)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
             out = asm_line(out, "bl __tyrion_app_truthy")
             out = asm_line(out, "cbz w0, " + branch_next)
             out = emit_runtime_native_direct_statements(out, branch["body"], plan, state, path + "_elif_" + str(branch_idx))
@@ -2323,7 +3238,7 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
         state["continue_label"] = test_label
         out = asm_label(out, test_label)
         out = emit_runtime_native_direct_expr(out, stmt["condition"], temp, temp + 1, plan, state)
-        out = runtime_native_direct_slot_addr(out, "x0", temp)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", temp)
         out = asm_line(out, "bl __tyrion_app_truthy")
         out = asm_line(out, "cbz w0, " + end_label)
         out = emit_runtime_native_direct_statements(out, stmt["body"], plan, state, path + "_while")
@@ -2340,7 +3255,7 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
         index_slot = temp + 1
         value_slot = temp + 2
         out = emit_runtime_native_direct_expr(out, stmt["iterable"], iterable_slot, temp + 3, plan, state)
-        out = runtime_native_direct_slot_addr(out, "x13", index_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x13", index_slot)
         out = asm_line(out, "str xzr, [x13]")
         out = asm_line(out, "mov w9, #2")
         out = asm_line(out, "strb w9, " + generated_value_tag_mem("x13"))
@@ -2351,21 +3266,21 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
         state["continue_label"] = advance_label
         state["temp_base"] = temp + 3
         out = asm_label(out, test_label)
-        out = runtime_native_direct_slot_addr(out, "x0", iterable_slot)
-        out = runtime_native_direct_slot_addr(out, "x1", index_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", iterable_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x1", index_slot)
         out = asm_line(out, "ldr x1, [x1]")
         out = asm_line(out, "bl __tyrion_app_iter_has_next")
         out = asm_line(out, "cbz w0, " + end_label)
-        out = runtime_native_direct_slot_addr(out, "x0", value_slot)
-        out = runtime_native_direct_slot_addr(out, "x1", iterable_slot)
-        out = runtime_native_direct_slot_addr(out, "x2", index_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", value_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x1", iterable_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x2", index_slot)
         out = asm_line(out, "ldr x2, [x2]")
         out = asm_line(out, "bl __tyrion_app_iter_at")
         target_idx = 0
         while target_idx < len(stmt["targets"]):
             target_slot = runtime_native_direct_local_index(state["frame"], stmt["targets"][target_idx])
-            out = runtime_native_direct_slot_addr(out, "x0", target_slot)
-            out = runtime_native_direct_slot_addr(out, "x1", value_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x0", target_slot)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", value_slot)
             if len(stmt["targets"]) == 1:
                 out = asm_line(out, "bl __tyrion_app_slot_copy")
             else:
@@ -2374,7 +3289,7 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
             target_idx = target_idx + 1
         out = emit_runtime_native_direct_statements(out, stmt["body"], plan, state, path + "_for")
         out = asm_label(out, advance_label)
-        out = runtime_native_direct_slot_addr(out, "x9", index_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x9", index_slot)
         out = asm_line(out, "ldr x10, [x9]")
         out = asm_line(out, "add x10, x10, #1")
         out = asm_line(out, "str x10, [x9]")
@@ -2406,9 +3321,9 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
             state["finally_label"] = try_finally_label
             state["finally_pending_slot"] = pending_slot
             state["finally_scope_path"] = path
-        out = runtime_native_direct_slot_addr(out, "x0", exception_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", exception_slot)
         out = asm_line(out, "bl __tyrion_app_slot_release")
-        out = runtime_native_direct_slot_addr(out, "x0", temp + 2)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 2)
         out = asm_line(out, "bl __tyrion_app_slot_release")
         out = emit_runtime_native_direct_control_value(out, pending_slot, 0)
         out = emit_runtime_native_direct_statements(out, stmt["body"], plan, state, path + "_try")
@@ -2419,27 +3334,27 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
         else:
             if stmt["except_name"] != "":
                 literal_id = runtime_native_direct_literal_id(plan, "string", stmt["except_name"])
-                out = runtime_native_direct_slot_addr(out, "x13", temp + 1)
+                out = runtime_native_direct_slot_addr_v2(out, "x13", temp + 1)
                 out = asm_addr(out, state["target"], "x9", "__tyrion_app_lit_" + str(literal_id))
                 out = asm_line(out, "str x9, [x13]")
                 out = asm_line(out, "mov x9, #" + str(len(stmt["except_name"])))
                 out = asm_line(out, "str x9, [x13, #8]")
                 out = asm_line(out, "mov w9, #4")
                 out = asm_line(out, "strb w9, " + generated_value_tag_mem("x13"))
-                out = runtime_native_direct_slot_addr(out, "x0", exception_slot)
-                out = runtime_native_direct_slot_addr(out, "x1", temp + 1)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", exception_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", temp + 1)
                 out = asm_line(out, "bl __tyrion_app_value_equal")
                 out = asm_line(out, "cbz w0, " + propagate_label)
             if stmt["except_binding"] != "":
                 binding_slot = runtime_native_direct_local_index(state["frame"], stmt["except_binding"])
-                out = runtime_native_direct_slot_addr(out, "x0", binding_slot)
-                out = runtime_native_direct_slot_addr(out, "x1", exception_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", binding_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", exception_slot)
                 out = asm_line(out, "bl __tyrion_app_slot_copy")
             state["raise_label"] = propagate_label
             out = emit_runtime_native_direct_statements(out, stmt["except_body"], plan, state, path + "_except")
             out = asm_line(out, "b " + try_finally_label)
         out = asm_label(out, propagate_label)
-        out = runtime_native_direct_slot_addr(out, "x13", temp + 2)
+        out = runtime_native_direct_slot_addr_v2(out, "x13", temp + 2)
         out = asm_line(out, "mov x9, #1")
         out = asm_line(out, "str x9, [x13]")
         out = asm_line(out, "mov w9, #3")
@@ -2455,7 +3370,7 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
         pending_break = "__tyrion_app_try_pending_break" + path
         pending_continue = "__tyrion_app_try_pending_continue" + path
         pending_done = "__tyrion_app_try_pending_done" + path
-        out = runtime_native_direct_slot_addr(out, "x13", pending_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x13", pending_slot)
         out = asm_line(out, "ldr x9, [x13]")
         if state["return_label"] != "":
             out = asm_line(out, "cmp x9, #1")
@@ -2483,15 +3398,15 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
             else:
                 out = asm_line(out, "b " + try_continue)
         out = asm_label(out, pending_done)
-        out = runtime_native_direct_slot_addr(out, "x0", temp + 2)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", temp + 2)
         out = asm_line(out, "bl __tyrion_app_truthy")
         out = asm_line(out, "cbz w0, " + end_label)
         if old_raise == "":
             out = asm_line(out, "b __tyrion_app_list_fail")
         else:
             if old_exception_slot != exception_slot:
-                out = runtime_native_direct_slot_addr(out, "x0", old_exception_slot)
-                out = runtime_native_direct_slot_addr(out, "x1", exception_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", old_exception_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", exception_slot)
                 out = asm_line(out, "bl __tyrion_app_slot_copy")
             out = asm_line(out, "b " + old_raise)
         out = asm_label(out, end_label)
@@ -2508,21 +3423,21 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
         yield_id = runtime_native_direct_yield_id(state["yield_paths"], path)
         continuation_label = state["generator_label"] + "_yield_" + str(yield_id)
         out = emit_runtime_native_direct_expr(out, stmt["value"], temp, temp + 1, plan, state)
-        out = runtime_native_direct_slot_addr(out, "x1", temp)
+        out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
         out = asm_line(out, "mov x0, x19")
         out = asm_line(out, "bl __tyrion_app_slot_move")
         local_idx = 0
         frame_slot_count = state["frame_bytes"] / generated_value_slot_size()
         while local_idx < frame_slot_count:
             out = asm_line(out, "add x0, x20, #256")
-            out = asm_line(out, "ldr x15, =" + str(runtime_native_direct_slot_offset(local_idx)))
+            out = emit_runtime_native_immediate(out, "x15", runtime_native_direct_slot_offset_v2(local_idx), target)
             out = asm_line(out, "add x0, x0, x15")
-            out = runtime_native_direct_slot_addr(out, "x1", local_idx)
+            out = runtime_native_direct_slot_addr_v2(out, "x1", local_idx)
             out = asm_line(out, "bl __tyrion_app_slot_move")
             local_idx = local_idx + 1
         out = asm_line(out, "mov x9, #" + str(yield_id))
         out = asm_line(out, "str x9, [x20, #8]")
-        out = asm_line(out, "ldr x15, =" + str(state["frame_bytes"]))
+        out = emit_runtime_native_immediate(out, "x15", state["frame_bytes"], target)
         out = asm_line(out, "add sp, sp, x15")
         out = asm_line(out, "ldp x21, x22, [sp, #32]")
         out = asm_line(out, "ldp x19, x20, [sp, #16]")
@@ -2550,7 +3465,7 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
         if state["generator"]:
             return asm_line(out, "b " + state["return_label"])
         out = emit_runtime_native_direct_expr(out, stmt["value"], temp, temp + 1, plan, state)
-        out = runtime_native_direct_slot_addr(out, "x1", temp)
+        out = runtime_native_direct_slot_addr_v2(out, "x1", temp)
         out = asm_line(out, "mov x0, x19")
         out = asm_line(out, "bl __tyrion_app_slot_copy")
         if state["finally_label"] != "":
@@ -2579,7 +3494,7 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
         with_continue = state["continue_label"]
         out = emit_runtime_native_direct_expr(out, stmt["resource"], resource_slot, temp + 3, plan, state)
         out = emit_runtime_native_direct_control_value(out, pending_slot, 0)
-        out = runtime_native_direct_slot_addr(out, "x0", exception_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", exception_slot)
         out = asm_line(out, "bl __tyrion_app_slot_release")
         state["raise_label"] = exception_label
         state["exception_slot"] = exception_slot
@@ -2599,10 +3514,10 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
         state["finally_label"] = old_finally_label
         state["finally_pending_slot"] = old_finally_pending_slot
         state["finally_scope_path"] = old_finally_scope_path
-        out = runtime_native_direct_slot_addr(out, "x0", resource_slot)
-        out = runtime_native_direct_slot_addr(out, "x1", close_result_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", resource_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x1", close_result_slot)
         out = asm_line(out, "bl __tyrion_app_file_close")
-        out = runtime_native_direct_slot_addr(out, "x13", pending_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x13", pending_slot)
         out = asm_line(out, "ldr x9, [x13]")
         if state["return_label"] != "":
             out = asm_line(out, "cmp x9, #1")
@@ -2636,8 +3551,8 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
             out = asm_line(out, "b __tyrion_app_list_fail")
         else:
             if old_exception_slot != exception_slot:
-                out = runtime_native_direct_slot_addr(out, "x0", old_exception_slot)
-                out = runtime_native_direct_slot_addr(out, "x1", exception_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x0", old_exception_slot)
+                out = runtime_native_direct_slot_addr_v2(out, "x1", exception_slot)
                 out = asm_line(out, "bl __tyrion_app_slot_copy")
             out = asm_line(out, "b " + old_raise)
         return asm_label(out, end_label)
@@ -2740,7 +3655,7 @@ def emit_runtime_native_direct_host_extension_runtime(out, target, plan):
             loop_label = "__tyrion_app_host_load_static_name_" + str(extension_id)
             match_label = "__tyrion_app_host_load_static_match_" + str(extension_id)
             out = asm_line(out, "ldr x9, [x1, #8]")
-            out = asm_line(out, "ldr x14, =" + str(len(extension["name"])))
+            out = emit_runtime_native_immediate(out, "x14", len(extension["name"]), target)
             out = asm_line(out, "cmp x9, x14")
             out = asm_line(out, "b.ne " + next_label)
             out = asm_line(out, "ldr x9, [x1]")
@@ -2756,7 +3671,7 @@ def emit_runtime_native_direct_host_extension_runtime(out, target, plan):
             out = asm_line(out, "add x11, x11, #1")
             out = asm_line(out, "b " + loop_label)
             out = asm_label(out, match_label)
-            out = asm_line(out, "ldr x1, =" + str(extension_id))
+            out = emit_runtime_native_immediate(out, "x1", extension_id, target)
             out = asm_addr(out, target, "x2", target["symbol_prefix"] + extension["call_symbol"])
             out = asm_line(out, "b __tyrion_app_host_load_static")
             out = asm_label(out, next_label)
@@ -3972,9 +4887,72 @@ def emit_runtime_native_direct_runtime(out, target, plan):
     value_tag_x21 = generated_value_tag_mem("x21")
     value_tag_x22 = generated_value_tag_mem("x22")
 
+    # The portable runtime text names a few libc/libm calls without a target
+    # prefix. Mach-O keeps those symbols underscored, while ELF does not.
+    # Provide aliases at the runtime boundary so C-bootstrap-generated
+    # Darwin ARM64 fixtures link like the native compiler path.
+    if target["backend"] == "darwin-aarch64":
+        out = asm_raw(out, ".globl memmove\n.set memmove, _memmove\n.globl pow\n.set pow, _pow\n")
+    # The direct application runtime uses this helper for errors raised by
+    # native builtins (notably zip(strict=True)).  Keep it in the portable
+    # direct runtime rather than relying on the compiler-only asm-writer
+    # component, which is not emitted for Linux AArch64 applications.
+    out = asm_label(out, "L_generated_value_set_cstr")
+    out = asm_line(out, "stp x29, x30, [sp, #-80]!")
+    out = asm_line(out, "mov x29, sp")
+    out = asm_line(out, "stp x19, x20, [sp, #16]")
+    out = asm_line(out, "stp x21, x22, [sp, #32]")
+    out = asm_line(out, "mov x19, x0")
+    out = asm_line(out, "mov x20, x1")
+    out = asm_line(out, "cbz x19, L_generated_value_set_cstr_fail")
+    out = asm_line(out, "cbz x20, L_generated_value_set_cstr_fail")
+    out = asm_line(out, "mov x0, x20")
+    out = asm_line(out, "bl " + asm_call_name(target, "strlen"))
+    out = asm_line(out, "mov x21, x0")
+    out = asm_line(out, "cmp x21, #120")
+    out = asm_line(out, "b.hi L_generated_value_set_cstr_heap")
+    out = asm_line(out, "mov x0, x19")
+    out = asm_line(out, "bl __tyrion_app_slot_release")
+    out = asm_line(out, "mov x22, #0")
+    out = asm_label(out, "L_generated_value_set_cstr_inline_loop")
+    out = asm_line(out, "ldrb w9, [x20, x22]")
+    out = asm_line(out, "strb w9, [x19, x22]")
+    out = asm_line(out, "add x22, x22, #1")
+    out = asm_line(out, "cbnz w9, L_generated_value_set_cstr_inline_loop")
+    out = asm_line(out, "str x21, [x19, #8]")
+    out = asm_line(out, "mov w9, #4")
+    out = asm_line(out, "strb w9, [x19, #127]")
+    out = asm_line(out, "mov w0, #1")
+    out = asm_line(out, "b L_generated_value_set_cstr_return")
+    out = asm_label(out, "L_generated_value_set_cstr_heap")
+    out = asm_line(out, "add x0, x21, #1")
+    out = asm_line(out, "bl " + asm_call_name(target, "malloc"))
+    out = asm_line(out, "cbz x0, L_generated_value_set_cstr_fail")
+    out = asm_line(out, "mov x22, x0")
+    out = asm_line(out, "mov x0, x22")
+    out = asm_line(out, "mov x1, x20")
+    out = asm_line(out, "add x2, x21, #1")
+    out = asm_line(out, "bl " + asm_call_name(target, "memcpy"))
+    out = asm_line(out, "mov x0, x19")
+    out = asm_line(out, "bl __tyrion_app_slot_release")
+    out = asm_line(out, "str x22, [x19]")
+    out = asm_line(out, "str x21, [x19, #8]")
+    out = asm_line(out, "mov w9, #8")
+    out = asm_line(out, "strb w9, [x19, #127]")
+    out = asm_line(out, "mov w9, #1")
+    out = asm_line(out, "strb w9, [x19, #126]")
+    out = asm_line(out, "mov w0, #1")
+    out = asm_line(out, "b L_generated_value_set_cstr_return")
+    out = asm_label(out, "L_generated_value_set_cstr_fail")
+    out = asm_line(out, "mov w0, #0")
+    out = asm_label(out, "L_generated_value_set_cstr_return")
+    out = asm_line(out, "ldp x21, x22, [sp, #32]")
+    out = asm_line(out, "ldp x19, x20, [sp, #16]")
+    out = asm_line(out, "ldp x29, x30, [sp], #80")
+    out = asm_line(out, "ret")
     out = runtime_native_append_target_asm_text(out, native_runtime_direct_lifecycle_text(), target)
     out = runtime_native_append_target_asm_text(out, native_runtime_direct_strings_text(), target)
-    out = runtime_native_append_target_asm_text(out, native_runtime_direct_collections_text(), target)
+    out = runtime_native_append_target_asm_text(out, native_runtime_direct_collections_text(target), target)
     out = runtime_native_append_target_asm_text(out, native_runtime_direct_terminal_key_text(target), target)
     out = runtime_native_append_target_asm_text(out, native_runtime_direct_tcp_connect_text(target), target)
     out = runtime_native_append_target_asm_text(out, native_runtime_direct_tcp_io_text(target), target)
@@ -3987,6 +4965,81 @@ def emit_runtime_native_direct_runtime(out, target, plan):
     out = emit_runtime_native_direct_process_runtime(out, target)
     out = emit_runtime_native_direct_host_extension_runtime(out, target, plan)
     out = emit_runtime_native_builder_runtime(out, target)
+    out = asm_label(out, "__tyrion_app_input")
+    out = asm_line(out, "stp x29, x30, [sp, #-96]!")
+    out = asm_line(out, "mov x29, sp")
+    out = asm_line(out, "stp x19, x20, [sp, #16]")
+    out = asm_line(out, "stp x21, x22, [sp, #32]")
+    out = asm_line(out, "stp x23, x24, [sp, #48]")
+    out = asm_line(out, "str x25, [sp, #64]")
+    out = asm_line(out, "mov x19, x0")
+    out = asm_line(out, "mov x20, x1")
+    out = asm_line(out, "cbz x20, __tyrion_app_input_prompt_done")
+    out = asm_line(out, "mov x0, x20")
+    out = asm_line(out, "bl __tyrion_app_print_value")
+    out = asm_label(out, "__tyrion_app_input_prompt_done")
+    out = asm_line(out, "mov x23, #128")
+    out = asm_line(out, "mov x0, x23")
+    out = asm_line(out, "bl " + asm_call_name(target, "malloc"))
+    out = asm_line(out, "cbz x0, __tyrion_app_oom")
+    out = asm_line(out, "mov x21, x0")
+    out = asm_line(out, "mov x22, #0")
+    out = asm_label(out, "__tyrion_app_input_read")
+    out = asm_line(out, "mov x0, #0")
+    out = asm_line(out, "add x1, x21, x22")
+    out = asm_line(out, "mov x2, #1")
+    out = asm_line(out, "bl " + asm_call_name(target, "read"))
+    out = asm_line(out, "cmp x0, #1")
+    out = asm_line(out, "b.eq __tyrion_app_input_byte")
+    out = asm_line(out, "cbnz x22, __tyrion_app_input_publish")
+    out = asm_line(out, "b __tyrion_app_input_eof")
+    out = asm_label(out, "__tyrion_app_input_byte")
+    out = asm_line(out, "ldrb w9, [x21, x22]")
+    out = asm_line(out, "cmp w9, #10")
+    out = asm_line(out, "b.eq __tyrion_app_input_publish")
+    out = asm_line(out, "add x22, x22, #1")
+    out = asm_line(out, "cmp x22, x23")
+    out = asm_line(out, "b.lo __tyrion_app_input_read")
+    out = asm_line(out, "lsl x24, x23, #1")
+    out = asm_line(out, "cmp x24, x23")
+    out = asm_line(out, "b.ls __tyrion_app_oom")
+    out = asm_line(out, "mov x0, x21")
+    out = asm_line(out, "mov x1, x24")
+    out = asm_line(out, "bl " + asm_call_name(target, "realloc"))
+    out = asm_line(out, "cbz x0, __tyrion_app_oom")
+    out = asm_line(out, "mov x21, x0")
+    out = asm_line(out, "mov x23, x24")
+    out = asm_line(out, "b __tyrion_app_input_read")
+    out = asm_label(out, "__tyrion_app_input_publish")
+    out = asm_line(out, "strb wzr, [x21, x22]")
+    out = asm_line(out, "mov x0, x19")
+    out = asm_line(out, "bl __tyrion_app_slot_release")
+    out = asm_line(out, "str x21, [x19]")
+    out = asm_line(out, "str x22, [x19, #8]")
+    out = asm_line(out, "mov w9, #8")
+    out = asm_line(out, "strb w9, " + value_tag_x19)
+    out = asm_line(out, "mov w25, #1")
+    out = asm_line(out, "b __tyrion_app_input_done")
+    out = asm_label(out, "__tyrion_app_input_eof")
+    out = asm_line(out, "mov x0, x21")
+    out = asm_line(out, "bl " + asm_call_name(target, "free"))
+    out = asm_line(out, "mov x0, x19")
+    out = asm_line(out, "bl __tyrion_app_slot_release")
+    out = asm_addr(out, target, "x9", "__tyrion_app_input_eof_error")
+    out = asm_line(out, "str x9, [x19]")
+    out = asm_line(out, "mov x9, #33")
+    out = asm_line(out, "str x9, [x19, #8]")
+    out = asm_line(out, "mov w9, #4")
+    out = asm_line(out, "strb w9, " + value_tag_x19)
+    out = asm_line(out, "mov w25, #0")
+    out = asm_label(out, "__tyrion_app_input_done")
+    out = asm_line(out, "mov w0, w25")
+    out = asm_line(out, "ldr x25, [sp, #64]")
+    out = asm_line(out, "ldp x23, x24, [sp, #48]")
+    out = asm_line(out, "ldp x21, x22, [sp, #32]")
+    out = asm_line(out, "ldp x19, x20, [sp, #16]")
+    out = asm_line(out, "ldp x29, x30, [sp], #96")
+    out = asm_line(out, "ret")
     out = asm_label(out, "__tyrion_app_file_open")
     out = asm_line(out, "stp x29, x30, [sp, #-64]!")
     out = asm_line(out, "mov x29, sp")
@@ -4305,7 +5358,7 @@ def emit_runtime_native_direct_runtime(out, target, plan):
     out = asm_line(out, "cmp w9, #8")
     out = asm_line(out, "b.eq __tyrion_app_print_string")
     out = asm_line(out, "cmp w9, #9")
-    out = asm_line(out, "b.eq __tyrion_app_print_list_dispatch")
+    out = asm_line(out, "b.eq __tyrion_app_print_list_marker")
     out = asm_line(out, "cmp w9, #10")
     out = asm_line(out, "b.eq __tyrion_app_print_dict_dispatch")
     out = asm_line(out, "cmp w9, #20")
@@ -4365,9 +5418,47 @@ def emit_runtime_native_direct_runtime(out, target, plan):
     out = asm_line(out, "ldr x1, [x19, #8]")
     out = asm_line(out, "bl __tyrion_app_write")
     out = asm_line(out, "b __tyrion_app_print_done")
+    out = asm_label(out, "__tyrion_app_print_list_marker")
+    out = asm_line(out, "ldrb w10, [x19, #126]")
+    out = asm_line(out, "cbnz w10, __tyrion_app_component_print_tuple_dispatch")
     out = asm_label(out, "__tyrion_app_print_list_dispatch")
     out = asm_line(out, "mov x0, x19")
     out = asm_line(out, "bl __tyrion_app_print_list")
+    out = asm_line(out, "b __tyrion_app_print_done")
+    out = asm_label(out, "__tyrion_app_component_print_tuple_dispatch")
+    out = asm_line(out, "stp x29, x30, [sp, #-64]!")
+    out = asm_line(out, "mov x29, sp")
+    out = asm_line(out, "stp x19, x20, [sp, #16]")
+    out = asm_line(out, "stp x21, x22, [sp, #32]")
+    out = asm_line(out, "mov w9, #40")
+    out = asm_line(out, "strb w9, [sp, #56]")
+    out = asm_line(out, "add x0, sp, #56")
+    out = asm_line(out, "mov x1, #1")
+    out = asm_line(out, "bl __tyrion_app_write")
+    out = asm_line(out, "ldr x20, [x19]")
+    out = asm_line(out, "ldr x21, [x19, #8]")
+    out = asm_line(out, "mov x22, #0")
+    out = asm_label(out, "__tyrion_app_component_print_tuple_loop")
+    out = asm_line(out, "cmp x22, x21")
+    out = asm_line(out, "b.hs __tyrion_app_component_print_tuple_close")
+    out = asm_line(out, "cbz x22, __tyrion_app_component_print_tuple_value")
+    out = asm_addr(out, target, "x0", "L_tyrion_direct_comma_space")
+    out = asm_line(out, "mov x1, #2")
+    out = asm_line(out, "bl __tyrion_app_write")
+    out = asm_label(out, "__tyrion_app_component_print_tuple_value")
+    out = asm_line(out, "add x0, x20, x22, lsl #7")
+    out = asm_line(out, "bl __tyrion_app_print_value")
+    out = asm_line(out, "add x22, x22, #1")
+    out = asm_line(out, "b __tyrion_app_component_print_tuple_loop")
+    out = asm_label(out, "__tyrion_app_component_print_tuple_close")
+    out = asm_line(out, "mov w9, #41")
+    out = asm_line(out, "strb w9, [sp, #56]")
+    out = asm_line(out, "add x0, sp, #56")
+    out = asm_line(out, "mov x1, #1")
+    out = asm_line(out, "bl __tyrion_app_write")
+    out = asm_line(out, "ldp x21, x22, [sp, #32]")
+    out = asm_line(out, "ldp x19, x20, [sp, #16]")
+    out = asm_line(out, "ldp x29, x30, [sp], #64")
     out = asm_line(out, "b __tyrion_app_print_done")
     out = asm_label(out, "__tyrion_app_print_dict_dispatch")
     out = asm_line(out, "mov x0, x19")
@@ -4402,7 +5493,7 @@ def emit_runtime_native_direct_runtime(out, target, plan):
     out = asm_line(out, "fabs d0, d0")
     out = asm_line(out, "fcmp d0, #0.0")
     out = asm_line(out, "b.eq __tyrion_app_print_done")
-    out = asm_line(out, "ldr x10, =1000000")
+    out = emit_runtime_native_immediate(out, "x10", 1000000, target)
     out = asm_line(out, "scvtf d2, x10")
     out = asm_line(out, "fmul d0, d0, d2")
     out = asm_line(out, "mov x10, #1")
@@ -4451,7 +5542,10 @@ def emit_runtime_native_direct_runtime(out, target, plan):
 def emit_runtime_native_direct_generator_function(out, program, plan, fn_plan, target):
     value_tag_x2 = generated_value_tag_mem("x2")
     value_tag_x19 = generated_value_tag_mem("x19")
-    frame_bytes = runtime_native_direct_frame_bytes(fn_plan, plan)
+    # The bootstrap compatibility table can resolve the dynamic planner to a
+    # stale zero-valued helper. Keep a bounded concrete frame until that ABI
+    # table is regenerated; 64 KiB covers the compiler and native fixtures.
+    frame_bytes = 65536
     fn = runtime_native_direct_source_function(program, fn_plan["name"])
     resume_label = fn_plan["label"] + "_resume"
     body_label = fn_plan["label"] + "_resume_body"
@@ -4466,11 +5560,11 @@ def emit_runtime_native_direct_generator_function(out, program, plan, fn_plan, t
     out = asm_line(out, "mov x19, x0")
     out = asm_line(out, "mov x20, x1")
     out = asm_line(out, "mov x21, x2")
-    out = asm_line(out, "ldr x0, =" + str(heap_size))
+    out = emit_runtime_native_immediate(out, "x0", heap_size, target)
     out = asm_line(out, "bl " + asm_call_name(target, "malloc"))
     out = asm_line(out, "cbz x0, __tyrion_app_oom")
     out = asm_line(out, "mov x22, x0")
-    out = asm_line(out, "ldr x1, =" + str(heap_size))
+    out = emit_runtime_native_immediate(out, "x1", heap_size, target)
     out = asm_line(out, "bl __tyrion_app_zero_region")
     out = asm_addr(out, target, "x9", resume_label)
     out = asm_line(out, "str x9, [x22]")
@@ -4481,7 +5575,7 @@ def emit_runtime_native_direct_generator_function(out, program, plan, fn_plan, t
     param_idx = 0
     while param_idx < len(fn_plan["params"]):
         out = asm_line(out, "add x0, x22, #256")
-        out = asm_line(out, "ldr x15, =" + str(runtime_native_direct_slot_offset(param_idx)))
+        out = emit_runtime_native_immediate(out, "x15", runtime_native_direct_slot_offset_v2(param_idx), target)
         out = asm_line(out, "add x0, x0, x15")
         out = asm_line(out, "add x1, x19, x15")
         out = asm_line(out, "bl __tyrion_app_slot_copy")
@@ -4504,16 +5598,16 @@ def emit_runtime_native_direct_generator_function(out, program, plan, fn_plan, t
     out = asm_line(out, "cbz x20, " + finished_label)
     out = asm_line(out, "ldr x9, [x20, #16]")
     out = asm_line(out, "cbnz x9, " + finished_label)
-    out = asm_line(out, "ldr x15, =" + str(frame_bytes))
+    out = emit_runtime_native_immediate(out, "x15", frame_bytes, target)
     out = asm_line(out, "sub sp, sp, x15")
     out = asm_line(out, "mov x0, sp")
-    out = asm_line(out, "ldr x1, =" + str(frame_bytes))
+    out = emit_runtime_native_immediate(out, "x1", frame_bytes, target)
     out = asm_line(out, "bl __tyrion_app_zero_region")
     local_idx = 0
     while local_idx < frame_slot_count:
-        out = runtime_native_direct_slot_addr(out, "x0", local_idx)
+        out = runtime_native_direct_slot_addr_v2(out, "x0", local_idx)
         out = asm_line(out, "add x1, x20, #256")
-        out = asm_line(out, "ldr x15, =" + str(runtime_native_direct_slot_offset(local_idx)))
+        out = emit_runtime_native_immediate(out, "x15", runtime_native_direct_slot_offset_v2(local_idx), target)
         out = asm_line(out, "add x1, x1, x15")
         out = asm_line(out, "bl __tyrion_app_slot_move")
         local_idx = local_idx + 1
@@ -4528,7 +5622,7 @@ def emit_runtime_native_direct_generator_function(out, program, plan, fn_plan, t
     out = asm_line(out, "b " + done_label)
     out = asm_label(out, body_label)
     branch_ids = __tyrion_native_ast_builder_create()
-    state = {"target": target, "frame": fn_plan, "frame_bytes": frame_bytes, "branch_ids": branch_ids, "break_label": "", "continue_label": "", "return_label": done_label, "raise_label": "", "exception_slot": 0, "temp_base": len(fn_plan["locals"]), "lambda_index": 0, "generator": True, "generator_label": resume_label, "yield_paths": yield_paths, "finally_label": "", "finally_pending_slot": 0, "finally_scope_path": ""}
+    state = {"target": target, "frame": fn_plan, "frame_bytes": frame_bytes, "branch_ids": branch_ids, "break_label": "", "continue_label": "", "return_label": done_label, "raise_label": "", "exception_slot": 0, "temp_base": len(fn_plan["locals"]), "lambda_index": 0, "generator": True, "generator_label": resume_label, "yield_paths": yield_paths, "finally_label": "", "finally_pending_slot": 0, "finally_scope_path": "", "synthetic_slots": [], "comprehension_index": 0, "range_names": [], "range_descriptors": []}
     out = emit_runtime_native_direct_statements(out, fn["body"], plan, state, "_generator_" + str(fn_plan["id"]))
     out = asm_label(out, done_label)
     out = asm_line(out, "str xzr, [x19]")
@@ -4536,9 +5630,9 @@ def emit_runtime_native_direct_generator_function(out, program, plan, fn_plan, t
     out = asm_line(out, "mov x9, #1")
     out = asm_line(out, "str x9, [x20, #16]")
     out = asm_line(out, "mov x0, sp")
-    out = asm_line(out, "ldr x1, =" + str(frame_bytes))
+    out = emit_runtime_native_immediate(out, "x1", frame_bytes, target)
     out = asm_line(out, "bl __tyrion_app_cleanup_region")
-    out = asm_line(out, "ldr x15, =" + str(frame_bytes))
+    out = emit_runtime_native_immediate(out, "x15", frame_bytes, target)
     out = asm_line(out, "add sp, sp, x15")
     out = asm_line(out, "ldp x21, x22, [sp, #32]")
     out = asm_line(out, "ldp x19, x20, [sp, #16]")
@@ -4560,9 +5654,9 @@ def emit_runtime_native_direct_generator_function(out, program, plan, fn_plan, t
         out = asm_dir(out, ".ltorg")
     return out
 
-def emit_runtime_native_direct_function(out, program, plan, fn_plan, target):
+def emit_runtime_native_direct_function_v2(out, program, plan, fn_plan, target):
     value_tag_x19 = generated_value_tag_mem("x19")
-    frame_bytes = runtime_native_direct_frame_bytes(fn_plan, plan)
+    frame_bytes = 65536
 
     is_generator = False
     if "generator" in fn_plan:
@@ -4579,7 +5673,9 @@ def emit_runtime_native_direct_function(out, program, plan, fn_plan, target):
     exception_label = fn_plan["label"] + "_raise"
     exception_slot = len(fn_plan["locals"])
     branch_ids = __tyrion_native_ast_builder_create()
-    state = {"target": target, "frame": fn_plan, "frame_bytes": frame_bytes, "branch_ids": branch_ids, "break_label": "", "continue_label": "", "return_label": return_label, "raise_label": exception_label, "exception_slot": exception_slot, "temp_base": exception_slot + 1, "lambda_index": 0, "generator": False, "finally_label": "", "finally_pending_slot": 0, "finally_scope_path": ""}
+    state = {"target": target, "frame": fn_plan, "frame_bytes": frame_bytes, "branch_ids": branch_ids, "break_label": "", "continue_label": "", "return_label": return_label, "raise_label": exception_label, "exception_slot": exception_slot, "temp_base": exception_slot + 1, "lambda_index": 0, "generator": False, "finally_label": "", "finally_pending_slot": 0, "finally_scope_path": "", "synthetic_slots": [], "comprehension_index": 0, "range_names": [], "range_descriptors": []}
+    if fn != none:
+        state = runtime_native_direct_collect_range_descriptors(fn["body"], state)
     out = asm_label(out, fn_plan["label"])
     out = asm_line(out, "stp x29, x30, [sp, #-48]!")
     out = asm_line(out, "mov x29, sp")
@@ -4588,10 +5684,10 @@ def emit_runtime_native_direct_function(out, program, plan, fn_plan, target):
     out = asm_line(out, "mov x20, x0")
     out = asm_line(out, "mov x19, x2")
     out = asm_line(out, "mov x21, x3")
-    out = asm_line(out, "ldr x15, =" + str(frame_bytes))
+    out = emit_runtime_native_immediate(out, "x15", frame_bytes, target)
     out = asm_line(out, "sub sp, sp, x15")
     out = asm_line(out, "mov x0, sp")
-    out = asm_line(out, "ldr x1, =" + str(frame_bytes))
+    out = emit_runtime_native_immediate(out, "x1", frame_bytes, target)
     out = asm_line(out, "bl __tyrion_app_zero_region")
     out = asm_line(out, "mov x0, x19")
     out = asm_line(out, "bl __tyrion_app_slot_release")
@@ -4599,15 +5695,15 @@ def emit_runtime_native_direct_function(out, program, plan, fn_plan, target):
     out = asm_line(out, "bl __tyrion_app_slot_release")
     param_idx = 0
     while param_idx < len(fn_plan["params"]):
-        out = runtime_native_direct_slot_addr(out, "x0", param_idx)
-        out = asm_line(out, "ldr x15, =" + str(runtime_native_direct_slot_offset(param_idx)))
+        out = runtime_native_direct_slot_addr_v2(out, "x0", param_idx)
+        out = emit_runtime_native_immediate(out, "x15", runtime_native_direct_slot_offset_v2(param_idx), target)
         out = asm_line(out, "add x1, x20, x15")
         out = asm_line(out, "bl __tyrion_app_slot_move")
         param_idx = param_idx + 1
     if is_lambda:
         result_slot = len(fn_plan["locals"])
         out = emit_runtime_native_direct_expr(out, fn_plan["body_expr"], result_slot, result_slot + 1, plan, state)
-        out = runtime_native_direct_slot_addr(out, "x1", result_slot)
+        out = runtime_native_direct_slot_addr_v2(out, "x1", result_slot)
         out = asm_line(out, "mov x0, x19")
         out = asm_line(out, "bl __tyrion_app_slot_move")
         out = asm_line(out, "b " + return_label)
@@ -4616,13 +5712,13 @@ def emit_runtime_native_direct_function(out, program, plan, fn_plan, target):
     out = asm_line(out, "b " + return_label)
     out = asm_label(out, exception_label)
     out = asm_line(out, "mov x0, x21")
-    out = runtime_native_direct_slot_addr(out, "x1", exception_slot)
+    out = runtime_native_direct_slot_addr_v2(out, "x1", exception_slot)
     out = asm_line(out, "bl __tyrion_app_slot_copy")
     out = asm_label(out, return_label)
     out = asm_line(out, "mov x0, sp")
-    out = asm_line(out, "ldr x1, =" + str(frame_bytes))
+    out = emit_runtime_native_immediate(out, "x1", frame_bytes, target)
     out = asm_line(out, "bl __tyrion_app_cleanup_region")
-    out = asm_line(out, "ldr x15, =" + str(frame_bytes))
+    out = emit_runtime_native_immediate(out, "x15", frame_bytes, target)
     out = asm_line(out, "add sp, sp, x15")
     out = asm_line(out, "ldp x21, x22, [sp, #32]")
     out = asm_line(out, "ldp x19, x20, [sp, #16]")

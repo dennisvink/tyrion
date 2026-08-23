@@ -1,0 +1,18 @@
+def __tyrion_map(function, iterable, second=None):
+    result = []
+    if second == None:
+        for item in iterable:
+            result.append(function(item))
+        return result
+    first_index = 0
+    second_index = 0
+    while first_index < len(iterable) and second_index < len(second):
+        result.append(function(iterable[first_index], second[second_index]))
+        first_index = first_index + 1
+        second_index = second_index + 1
+    return result
+
+def add(left, right):
+    return left + right
+
+print(__tyrion_map(add, [1, 2], [10, 20]))

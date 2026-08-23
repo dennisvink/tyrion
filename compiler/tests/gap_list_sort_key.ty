@@ -1,0 +1,7 @@
+def neg(value):
+    return 0 - value
+values = [1, 3, 2]
+values.sort(key=neg)
+print(values)
+values.sort(key=neg, reverse=True)
+print(values)

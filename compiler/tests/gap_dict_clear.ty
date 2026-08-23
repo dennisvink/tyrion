@@ -1,0 +1,4 @@
+values = {"a": 1, "b": 2}
+result = values.clear()
+print(result)
+print(values)

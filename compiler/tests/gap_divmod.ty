@@ -1,0 +1,3 @@
+print(divmod(17, 5))
+print(divmod(-17, 5))
+print(divmod(17, -5))

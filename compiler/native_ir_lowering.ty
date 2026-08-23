@@ -247,6 +247,14 @@ def native_direct_executable_program_source_indices(program):
 def native_direct_function_symbol(function_id):
     return "__tyrion_direct_fn_" + str(function_id)
 
+def native_direct_stable_function_symbol(module_path, definition_path, function_id):
+    if module_path == "":
+        return native_direct_function_symbol(function_id)
+    identity = module_path + "\n" + definition_path
+    primary = application_name_hash(identity)
+    secondary = application_name_hash(identity + "#stable")
+    return "__tyrion_unit_" + str(primary) + "_" + str(secondary) + "_fn_" + str(function_id)
+
 
 def native_direct_statements_have_yield(items):
     idx = 0
@@ -379,7 +387,7 @@ def native_direct_append_lambda_plan(plans, expression, path, scope_id, binding_
     if source_name == "":
         source_name = "@lambda:" + path
     lambda_body = [ast_return(expression["body"])]
-    __tyrion_native_ast_builder_append(plans, 0, {"id": function_id, "source_name": source_name, "symbol": native_direct_function_symbol(function_id), "parameters": lambda_parameters, "body": lambda_body, "callable_kind": "lambda", "scope_id": scope_id, "definition_path": path, "captures": captures, "class_id": 0, "method_name": "", "is_generator": False})
+    __tyrion_native_ast_builder_append(plans, 0, {"id": function_id, "source_name": source_name, "symbol": native_direct_function_symbol(function_id), "parameters": lambda_parameters, "body": lambda_body, "callable_kind": "lambda", "scope_id": scope_id, "definition_path": path, "captures": captures, "class_id": 0, "method_name": "", "module_path": "", "is_generator": False})
     return plans
 
 
@@ -476,6 +484,16 @@ def native_direct_collect_statement_lambda_plans(plans, items, path, scope_id, f
     return plans
 
 
+def native_direct_module_path_for_index(program, index):
+    if "module_ranges" in program:
+        range_idx = 0
+        while range_idx < len(program["module_ranges"]):
+            module_range = program["module_ranges"][range_idx]
+            if index >= module_range["start"] and index < module_range["stop"]:
+                return module_range["path"]
+            range_idx = range_idx + 1
+    return ""
+
 def native_direct_function_plans(program):
     plans = __tyrion_native_ast_builder_create()
     function_names = native_direct_declared_callable_names(program)
@@ -490,7 +508,9 @@ def native_direct_function_plans(program):
         statement = program["items"][idx]
         if statement["kind"] == "function":
             function_id = __tyrion_native_ast_builder_len(plans, 0) + 1
-            __tyrion_native_ast_builder_append(plans, 0, {"id": function_id, "source_name": statement["name"], "symbol": native_direct_function_symbol(function_id), "parameters": statement["params"], "body": statement["body"], "callable_kind": "function", "scope_id": 0, "definition_path": "program[" + str(idx) + "]", "captures": [], "class_id": 0, "method_name": "", "is_generator": native_direct_statements_have_yield(statement["body"])})
+            module_path = native_direct_module_path_for_index(program, idx)
+            definition_path = "program[" + str(idx) + "]"
+            __tyrion_native_ast_builder_append(plans, 0, {"id": function_id, "source_name": statement["name"], "symbol": native_direct_stable_function_symbol(module_path, definition_path, function_id), "parameters": statement["params"], "body": statement["body"], "callable_kind": "function", "scope_id": 0, "definition_path": definition_path, "captures": [], "class_id": 0, "method_name": "", "module_path": module_path, "is_generator": native_direct_statements_have_yield(statement["body"])})
         idx = idx + 1
     class_id = 1
     idx = 0
@@ -503,7 +523,9 @@ def native_direct_function_plans(program):
                 if member["kind"] == "function":
                     function_id = __tyrion_native_ast_builder_len(plans, 0) + 1
                     source_name = "@method:" + statement["name"] + "." + member["name"]
-                    __tyrion_native_ast_builder_append(plans, 0, {"id": function_id, "source_name": source_name, "symbol": native_direct_function_symbol(function_id), "parameters": member["params"], "body": member["body"], "callable_kind": "method", "scope_id": 0, "definition_path": "program[" + str(idx) + "].class[" + str(member_idx) + "]", "captures": [], "class_id": class_id, "method_name": member["name"], "is_generator": native_direct_statements_have_yield(member["body"])})
+                    module_path = native_direct_module_path_for_index(program, idx)
+                    definition_path = "program[" + str(idx) + "].class[" + str(member_idx) + "]"
+                    __tyrion_native_ast_builder_append(plans, 0, {"id": function_id, "source_name": source_name, "symbol": native_direct_stable_function_symbol(module_path, definition_path, function_id), "parameters": member["params"], "body": member["body"], "callable_kind": "method", "scope_id": 0, "definition_path": definition_path, "captures": [], "class_id": class_id, "method_name": member["name"], "module_path": module_path, "is_generator": native_direct_statements_have_yield(member["body"])})
                 member_idx = member_idx + 1
             class_id = class_id + 1
         idx = idx + 1
@@ -523,7 +545,7 @@ def native_direct_function_plans(program):
         resume_symbol = ""
         if plan["is_generator"]:
             resume_id = next_resume_id
-            resume_symbol = native_direct_function_symbol(next_resume_id) + "_resume"
+            resume_symbol = plan["symbol"] + "_resume"
             next_resume_id = next_resume_id + 1
         annotated_plan = {}
         annotated_plan["id"] = plan["id"]
@@ -537,6 +559,7 @@ def native_direct_function_plans(program):
         annotated_plan["captures"] = plan["captures"]
         annotated_plan["class_id"] = plan["class_id"]
         annotated_plan["method_name"] = plan["method_name"]
+        annotated_plan["module_path"] = plan["module_path"]
         annotated_plan["is_generator"] = plan["is_generator"]
         annotated_plan["yield_count"] = native_direct_statement_yield_count(plan["body"])
         annotated_plan["resume_id"] = resume_id
@@ -694,12 +717,28 @@ def native_direct_reachability_index_all(ids, index, name, entry_kind, scope_id)
 
 
 def native_direct_reachable_named_function_id(reachability, name, scope_id):
-    if primitive_schema_has(name) and not primitive_schema_direct_source_body(name):
+    if primitive_schema_has(name) and not primitive_schema_direct_source_body(name) and name != "map" and name != "filter" and name != "__tyrion_map":
         return 0
     function_id = native_direct_reachability_index_first(reachability, name, 1, scope_id)
     if function_id == 0 and scope_id != 0:
         function_id = native_direct_reachability_index_first(reachability, name, 1, 0)
     return function_id
+
+def native_direct_reachable_named_or_all_function_id(reachability, name, scope_id):
+    function_id = native_direct_reachable_named_function_id(reachability, name, scope_id)
+    if function_id != 0:
+        return function_id
+    # Synthesized language-helper calls are not always present in the lexical
+    # index. Resolve them against the complete function-plan inventory while
+    # constructing reachability, so the normal symbol index remains complete
+    # during later lowering.
+    idx = 0
+    while idx < len(reachability["function_plans"]):
+        plan = reachability["function_plans"][idx]
+        if plan["source_name"] == name and (plan["scope_id"] == scope_id or plan["scope_id"] == 0):
+            return plan["id"]
+        idx = idx + 1
+    return 0
 
 
 def native_direct_reachable_lambda_id(reachability, path):
@@ -745,6 +784,8 @@ def native_direct_collect_reachable_expression(ids, expression, path, scope_id, 
         function_id = native_direct_reachable_named_function_id(reachability, expression["value"], scope_id)
         ids = native_direct_reachable_append(ids, function_id)
         return native_direct_address_taken_append(ids, function_id)
+    if kind == "starred":
+        return native_direct_collect_reachable_expression(ids, expression["value"], path + ".value", scope_id, reachability)
     if kind == "binary":
         ids = native_direct_collect_reachable_expression(ids, expression["left"], path + ".left", scope_id, reachability)
         return native_direct_collect_reachable_expression(ids, expression["right"], path + ".right", scope_id, reachability)
@@ -753,6 +794,26 @@ def native_direct_collect_reachable_expression(ids, expression, path, scope_id, 
     if kind == "call":
         if expression["callee"]["kind"] == "var":
             name = expression["callee"]["value"]
+            # Public map/filter are ordinary functions in the injected core
+            # module, but application analysis treats them as direct builtins.
+            # Seed their private/core function bodies explicitly so the
+            # x86 native reachability walk retains the callback-capable
+            # implementation.
+            if name == "map":
+                ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "map", scope_id))
+                ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_map", scope_id))
+            if name == "filter":
+                ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "filter", scope_id))
+            if name == "dict":
+                ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_dict_from_mapping", scope_id))
+                ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_dict_from_pairs", scope_id))
+                arg_idx = 0
+                while arg_idx < len(expression["args"]):
+                    ids = native_direct_collect_reachable_expression(ids, expression["args"][arg_idx], path + ".arg[" + str(arg_idx) + "]", scope_id, reachability)
+                    arg_idx = arg_idx + 1
+                return ids
+            if name == "__tyrion_dict_fromkeys" or name == "__tyrion_dict_union":
+                ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, name, scope_id))
             class_id = native_direct_reachable_class_id(reachability, name)
             if class_id > 0:
                 ids = native_direct_reachable_class_method_ids(ids, reachability, class_id, "__init__")
@@ -766,7 +827,38 @@ def native_direct_collect_reachable_expression(ids, expression, path, scope_id, 
             arg_idx = arg_idx + 1
         return ids
     if kind == "method_call":
-        ids = native_direct_reachable_method_ids(ids, reachability, expression["name"])
+        if expression["name"] == "get":
+            ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_method_dict_get", scope_id))
+        if expression["name"] == "values":
+            ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_method_dict_values", scope_id))
+        if expression["name"] == "update":
+            ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_method_dict_update", scope_id))
+        if expression["name"] == "setdefault":
+            ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_method_dict_setdefault", scope_id))
+            ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_method_dict_setdefault_pair", scope_id))
+        if expression["name"] == "clear":
+            ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_method_dict_clear_pair", scope_id))
+        if expression["name"] == "popitem":
+            ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_method_dict_popitem_pair", scope_id))
+        if expression["name"] == "fromkeys":
+            ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_dict_fromkeys", scope_id))
+        if expression["name"] == "pop":
+            ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_method_dict_pop_rebuild", scope_id))
+        if expression["name"] == "join" or expression["name"] == "replace" or expression["name"] == "lower" or expression["name"] == "upper" or expression["name"] == "find" or expression["name"] == "count" or expression["name"] == "index" or expression["name"] == "removeprefix" or expression["name"] == "removesuffix" or expression["name"] == "partition" or expression["name"] == "rpartition" or expression["name"] == "lstrip" or expression["name"] == "rstrip" or expression["name"] == "strip" or expression["name"] == "split" or expression["name"] == "rsplit" or expression["name"] == "splitlines" or expression["name"] == "sort":
+            reachable_name = "__tyrion_method_" + expression["name"]
+            if expression["name"] == "reverse":
+                reachable_name = "__tyrion_method_list_reverse"
+            ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, reachable_name, scope_id))
+            if expression["name"] == "count":
+                ids = native_direct_reachable_append(ids, native_direct_reachable_named_or_all_function_id(reachability, "__tyrion_method_list_count", scope_id))
+            if expression["name"] == "index":
+                ids = native_direct_reachable_append(ids, native_direct_reachable_named_or_all_function_id(reachability, "__tyrion_method_list_index", scope_id))
+            if expression["name"] == "reverse":
+                ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_method_list_reverse", scope_id))
+            if expression["name"] == "sort":
+                ids = native_direct_reachable_append(ids, native_direct_reachable_named_function_id(reachability, "__tyrion_method_list_sort_plain", scope_id))
+        else:
+            ids = native_direct_reachable_method_ids(ids, reachability, expression["name"])
         ids = native_direct_collect_reachable_expression(ids, expression["receiver"], path + ".receiver", scope_id, reachability)
         arg_idx = 0
         while arg_idx < len(expression["args"]):
@@ -909,7 +1001,7 @@ def native_direct_function_plan_store(function_plans):
     idx = 0
     while idx < len(function_plans):
         plan = function_plans[idx]
-        call_plan = {"id": plan["id"], "source_name": plan["source_name"], "symbol": plan["symbol"], "parameters": plan["parameters"], "captures": plan["captures"], "callable_kind": plan["callable_kind"], "address_taken": plan["address_taken"], "class_id": plan["class_id"], "method_name": plan["method_name"], "never_returns": plan["never_returns"]}
+        call_plan = {"id": plan["id"], "source_name": plan["source_name"], "symbol": plan["symbol"], "parameters": plan["parameters"], "captures": plan["captures"], "callable_kind": plan["callable_kind"], "reachable": plan["reachable"], "address_taken": plan["address_taken"], "class_id": plan["class_id"], "method_name": plan["method_name"], "module_path": plan["module_path"], "never_returns": plan["never_returns"]}
         __tyrion_native_ast_builder_append(store, 0, call_plan)
         idx = idx + 1
     return store
@@ -1004,7 +1096,8 @@ def native_direct_prune_function_plans(function_plans, reachable_ids, address_ta
         if reachable[old_id] != 0:
             plan["address_taken"] = native_direct_reachable_has_id(address_taken_ids, old_id)
             plan["id"] = id_map[old_id]
-            plan["symbol"] = native_direct_function_symbol(plan["id"])
+            if plan["module_path"] == "":
+                plan["symbol"] = native_direct_function_symbol(plan["id"])
             if plan["scope_id"] != 0:
                 if id_map[plan["scope_id"]] == 0:
                     fail("direct-native reachability rejected code=unreachable-scope;id=" + str(plan["scope_id"]))
@@ -1021,7 +1114,7 @@ def native_direct_prune_function_plans(function_plans, reachable_ids, address_ta
         plan = __tyrion_native_ast_builder_get(pruned, 0, idx)
         if plan["is_generator"]:
             plan["resume_id"] = next_resume_id
-            plan["resume_symbol"] = native_direct_function_symbol(next_resume_id) + "_resume"
+            plan["resume_symbol"] = plan["symbol"] + "_resume"
             next_resume_id = next_resume_id + 1
         __tyrion_native_ast_builder_append(annotated, 0, plan)
         idx = idx + 1
@@ -1848,11 +1941,22 @@ def native_direct_plan(program, application, target):
     reachability = native_direct_reachable_function_ids(executable_items, executable_source_indices, all_function_plans, all_class_plans, target, root_manifest)
     reachable_function_ids = reachability["ids"]
     root_manifest["target_specialized"] = reachability["target_specialized"]
-    function_plans = native_direct_prune_function_plans(all_function_plans, reachable_function_ids, reachability["address_taken_ids"])
+    # Keep source-assigned IDs stable for every declaration, but mark dead
+    # bodies so module lowering can emit tiny placeholders instead of spending
+    # an hour lowering code that cannot be reached from the entry point.
+    function_plans = all_function_plans
+    address_taken_idx = 0
+    while address_taken_idx < len(function_plans):
+        address_taken_plan = function_plans[address_taken_idx]
+        address_taken_plan["reachable"] = native_direct_reachable_has_id(reachable_function_ids, address_taken_plan["id"])
+        # Keep every retained function available as a closure target. Core
+        # higher-order helpers can receive callbacks through module-injected
+        # call paths that the direct lexical reachability walk cannot always
+        # associate with the callback's source scope.
+        address_taken_plan["address_taken"] = True
+        address_taken_idx = address_taken_idx + 1
     root_manifest["address_taken_roots"] = native_direct_address_taken_roots(function_plans)
-    pruned_classes = native_direct_prune_class_plans(program, function_plans, reachability["class_ids"])
-    function_plans = pruned_classes["functions"]
-    class_plans = pruned_classes["classes"]
+    class_plans = all_class_plans
     function_plans = native_direct_annotate_never_returns(function_plans, class_plans)
     attribute_names = native_direct_collect_reachable_statement_attribute_names(executable_items, [], target, reachability["target_specialized"])
     attribute_function_idx = 0
@@ -1875,7 +1979,7 @@ def native_direct_plan(program, application, target):
     loop_control_slot_count = native_direct_count_for_control_slots(executable_items)
     exception_control_slot_count = native_direct_count_exception_control_slots(executable_items)
     max_function_arity = native_direct_max_function_arity(function_plans)
-    value_temporary_slot_count = native_direct_statement_temporary_depth(executable_items) * 4 + max_function_arity + 8
+    value_temporary_slot_count = native_direct_statement_temporary_depth(executable_items) * 4 + max_function_arity + 512
     aggregate_names = native_direct_aggregate_names(executable_program)
     string_names = native_direct_string_names(executable_program)
     aggregate_core = len(locals) > 0 or loop_control_slot_count > 0 or value_temporary_slot_count > 0 or len(function_plans) > 0
@@ -1887,7 +1991,11 @@ def native_direct_plan(program, application, target):
         function_plan["locals"] = native_direct_collect_scope_locals(function_plan["body"], function_plan["parameters"], function_plan["captures"])
         function_plan["loop_control_slot_count"] = native_direct_count_for_control_slots(function_plan["body"])
         function_plan["exception_control_slot_count"] = native_direct_count_exception_control_slots(function_plan["body"])
-        function_plan["value_temporary_slot_count"] = native_direct_statement_temporary_depth(function_plan["body"]) * 4 + max_function_arity + 8
+        # Expression lowering reserves additional groups for nested calls and
+        # branch conditions beyond the statement-depth estimate. Keep the
+        # per-function arena headroom symmetric with the module root so deeply
+        # nested compiler predicates cannot underflow temporary pairs.
+        function_plan["value_temporary_slot_count"] = native_direct_statement_temporary_depth(function_plan["body"]) * 4 + max_function_arity + 512
         function_plan["aggregate_names"] = native_direct_aggregate_names(function_program)
         function_plan["string_names"] = native_direct_string_names(function_program)
         parameter_idx = 0
@@ -1903,6 +2011,14 @@ def native_direct_plan(program, application, target):
         function_plan["classes"] = class_plans
         function_plan["attribute_names"] = attribute_names
         function_plan["global_names"] = global_names
+        function_plan["module_fingerprint"] = ""
+        if "module_fingerprints" in program and function_plan["module_path"] != "":
+            module_fingerprint_idx = 0
+            while module_fingerprint_idx < len(program["module_fingerprints"]):
+                module_fingerprint = program["module_fingerprints"][module_fingerprint_idx]
+                if module_fingerprint["path"] == function_plan["module_path"]:
+                    function_plan["module_fingerprint"] = module_fingerprint["fingerprint"]
+                module_fingerprint_idx = module_fingerprint_idx + 1
         __tyrion_native_ast_builder_append(planned_functions, 0, function_plan)
         function_idx = function_idx + 1
     planned_function_lists = __tyrion_native_ast_builder_finish(planned_functions)
@@ -1943,10 +2059,65 @@ def native_direct_constant_id(state, kind, value):
     state["constant_pool"] = pool
     return {"state": state, "id": constant_id}
 
+def native_direct_constant_sort_key(constant):
+    return constant["kind"] + "\n" + str(constant["value"])
+
+def native_direct_reindex_constants(functions, constants):
+    # Constant IDs are an IR-local implementation detail.  Reassign them in
+    # deterministic content order after lowering so adding a literal in one
+    # module does not renumber unrelated module constants.
+    order = []
+    idx = 0
+    while idx < len(constants):
+        key = native_direct_constant_sort_key(constants[idx])
+        insert_at = 0
+        while insert_at < len(order) and native_direct_constant_sort_key(constants[order[insert_at]]) <= key:
+            insert_at = insert_at + 1
+        order.insert(insert_at, idx)
+        idx = idx + 1
+    remap = range(len(constants))
+    sorted_constants = []
+    new_idx = 0
+    while new_idx < len(order):
+        old_idx = order[new_idx]
+        remap[old_idx] = new_idx
+        sorted_constants.append(native_ir_v2_constant(new_idx, constants[old_idx]["kind"], constants[old_idx]["value"]))
+        new_idx = new_idx + 1
+    remapped_functions = []
+    function_idx = 0
+    while function_idx < len(functions):
+        function = functions[function_idx]
+        remapped_blocks = []
+        block_idx = 0
+        while block_idx < len(function["blocks"]):
+            block = function["blocks"][block_idx]
+            remapped_instructions = []
+            instruction_idx = 0
+            while instruction_idx < len(block["instructions"]):
+                instruction = block["instructions"][instruction_idx]
+                if instruction["op"] == "const_address":
+                    remapped_instructions.append(native_ir_v2_const_address(instruction["result"], remap[instruction["fields"]["constant_id"]]))
+                else:
+                    remapped_instructions.append(instruction)
+                instruction_idx = instruction_idx + 1
+            remapped_blocks.append(native_ir_v2_block(block["id"], remapped_instructions, block["terminator"]))
+            block_idx = block_idx + 1
+        remapped_function = native_ir_v2_function(function["id"], function["name"], function["visibility"], function["parameters"], function["result_type"], function["frame"], remapped_blocks)
+        remapped_function["effects"] = function["effects"]
+        remapped_function["ownership"] = function["ownership"]
+        for field in ["source_name", "source_arity", "callable_kind", "address_taken", "capture_count", "class_id", "method_name", "module_path", "module_fingerprint", "is_generator_constructor"]:
+            if field in function:
+                remapped_function[field] = function[field]
+        remapped_functions.append(remapped_function)
+        function_idx = function_idx + 1
+    return {"functions": remapped_functions, "constants": sorted_constants}
+
 
 def native_direct_append_instruction(state, op, value_type, fields):
     if state["terminated"]:
         fail("direct-native lowering rejected code=instruction-after-terminator;op=" + op)
+    if not native_direct_name_in_list(state["operation_inventory"], op):
+        state["operation_inventory"] = method_append(state["operation_inventory"], op)
     if op == "direct_primitive_call":
         implementation = primitive_schema_implementation_for_id(fields["primitive_id"])
         capability = primitive_schema_capability_for_id(fields["primitive_id"])
@@ -1958,6 +2129,14 @@ def native_direct_append_instruction(state, op, value_type, fields):
         if not native_direct_name_in_list(manifest["capabilities"], capability):
             manifest["capabilities"] = method_append(manifest["capabilities"], capability)
         state["primitive_manifest"] = manifest
+        primitive_seen = False
+        primitive_idx = 0
+        while primitive_idx < len(state["primitive_ids"]):
+            if state["primitive_ids"][primitive_idx] == fields["primitive_id"]:
+                primitive_seen = True
+            primitive_idx = primitive_idx + 1
+        if not primitive_seen:
+            state["primitive_ids"] = method_append(state["primitive_ids"], fields["primitive_id"])
     result = state["next_result"]
     state["next_result"] = result + 1
     __tyrion_native_ast_builder_append(state["instructions"], 0, native_ir_v2_instruction(result, op, value_type, fields))
@@ -2217,6 +2396,45 @@ def native_direct_name_in_list(names, name):
         idx = idx + 1
     return False
 
+def native_direct_range_descriptor(state, name):
+    index = 0
+    while index < len(state["range_names"]):
+        if state["range_names"][index] == name:
+            return state["range_descriptors"][index]
+        index = index + 1
+    return none
+
+def native_direct_record_range_assignment(state, name, expression):
+    if expression["kind"] != "call" or expression["callee"]["kind"] != "var" or expression["callee"]["value"] != "range":
+        return state
+    args = []
+    arg_idx = 0
+    while arg_idx < len(expression["args"]):
+        argument = expression["args"][arg_idx]
+        if argument["kind"] == "kwarg":
+            return state
+        args = method_append(args, argument)
+        arg_idx = arg_idx + 1
+    if len(args) == 1:
+        descriptor = [{"kind": "int", "value": 0, "items": []}, args[0], {"kind": "int", "value": 1, "items": []}]
+    elif len(args) == 2:
+        descriptor = [args[0], args[1], {"kind": "int", "value": 1, "items": []}]
+    elif len(args) == 3:
+        descriptor = [args[0], args[1], args[2]]
+    else:
+        return state
+    index = 0
+    while index < len(state["range_names"]):
+        if state["range_names"][index] == name:
+            range_descriptors = state["range_descriptors"]
+            range_descriptors[index] = descriptor
+            state["range_descriptors"] = range_descriptors
+            return state
+        index = index + 1
+    state["range_names"] = method_append(state["range_names"], name)
+    state["range_descriptors"] = method_append(state["range_descriptors"], descriptor)
+    return state
+
 
 def native_direct_mark_local_initialized(state, name):
     if not native_direct_name_in_list(state["initialized_locals"], name):
@@ -2366,27 +2584,97 @@ def native_direct_lower_print_statement(state, statement, path):
     if expression["kind"] != "call" or expression["callee"]["kind"] != "var" or expression["callee"]["value"] != "print":
         fail("direct-native lowering rejected code=statement-not-lowered;kind=" + expression["kind"] + ";position=" + path)
     expression_path = path + ".value"
+    separator = " "
+    ending = "\n"
+    positional = []
+    file_slot = -1
+    flush_requested = False
     arg_idx = 0
     while arg_idx < len(expression["args"]):
         argument = expression["args"][arg_idx]
+        if argument["kind"] == "kwarg":
+            name = argument["name"]
+            value = argument["value"]
+            if name == "sep":
+                if value["kind"] == "none":
+                    separator = " "
+                elif value["kind"] == "string":
+                    separator = value["value"]
+                else:
+                    fail("direct-native lowering rejected print sep;position=" + expression_path + ".arg[" + str(arg_idx) + "]")
+            elif name == "end":
+                if value["kind"] == "none":
+                    ending = "\n"
+                elif value["kind"] == "string":
+                    ending = value["value"]
+                else:
+                    fail("direct-native lowering rejected print end;position=" + expression_path + ".arg[" + str(arg_idx) + "]")
+            elif name == "file":
+                if value["kind"] != "none":
+                    # File-print scratch values live in the reserved high
+                    # portion of the temporary arena.  They are not one of
+                    # the four depth-local recursive pairs, so use the
+                    # offset helper rather than the depth/pair guard.
+                    file_slot = native_direct_value_temporary_offset_slot(state, 0, 7, expression_path + ".file")
+                    state = native_direct_lower_value_into_slot(state, value, file_slot, expression_path + ".file", 1)
+            elif name == "flush":
+                if value["kind"] == "bool":
+                    flush_requested = value["value"]
+                elif value["kind"] == "none":
+                    flush_requested = False
+                else:
+                    fail("direct-native lowering rejected print flush;position=" + expression_path + ".arg[" + str(arg_idx) + "]")
+            else:
+                fail("direct-native lowering rejected print keyword=" + name)
+        else:
+            positional = method_append(positional, {"argument": argument, "index": arg_idx})
+        arg_idx = arg_idx + 1
+    if file_slot >= 0:
+        write_values = []
+        value_idx = 0
+        while value_idx < len(positional):
+            if value_idx > 0:
+                write_values = method_append(write_values, {"kind": "string", "value": separator, "items": []})
+            write_values = method_append(write_values, positional[value_idx]["argument"])
+            value_idx = value_idx + 1
+        write_values = method_append(write_values, {"kind": "string", "value": ending, "items": []})
+        value_idx = 0
+        while value_idx < len(write_values):
+            text_slot = native_direct_value_temporary_offset_slot(state, 0, 8 + value_idx * 2, expression_path + ".file.text[" + str(value_idx) + "]")
+            text_call = {"kind": "call", "callee": {"kind": "var", "value": "str"}, "args": [write_values[value_idx]]}
+            state = native_direct_lower_value_into_slot(state, text_call, text_slot, expression_path + ".file.text[" + str(value_idx) + "]", 2)
+            result_slot = native_direct_value_temporary_offset_slot(state, 0, 9 + value_idx * 2, expression_path + ".file.result[" + str(value_idx) + "]")
+            written = native_direct_append_instruction(state, "direct_file_method", "i32", {"args": [result_slot, file_slot, text_slot], "method": "write"})
+            state = native_direct_require_runtime_success(written["state"], written["result"], expression_path + ".file.write[" + str(value_idx) + "]", 2)
+            value_idx = value_idx + 1
+        if flush_requested:
+            flush_result = native_direct_value_temporary_offset_slot(state, 0, 10 + len(write_values) * 2, expression_path + ".file.flush")
+            flushed = native_direct_append_instruction(state, "direct_file_method", "i32", {"args": [flush_result, file_slot], "method": "flush"})
+            state = native_direct_require_runtime_success(flushed["state"], flushed["result"], expression_path + ".file.flush", 2)
+        return state
+    value_idx = 0
+    while value_idx < len(positional):
+        entry = positional[value_idx]
+        argument = entry["argument"]
+        source_idx = entry["index"]
         literal = native_direct_literal_text(argument)
-        if arg_idx > 0:
-            state = native_direct_append_write(state, " ")
+        if value_idx > 0:
+            state = native_direct_append_write(state, separator)
         if literal["ok"]:
             state = native_direct_append_write(state, literal["value"])
         elif argument["kind"] == "var" and native_direct_value_name_is_bound(state, argument["value"]):
-            resolved = native_direct_value_slot_for_read(state, argument["value"], expression_path + ".arg[" + str(arg_idx) + "]")
+            resolved = native_direct_value_slot_for_read(state, argument["value"], expression_path + ".arg[" + str(source_idx) + "]")
             state = resolved["state"]
             slot = resolved["slot"]
             printed = native_direct_append_instruction(state, "direct_print_string_slot", "i32", {"args": [slot]})
             state = printed["state"]
         else:
-            value_slot = native_direct_value_temporary_pair_slot(state, 0, 0, expression_path + ".arg[" + str(arg_idx) + "]")
-            state = native_direct_lower_value_into_slot(state, argument, value_slot, expression_path + ".arg[" + str(arg_idx) + "]", 1)
+            value_slot = native_direct_value_temporary_pair_slot(state, 0, 0, expression_path + ".arg[" + str(source_idx) + "]")
+            state = native_direct_lower_value_into_slot(state, argument, value_slot, expression_path + ".arg[" + str(source_idx) + "]", 1)
             printed = native_direct_append_instruction(state, "direct_print_string_slot", "i32", {"args": [value_slot]})
             state = printed["state"]
-        arg_idx = arg_idx + 1
-    return native_direct_append_write(state, "\n")
+        value_idx = value_idx + 1
+    return native_direct_append_write(state, ending)
 
 
 def native_direct_statement_definitely_assigns_name(statement, name):
@@ -3628,8 +3916,10 @@ def native_direct_closure_targets(state):
     idx = 0
     while idx < __tyrion_native_ast_builder_len(state["function_plan_store"], 0):
         plan = __tyrion_native_ast_builder_get(state["function_plan_store"], 0, idx)
-        if plan["address_taken"]:
-            targets = method_append(targets, {"id": plan["id"], "name": plan["symbol"], "arity": len(plan["parameters"])})
+        # The verifier requires the complete stable candidate table for
+        # dynamic calls.  Body pruning remains independent: these are only
+        # compact metadata entries, while unreachable bodies are still stubs.
+        targets = method_append(targets, {"id": plan["id"], "name": plan["symbol"], "arity": len(plan["parameters"])})
         idx = idx + 1
     return targets
 
@@ -3641,6 +3931,32 @@ def native_direct_parameter_index(function_plan, name):
             return idx
         idx = idx + 1
     return -1
+
+def native_direct_vararg_index(function_plan):
+    idx = 0
+    found = -1
+    while idx < len(function_plan["parameters"]):
+        parameter = function_plan["parameters"][idx]
+        if "vararg" in parameter and parameter["vararg"]:
+            if found >= 0:
+                fail("direct-native lowering rejected code=multiple-vararg-parameters;function=" + function_plan["source_name"])
+            found = idx
+        idx = idx + 1
+    return found
+
+
+def native_direct_expand_static_call_arguments(arguments, path):
+    expanded = []
+    for argument in arguments:
+        if argument["kind"] == "starred":
+            value = argument["value"]
+            if value["kind"] != "list" and value["kind"] != "tuple":
+                fail("direct-native lowering rejected code=variadic-dynamic-starred-call;position=" + path)
+            for item in value["items"]:
+                expanded = method_append(expanded, item)
+        else:
+            expanded = method_append(expanded, argument)
+    return expanded
 
 
 def native_direct_bind_call(function_plan, arguments, path):
@@ -3768,14 +4084,100 @@ def native_direct_require_call_success(state, status_result, exception_slot, pat
     return native_direct_begin_next_block(state)
 
 
-def native_direct_lower_language_call_into_slot(state, expression, destination_slot, path, temporary_depth):
-    # The C seed exposes parsed string fields as borrowed views.  Own the
-    # callable name across index lookup and argument lowering so nested schema
-    # and binding work cannot reuse its backing storage.
-    callee_name = "" + expression["callee"]["value"]
-    function_plan = native_direct_function_plan(state, callee_name)
-    binding = native_direct_bind_call(function_plan, expression["args"], path)
+def native_direct_optional_ast(value):
+    if value == none:
+        return {"kind": "none"}
+    return value
+
+
+def native_direct_optional_keyword_ast(entries):
+    if len(entries) == 0:
+        return {"kind": "none"}
+    return {"kind": "dict", "entries": entries}
+
+
+def native_direct_len_argument_slot(state, argument, path, temporary_depth):
+    if argument["kind"] == "var":
+        resolved = native_direct_value_slot_for_read(state, argument["value"], path + ".arg[0]")
+        return {"state": resolved["state"], "slot": resolved["slot"]}
+    argument_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 0, path + ".arg[0]")
+    lowered = native_direct_lower_value_into_slot(state, argument, argument_slot, path + ".arg[0]", temporary_depth + 1)
+    return {"state": lowered, "slot": argument_slot}
+
+
+def native_direct_lower_open_call_into_slot(state, expression, destination_slot, path, temporary_depth):
+    path_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 0, path + ".arg[0]")
+    mode_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 1, path + ".arg[1]")
+    state = native_direct_lower_value_into_slot(state, expression["args"][0], path_slot, path + ".arg[0]", temporary_depth + 1)
+    if len(expression["args"]) == 1:
+        state = native_direct_lower_value_into_slot(state, {"kind": "string", "value": "r", "items": []}, mode_slot, path + ".default-mode", temporary_depth + 1)
+    if len(expression["args"]) != 1:
+        state = native_direct_lower_value_into_slot(state, expression["args"][1], mode_slot, path + ".arg[1]", temporary_depth + 1)
+    opened = native_direct_append_instruction(state, "direct_file_open", "i32", {"args": [destination_slot, path_slot, mode_slot]})
+    return native_direct_require_runtime_success(opened["state"], opened["result"], path, temporary_depth + 1)
+
+
+def native_direct_is_direct_primitive_call(expression):
+    if expression["kind"] != "call":
+        return False
+    if expression["callee"]["kind"] != "var":
+        return False
+    name = "" + expression["callee"]["value"]
+    if not primitive_schema_has(name):
+        return False
+    if primitive_schema_direct_source_body(name):
+        return False
+    if name == "open":
+        return False
+    if name == "len":
+        return False
+    return True
+
+
+def native_direct_try_lower_declared_call(state, expression, destination_slot, path, temporary_depth):
+    if expression["kind"] != "call":
+        return {"handled": False}
+    if expression["callee"]["kind"] != "var":
+        return {"handled": False}
+    name = "" + expression["callee"]["value"]
+    if not native_direct_has_function_plan(state, name):
+        return {"handled": False}
+    if primitive_schema_has(name) and not primitive_schema_direct_source_body(name) and name != "__tyrion_method_dict_update" and name != "map" and name != "filter":
+        return {"handled": False}
+    lowered_call = native_direct_lower_language_call_into_slot(state, expression, destination_slot, path, temporary_depth)
+    if name == "__tyrion_method_dict_update" and len(expression["args"]) >= 1 and expression["args"][0]["kind"] == "var":
+        receiver_slot = native_direct_local_slot(state, expression["args"][0]["value"])
+        lowered_call = native_direct_append_instruction(lowered_call, "direct_slot_copy_owned", "slot_ptr", {"args": [receiver_slot, destination_slot]})["state"]
+        if destination_slot != receiver_slot:
+            lowered_call = native_direct_append_instruction(lowered_call, "direct_slot_set_none_owned", "slot_ptr", {"args": [destination_slot]})["state"]
+    return {"handled": True, "state": lowered_call}
+
+
+def native_direct_lower_language_vararg_call_into_slot(state, expression, function_plan, destination_slot, path, temporary_depth):
+    vararg_idx = native_direct_vararg_index(function_plan)
     parameter_count = len(function_plan["parameters"])
+    if vararg_idx != parameter_count - 1:
+        fail("direct-native lowering rejected code=vararg-not-trailing;function=" + function_plan["source_name"] + ";position=" + path)
+    fixed_count = vararg_idx
+    positional = []
+    dynamic_star_value = none
+    dynamic_star_count = 0
+    for argument in expression["args"]:
+        if argument["kind"] == "kwarg":
+            fail("direct-native lowering rejected code=variadic-keyword;function=" + function_plan["source_name"] + ";position=" + path)
+        if argument["kind"] == "starred":
+            if argument["value"]["kind"] == "list" or argument["value"]["kind"] == "tuple":
+                for item in argument["value"]["items"]:
+                    positional.append(item)
+            else:
+                dynamic_star_count = dynamic_star_count + 1
+                if dynamic_star_count > 1 or len(positional) > fixed_count:
+                    fail("direct-native lowering rejected code=multiple-dynamic-starred-call;function=" + function_plan["source_name"] + ";position=" + path)
+                dynamic_star_value = argument["value"]
+            continue
+        positional.append(argument)
+    if len(positional) < fixed_count:
+        fail("direct-native lowering rejected code=missing-argument;function=" + function_plan["source_name"] + ";position=" + path)
     exception_slot = native_direct_value_temporary_offset_slot(state, temporary_depth, 0, path + ".exception")
     state = native_direct_lower_value_into_slot(state, {"kind": "none", "value": none, "items": []}, exception_slot, path + ".exception", temporary_depth + 1)
     argument_slots = []
@@ -3783,10 +4185,60 @@ def native_direct_lower_language_call_into_slot(state, expression, destination_s
     while parameter_idx < parameter_count:
         argument_slots = method_append(argument_slots, native_direct_value_temporary_offset_slot(state, temporary_depth, parameter_idx + 1, path + ".bound[" + str(parameter_idx) + "]"))
         parameter_idx = parameter_idx + 1
+    reserved_depth = native_direct_temporary_groups_for_arguments(parameter_count + len(positional) + 1)
+    argument_idx = 0
+    while argument_idx < fixed_count:
+        state = native_direct_lower_value_into_slot(state, positional[argument_idx], argument_slots[argument_idx], path + ".arg[" + str(argument_idx) + "]", temporary_depth + reserved_depth)
+        argument_idx = argument_idx + 1
+    if dynamic_star_count == 1 and len(positional) == fixed_count:
+        # A runtime-only starred argument is already the vararg collection.
+        # Preserve it as an owned slot instead of trying to expand it at
+        # compile time; the callee's dynamic closure-vector call consumes the
+        # collection at runtime.
+        state = native_direct_lower_value_into_slot(state, dynamic_star_value, argument_slots[vararg_idx], path + ".dynamic-star", temporary_depth + reserved_depth)
+    else:
+        created = native_direct_append_instruction(state, "direct_slot_collection_new", "slot_ptr", {"args": [argument_slots[vararg_idx]], "collection_kind": "list", "capacity": len(positional) - fixed_count})
+        state = created["state"]
+        item_slot = native_direct_value_temporary_pair_slot(state, temporary_depth + 1, 0, path + ".vararg-item")
+        while argument_idx < len(positional):
+            state = native_direct_lower_value_into_slot(state, positional[argument_idx], item_slot, path + ".arg[" + str(argument_idx) + "]", temporary_depth + reserved_depth)
+            appended = native_direct_append_instruction(state, "direct_collection_append_owned", "i32", {"args": [argument_slots[vararg_idx], item_slot]})
+            state = appended["state"]
+            argument_idx = argument_idx + 1
+    call_args = [destination_slot, exception_slot]
+    parameter_idx = 0
+    while parameter_idx < len(argument_slots):
+        call_args = method_append(call_args, argument_slots[parameter_idx])
+        parameter_idx = parameter_idx + 1
+    called = native_direct_append_instruction(state, "direct_language_call", "i32", {"args": call_args, "function_id": function_plan["id"], "name": function_plan["symbol"], "source_name": function_plan["source_name"], "argc": parameter_count, "global_frame": state["global_frame"]})
+    return native_direct_require_call_success(called["state"], called["result"], exception_slot, path)
+
+
+def native_direct_lower_language_call_into_slot(state, expression, destination_slot, path, temporary_depth):
+    # The C seed exposes parsed string fields as borrowed views.  Own the
+    # callable name across index lookup and argument lowering so nested schema
+    # and binding work cannot reuse its backing storage.
+    callee_name = "" + expression["callee"]["value"]
+    function_plan = native_direct_function_plan(state, callee_name)
+    if native_direct_vararg_index(function_plan) >= 0:
+        return native_direct_lower_language_vararg_call_into_slot(state, expression, function_plan, destination_slot, path, temporary_depth)
+    call_arguments = native_direct_expand_static_call_arguments(expression["args"], path)
+    binding = native_direct_bind_call(function_plan, call_arguments, path)
+    parameter_count = len(function_plan["parameters"])
+    exception_slot = native_direct_value_temporary_offset_slot(state, temporary_depth, 0, path + ".exception")
+    state = native_direct_lower_value_into_slot(state, {"kind": "none", "value": none, "items": []}, exception_slot, path + ".exception", temporary_depth + 1)
+    argument_slots = []
+    parameter_idx = 0
+    while parameter_idx < parameter_count:
+        if (callee_name == "__tyrion_method_dict_update" or callee_name == "__tyrion_method_dict_setdefault") and parameter_idx == 0 and len(call_arguments) > 0 and call_arguments[0]["kind"] == "var":
+            argument_slots = method_append(argument_slots, native_direct_local_slot(state, call_arguments[0]["value"]))
+        else:
+            argument_slots = method_append(argument_slots, native_direct_value_temporary_offset_slot(state, temporary_depth, parameter_idx + 1, path + ".bound[" + str(parameter_idx) + "]"))
+        parameter_idx = parameter_idx + 1
     reserved_depth = native_direct_temporary_groups_for_arguments(parameter_count)
     argument_idx = 0
-    while argument_idx < len(expression["args"]):
-        argument = expression["args"][argument_idx]
+    while argument_idx < len(call_arguments):
+        argument = call_arguments[argument_idx]
         argument_expression = argument
         if argument["kind"] == "kwarg":
             argument_expression = argument["value"]
@@ -3806,8 +4258,37 @@ def native_direct_lower_language_call_into_slot(state, expression, destination_s
     while parameter_idx < len(argument_slots):
         call_args = method_append(call_args, argument_slots[parameter_idx])
         parameter_idx = parameter_idx + 1
-    called = native_direct_append_instruction(state, "direct_language_call", "i32", {"args": call_args, "function_id": function_plan["id"], "name": function_plan["symbol"], "argc": parameter_count, "global_frame": state["global_frame"]})
-    return native_direct_require_call_success(called["state"], called["result"], exception_slot, path)
+    called = native_direct_append_instruction(state, "direct_language_call", "i32", {"args": call_args, "function_id": function_plan["id"], "name": function_plan["symbol"], "source_name": callee_name, "argc": parameter_count, "global_frame": state["global_frame"]})
+    state = native_direct_require_call_success(called["state"], called["result"], exception_slot, path)
+    # x86 direct language calls execute against a temporary argument frame.
+    # A mutating helper such as dict.update() may detach that frame slot when
+    # it writes the dictionary.  Publish the resulting receiver back to the
+    # caller's local after the call so mutation survives the temporary frame.
+    if (callee_name == "__tyrion_method_dict_update" or callee_name == "__tyrion_method_dict_setdefault") and len(call_arguments) > 0 and call_arguments[0]["kind"] == "var":
+        receiver_slot = native_direct_local_slot(state, expression["args"][0]["value"])
+        state = native_direct_append_instruction(state, "direct_slot_copy_owned", "slot_ptr", {"args": [receiver_slot, argument_slots[0]]})["state"]
+    return state
+
+
+def native_direct_rewrite_dict_constructor(expression):
+    positional = []
+    keyword_entries = []
+    idx = 0
+    while idx < len(expression["args"]):
+        argument = expression["args"][idx]
+        if argument["kind"] == "kwarg":
+            keyword_entries.append(ast_dict_entry(ast_value("string", argument["name"]), argument["value"]))
+        else:
+            positional.append(argument)
+        idx = idx + 1
+    iterable = {"kind": "none", "value": none, "items": []}
+    helper_name = "__tyrion_dict_from_mapping"
+    if len(positional) == 1:
+        iterable = positional[0]
+        if iterable["kind"] == "list" or iterable["kind"] == "tuple":
+            helper_name = "__tyrion_dict_from_pairs"
+    keyword_dict = ast_dict(keyword_entries)
+    return {"kind": "call", "callee": {"kind": "var", "value": helper_name}, "args": [iterable, keyword_dict]}
 
 
 def native_direct_lower_bound_call_into_slot(state, function_plan, arguments, receiver_slot, destination_slot, path, temporary_depth):
@@ -3912,6 +4393,53 @@ def native_direct_lower_sum_builtin_into_slot(state, expression, destination_slo
     next_stored = native_direct_append_instruction(state, "slot_set_int", "slot_ptr", {"args": [cursor_slot, next_value["result"]]})
     state = native_direct_finish_block(next_stored["state"], native_ir_v2_jump(condition_block))
 
+    exit_block = state["next_block"]
+    state = native_direct_patch_branch_false_target(state, condition_block, exit_block)
+    return native_direct_begin_next_block(state)
+
+
+def native_direct_lower_collection_constructor_into_slot(state, expression, destination_slot, path, temporary_depth, collection_kind):
+    # Collection constructors are native on the x86 direct path.  They cannot
+    # be routed through the ordinary core function graph because an empty set
+    # or tuple has no Tyrion-level call implementation.  Build the collection
+    # directly, then copy each iterable item through the normal append
+    # operation (which performs set equality/deduplication for sets).
+    if len(expression["args"]) > 1:
+        fail("set expects zero or one positional argument")
+    if len(expression["args"]) == 1 and expression["args"][0]["kind"] == "kwarg":
+        fail("set expects zero or one positional argument")
+    base_depth = temporary_depth + 1
+    iterable_slot = native_direct_value_temporary_offset_slot(state, base_depth, 0, path + ".iterable")
+    cursor_slot = native_direct_value_temporary_offset_slot(state, base_depth, 1, path + ".cursor")
+    item_slot = native_direct_value_temporary_offset_slot(state, base_depth, 2, path + ".item")
+    state = native_direct_append_instruction(state, "direct_slot_collection_new", "slot_ptr", {"args": [destination_slot], "collection_kind": collection_kind, "capacity": 0})["state"]
+    if len(expression["args"]) == 0:
+        return state
+    iterable = native_direct_call_argument_value(expression["args"][0])
+    state = native_direct_lower_value_into_slot(state, iterable, iterable_slot, path + ".arg[0]", base_depth + 1)
+    state = native_direct_prepare_iterable(state, iterable_slot, path + ".arg[0].prepare", base_depth + 1)
+    zero = native_direct_append_const_int(state, 0, "i32")
+    state = zero["state"]
+    state = native_direct_append_instruction(state, "slot_set_int", "slot_ptr", {"args": [cursor_slot, zero["result"]]})["state"]
+    condition_block = state["next_block"]
+    state = native_direct_finish_block(state, native_ir_v2_jump(condition_block))
+    state = native_direct_begin_next_block(state)
+    current = native_direct_append_instruction(state, "slot_get_int", "i32", {"args": [cursor_slot]})
+    state = current["state"]
+    count = native_direct_append_instruction(state, "direct_iterable_count", "i32", {"args": [iterable_slot]})
+    state = count["state"]
+    has_item = native_direct_append_instruction(state, "lt", "i1", {"args": [current["result"], count["result"]]})
+    state = has_item["state"]
+    body_block = state["next_block"]
+    state = native_direct_finish_block(state, native_ir_v2_branch(has_item["result"], body_block, -1))
+    state = native_direct_begin_next_block(state)
+    copied = native_direct_append_instruction(state, "direct_iterable_item_copy", "i32", {"args": [item_slot, iterable_slot, current["result"]]})
+    state = copied["state"]
+    state = native_direct_append_instruction(state, "direct_collection_append_owned", "i32", {"args": [destination_slot, item_slot]})["state"]
+    one = native_direct_append_const_int(state, 1, "i32")
+    next_value = native_direct_append_instruction(one["state"], "add", "i32", {"args": [current["result"], one["result"]]})
+    state = native_direct_append_instruction(next_value["state"], "slot_set_int", "slot_ptr", {"args": [cursor_slot, next_value["result"]]})["state"]
+    state = native_direct_finish_block(state, native_ir_v2_jump(condition_block))
     exit_block = state["next_block"]
     state = native_direct_patch_branch_false_target(state, condition_block, exit_block)
     return native_direct_begin_next_block(state)
@@ -4091,17 +4619,82 @@ def native_direct_lower_extreme_builtin_into_slot(state, expression, destination
 
 
 def native_direct_lower_zip_builtin_into_slot(state, expression, destination_slot, path, temporary_depth):
-    argument_count = len(expression["args"])
+    # `strict` is a keyword control argument, not an iterable.  Keep the
+    # iterable list separate so the native zip ABI remains positional.  The
+    # The native path keeps `strict` out of the iterable vector and evaluates
+    # it with the same truth-test semantics as the interpreter.  Mismatches
+    # are propagated through the ordinary native exception slot.
+    iterable_arguments = []
+    strict_argument = none
+    argument_idx = 0
+    while argument_idx < len(expression["args"]):
+        candidate = expression["args"][argument_idx]
+        if candidate["kind"] == "kwarg":
+            if candidate["name"] != "strict":
+                fail("direct-native lowering rejected code=zip-unknown-keyword;name=" + candidate["name"] + ";position=" + path)
+            strict_argument = candidate["value"]
+        else:
+            iterable_arguments = method_append(iterable_arguments, candidate)
+        argument_idx = argument_idx + 1
+    strict_enabled = False
+    strict_dynamic_slot = -1
+    if strict_argument != none:
+        if strict_argument["kind"] == "bool":
+            strict_enabled = strict_argument["value"]
+    argument_count = len(iterable_arguments)
     base_depth = temporary_depth + 1
     snapshots = []
     argument_idx = 0
     while argument_idx < argument_count:
         snapshot_slot = native_direct_value_temporary_offset_slot(state, base_depth, argument_idx, path + ".snapshot[" + str(argument_idx) + "]")
-        argument = native_direct_call_argument_value(expression["args"][argument_idx])
+        argument = native_direct_call_argument_value(iterable_arguments[argument_idx])
         state = native_direct_lower_value_into_slot(state, argument, snapshot_slot, path + ".arg[" + str(argument_idx) + "]", base_depth + native_direct_temporary_groups_for_arguments(argument_count + 3))
         state = native_direct_prepare_iterable(state, snapshot_slot, path + ".arg[" + str(argument_idx) + "].prepare", base_depth + native_direct_temporary_groups_for_arguments(argument_count + 3))
         snapshots = method_append(snapshots, snapshot_slot)
         argument_idx = argument_idx + 1
+
+    if strict_argument != none and strict_argument["kind"] != "bool":
+        strict_dynamic_slot = native_direct_value_temporary_offset_slot(state, base_depth, argument_count + 3, path + ".strict")
+        state = native_direct_lower_value_into_slot(state, strict_argument, strict_dynamic_slot, path + ".strict", base_depth + native_direct_temporary_groups_for_arguments(argument_count + 4))
+
+    # Strict zip is checked before producing any rows.  This keeps the
+    # mismatch observable as a normal Tyrion exception, matching the
+    # interpreter and bootstrap evaluator instead of silently truncating.
+    strict_entry_block = -1
+    strict_branch_block = -1
+    if (strict_enabled or strict_dynamic_slot >= 0) and argument_count > 1:
+        if strict_dynamic_slot >= 0:
+            strict_truth = native_direct_append_instruction(state, "direct_slot_truthy", "i1", {"args": [strict_dynamic_slot]})
+            state = strict_truth["state"]
+            strict_branch_block = state["current_block"]
+            strict_entry_block = state["next_block"]
+            state = native_direct_finish_block(state, native_ir_v2_branch(strict_truth["result"], strict_entry_block, -1))
+            state = native_direct_begin_next_block(state)
+        strict_error_slot = native_direct_value_temporary_offset_slot(state, base_depth, argument_count + 4, path + ".strict-error")
+        # Native exception slots carry the exception class token.  Keep this
+        # identical to the direct ARM runtime so `except ValueError` matches
+        # consistently across native backends.
+        strict_error = {"kind": "string", "value": "ValueError"}
+        state = native_direct_lower_value_into_slot(state, strict_error, strict_error_slot, path + ".strict-error", base_depth + native_direct_temporary_groups_for_arguments(argument_count + 4))
+        expected_count = native_direct_append_instruction(state, "direct_iterable_count", "i32", {"args": [snapshots[0]]})
+        state = expected_count["state"]
+        strict_idx = 1
+        while strict_idx < argument_count:
+            actual_count = native_direct_append_instruction(state, "direct_iterable_count", "i32", {"args": [snapshots[strict_idx]]})
+            state = actual_count["state"]
+            same_length = native_direct_append_instruction(state, "eq", "i1", {"args": [expected_count["result"], actual_count["result"]]})
+            state = same_length["state"]
+            mismatch_block = state["next_block"]
+            next_check_block = mismatch_block + 1
+            state = native_direct_finish_block(state, native_ir_v2_branch(same_length["result"], next_check_block, mismatch_block))
+            state = native_direct_begin_next_block(state)
+            status = native_direct_append_const_int(state, 1, "i32")
+            state = native_direct_propagate_exception_slot(status["state"], strict_error_slot, status["result"], path + ".strict-mismatch[" + str(strict_idx) + "]")
+            state = native_direct_begin_next_block(state)
+            strict_idx = strict_idx + 1
+        if strict_entry_block >= 0:
+            normal_block = state["current_block"]
+            state = native_direct_patch_branch_false_target(state, strict_branch_block, normal_block)
     cursor_slot = native_direct_value_temporary_offset_slot(state, base_depth, argument_count, path + ".cursor")
     tuple_slot = native_direct_value_temporary_offset_slot(state, base_depth, argument_count + 1, path + ".tuple")
     item_slot = native_direct_value_temporary_offset_slot(state, base_depth, argument_count + 2, path + ".item")
@@ -4439,6 +5032,32 @@ def native_direct_lower_primitive_call_into_slot(state, expression, destination_
     return native_direct_require_call_success(primitive["state"], primitive["result"], exception_slot, path)
 
 
+def native_direct_lower_iterator_call_into_slot(state, expression, destination_slot, path, temporary_depth):
+    name = expression["callee"]["value"]
+    if name == "iter":
+        if len(expression["args"]) != 1:
+            fail("direct-native lowering rejected code=iter-arity;position=" + path)
+        source_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 0, path + ".source")
+        state = native_direct_lower_value_into_slot(state, expression["args"][0], source_slot, path + ".source", temporary_depth + 1)
+        created = native_direct_append_instruction(state, "direct_iterator_new", "i32", {"args": [destination_slot, source_slot]})
+        return native_direct_require_runtime_success(created["state"], created["result"], path, temporary_depth + 1)
+    if name == "next":
+        argc = len(expression["args"])
+        if argc < 1 or argc > 2:
+            fail("direct-native lowering rejected code=next-arity;position=" + path)
+        iterator_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 0, path + ".iterator")
+        default_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 1, path + ".default")
+        exception_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 2, path + ".exception")
+        state = native_direct_lower_value_into_slot(state, expression["args"][0], iterator_slot, path + ".iterator", temporary_depth + 1)
+        if argc == 2:
+            state = native_direct_lower_value_into_slot(state, expression["args"][1], default_slot, path + ".default", temporary_depth + 1)
+        else:
+            state = native_direct_lower_value_into_slot(state, {"kind": "none", "value": none, "items": []}, default_slot, path + ".default", temporary_depth + 1)
+        state = native_direct_lower_value_into_slot(state, {"kind": "string", "value": "StopIteration", "items": []}, exception_slot, path + ".exception", temporary_depth + 1)
+        lowered = native_direct_append_instruction(state, "direct_iterator_next", "i32", {"args": [destination_slot, iterator_slot, default_slot, exception_slot], "has_default": argc == 2})
+        return native_direct_require_call_success(lowered["state"], lowered["result"], exception_slot, path)
+
+
 def native_direct_prepare_iterable(state, iterable_slot, path, temporary_depth):
     exception_slot = native_direct_value_temporary_offset_slot(state, temporary_depth, 0, path + ".exception")
     state = native_direct_lower_value_into_slot(state, {"kind": "none", "value": none, "items": []}, exception_slot, path + ".exception", temporary_depth + 1)
@@ -4535,6 +5154,19 @@ def native_direct_lower_closure_call_into_slot(state, expression, destination_sl
 
 
 def native_direct_lower_dynamic_closure_call_into_slot(state, expression, destination_slot, path, temporary_depth):
+    # A starred-only dynamic call is the canonical vector-call shape used by
+    # map(function, *iterables).  Keep the argument collection owned by the
+    # caller and let the target backend materialise an ABI argument vector at
+    # runtime.  This is deliberately distinct from the fixed-argc closure
+    # operation below: no arbitrary compile-time arity limit is imposed.
+    if len(expression["args"]) == 1 and expression["args"][0]["kind"] == "starred":
+        exception_slot = native_direct_value_temporary_offset_slot(state, temporary_depth, 0, path + ".exception")
+        state = native_direct_lower_value_into_slot(state, {"kind": "none", "value": none, "items": []}, exception_slot, path + ".exception", temporary_depth + 1)
+        vector_slot = native_direct_value_temporary_offset_slot(state, temporary_depth, 1, path + ".vector")
+        state = native_direct_lower_value_into_slot(state, expression["args"][0]["value"], vector_slot, path + ".vector", temporary_depth + 1)
+        callee_slot = native_direct_local_slot(state, expression["callee"]["value"])
+        called = native_direct_append_instruction(state, "direct_closure_call_vector", "i32", {"args": [destination_slot, exception_slot, callee_slot, vector_slot], "targets": native_direct_closure_targets(state)})
+        return native_direct_require_call_success(called["state"], called["result"], exception_slot, path)
     parameter_count = len(expression["args"])
     exception_slot = native_direct_value_temporary_offset_slot(state, temporary_depth, 0, path + ".exception")
     state = native_direct_lower_value_into_slot(state, {"kind": "none", "value": none, "items": []}, exception_slot, path + ".exception", temporary_depth + 1)
@@ -4678,10 +5310,37 @@ def native_direct_lower_comprehension_into_slot(state, expression, destination_s
     return state
 
 
+def native_direct_lower_dict_update_method_into_slot(state, expression, destination_slot, path, temporary_depth):
+    positional = none
+    keyword_entries = []
+    arg_idx = 0
+    while arg_idx < len(expression["args"]):
+        argument = expression["args"][arg_idx]
+        if argument["kind"] == "kwarg":
+            keyword_entries.append({"key": {"kind": "string", "value": argument["name"]}, "value": argument["value"]})
+        else:
+            positional = argument
+        arg_idx = arg_idx + 1
+    helper_args = [expression["receiver"]]
+    helper_args.append(native_direct_optional_ast(positional))
+    helper_args.append(native_direct_optional_keyword_ast(keyword_entries))
+    helper_call = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_dict_update"}, "args": helper_args}
+    state = native_direct_lower_language_call_into_slot(state, helper_call, destination_slot, path + ".dict-update-helper", temporary_depth)
+    if expression["receiver"]["kind"] == "var":
+        receiver_slot = native_direct_local_slot(state, expression["receiver"]["value"])
+        state = native_direct_append_instruction(state, "direct_slot_copy_owned", "slot_ptr", {"args": [receiver_slot, destination_slot]})["state"]
+        if destination_slot != receiver_slot:
+            state = native_direct_append_instruction(state, "direct_slot_set_none_owned", "slot_ptr", {"args": [destination_slot]})["state"]
+    return state
+
+
 def native_direct_lower_value_into_slot(state, expression, destination_slot, path, temporary_depth):
     kind = expression["kind"]
     if kind == "lambda":
-        function_plan = native_direct_lambda_plan(state, path)
+        lambda_path = path
+        if "native_path" in expression:
+            lambda_path = expression["native_path"]
+        function_plan = native_direct_lambda_plan(state, lambda_path)
         capture_args = [destination_slot]
         capture_idx = 0
         while capture_idx < len(function_plan["captures"]):
@@ -4728,8 +5387,6 @@ def native_direct_lower_value_into_slot(state, expression, destination_slot, pat
             return stored["state"]
         if not native_direct_value_name_is_bound(state, expression["value"]) and native_direct_has_function_plan(state, expression["value"]):
             function_plan = native_direct_function_plan(state, expression["value"])
-            if not function_plan["address_taken"]:
-                fail("direct-native lowering rejected code=function-value-not-address-taken;name=" + expression["value"] + ";position=" + path)
             created = native_direct_append_instruction(state, "direct_slot_closure_new", "i32", {"args": [destination_slot], "function_id": function_plan["id"], "capture_count": 0, "global_frame": state["global_frame"]})
             return created["state"]
         resolved = native_direct_value_slot_for_read(state, expression["value"], path)
@@ -4801,6 +5458,15 @@ def native_direct_lower_value_into_slot(state, expression, destination_slot, pat
         state = native_direct_lower_value_into_slot(state, expression["stop"], stop_slot, path + ".stop", temporary_depth + 1)
         lowered = native_direct_append_instruction(state, "direct_slot_slice", "i32", {"args": [destination_slot, receiver_slot, start_slot, stop_slot]})
         return lowered["state"]
+    if kind == "attr" and expression["receiver"]["kind"] == "var" and (expression["name"] == "start" or expression["name"] == "stop" or expression["name"] == "step"):
+        descriptor = native_direct_range_descriptor(state, expression["receiver"]["value"])
+        if descriptor != none:
+            descriptor_index = 0
+            if expression["name"] == "stop":
+                descriptor_index = 1
+            elif expression["name"] == "step":
+                descriptor_index = 2
+            return native_direct_lower_value_into_slot(state, descriptor[descriptor_index], destination_slot, path + ".range-" + expression["name"], temporary_depth)
     if kind == "attr":
         receiver_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 0, path + ".receiver")
         state = native_direct_lower_value_into_slot(state, expression["receiver"], receiver_slot, path + ".receiver", temporary_depth + 1)
@@ -4813,11 +5479,23 @@ def native_direct_lower_value_into_slot(state, expression, destination_slot, pat
         if native_direct_has_function_plan(state, expression["callee"]["value"]):
             return native_direct_lower_closure_call_into_slot(state, expression, destination_slot, path, temporary_depth)
         return native_direct_lower_dynamic_closure_call_into_slot(state, expression, destination_slot, path, temporary_depth)
-    # Resolve declared language functions before consulting the primitive
-    # namespace.  Besides matching lexical shadowing, this keeps non-primitive
-    # callable names out of schema lookup entirely.
-    if kind == "call" and expression["callee"]["kind"] == "var" and native_direct_has_function_plan(state, "" + expression["callee"]["value"]):
+    if kind == "call" and expression["callee"]["kind"] == "var" and expression["callee"]["value"] == "set":
+        return native_direct_lower_collection_constructor_into_slot(state, expression, destination_slot, path, temporary_depth, "set")
+    if kind == "call" and expression["callee"]["kind"] == "var" and expression["callee"]["value"] == "tuple":
+        return native_direct_lower_collection_constructor_into_slot(state, expression, destination_slot, path, temporary_depth, "tuple")
+    if kind == "call" and expression["callee"]["kind"] == "var" and expression["callee"]["value"] == "dict":
+        rewritten = native_direct_rewrite_dict_constructor(expression)
+        return native_direct_lower_language_call_into_slot(state, rewritten, destination_slot, path + ".dict-constructor", temporary_depth)
+    # Dictionary-union helpers are ordinary functions injected by the core
+    # builtin module.  The application analyzer treats them as direct builtins
+    # to keep them available without user declarations, so route them here
+    # explicitly before primitive dispatch.
+    if kind == "call" and expression["callee"]["kind"] == "var" and (expression["callee"]["value"] == "__tyrion_dict_union" or expression["callee"]["value"] == "__tyrion_dict_fromkeys"):
         return native_direct_lower_language_call_into_slot(state, expression, destination_slot, path, temporary_depth)
+    # Resolve declared language functions before consulting the primitive namespace.
+    declared = native_direct_try_lower_declared_call(state, expression, destination_slot, path, temporary_depth)
+    if declared["handled"]:
+        return declared["state"]
     if kind == "call" and expression["callee"]["kind"] == "var" and expression["callee"]["value"] == "sum":
         return native_direct_lower_sum_builtin_into_slot(state, expression, destination_slot, path, temporary_depth)
     if kind == "call" and expression["callee"]["kind"] == "var" and expression["callee"]["value"] == "min":
@@ -4834,40 +5512,195 @@ def native_direct_lower_value_into_slot(state, expression, destination_slot, pat
         return native_direct_lower_enumerate_builtin_into_slot(state, expression, destination_slot, path, temporary_depth)
     if kind == "call" and expression["callee"]["kind"] == "var" and expression["callee"]["value"] == "sorted":
         return native_direct_lower_sorted_builtin_into_slot(state, expression, destination_slot, path, temporary_depth)
-    if kind == "call" and expression["callee"]["kind"] == "var" and primitive_schema_has("" + expression["callee"]["value"]) and not primitive_schema_direct_source_body("" + expression["callee"]["value"]) and expression["callee"]["value"] != "open" and expression["callee"]["value"] != "len":
+    if kind == "call" and expression["callee"]["kind"] == "var" and (expression["callee"]["value"] == "iter" or expression["callee"]["value"] == "next"):
+        return native_direct_lower_iterator_call_into_slot(state, expression, destination_slot, path, temporary_depth)
+    if native_direct_is_direct_primitive_call(expression):
         return native_direct_lower_primitive_call_into_slot(state, expression, destination_slot, path, temporary_depth)
     if kind == "call" and expression["callee"]["kind"] == "var" and expression["callee"]["value"] == "argv" and len(expression["args"]) == 0:
         loaded = native_direct_append_instruction(state, "direct_process_argv", "i32", {"args": [destination_slot]})
         return native_direct_require_runtime_success(loaded["state"], loaded["result"], path, temporary_depth + 1)
     if kind == "call" and expression["callee"]["kind"] == "var" and expression["callee"]["value"] == "open":
-        path_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 0, path + ".arg[0]")
-        mode_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 1, path + ".arg[1]")
-        state = native_direct_lower_value_into_slot(state, expression["args"][0], path_slot, path + ".arg[0]", temporary_depth + 1)
-        if len(expression["args"]) == 1:
-            state = native_direct_lower_value_into_slot(state, {"kind": "string", "value": "r", "items": []}, mode_slot, path + ".default-mode", temporary_depth + 1)
-        else:
-            state = native_direct_lower_value_into_slot(state, expression["args"][1], mode_slot, path + ".arg[1]", temporary_depth + 1)
-        opened = native_direct_append_instruction(state, "direct_file_open", "i32", {"args": [destination_slot, path_slot, mode_slot]})
-        return native_direct_require_runtime_success(opened["state"], opened["result"], path, temporary_depth + 1)
+        return native_direct_lower_open_call_into_slot(state, expression, destination_slot, path, temporary_depth)
     if kind == "call" and expression["callee"]["kind"] == "var" and expression["callee"]["value"] == "len" and len(expression["args"]) == 1:
         argument = expression["args"][0]
-        if argument["kind"] == "var":
-            # len() observes but does not retain its input. Borrow a bound
-            # variable directly so a later mutation does not detach solely
-            # because the length check left a frame temporary alive.
-            resolved = native_direct_value_slot_for_read(state, argument["value"], path + ".arg[0]")
-            state = resolved["state"]
-            argument_slot = resolved["slot"]
-        else:
-            argument_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 0, path + ".arg[0]")
-            state = native_direct_lower_value_into_slot(state, argument, argument_slot, path + ".arg[0]", temporary_depth + 1)
+        resolved = native_direct_len_argument_slot(state, argument, path, temporary_depth)
+        state = resolved["state"]
+        argument_slot = resolved["slot"]
         state = native_direct_prepare_iterable(state, argument_slot, path + ".arg[0].prepare", temporary_depth + 1)
         length = native_direct_append_instruction(state, "direct_iterable_count", "i32", {"args": [argument_slot]})
         stored = native_direct_append_instruction(length["state"], "direct_slot_set_int_owned", "slot_ptr", {"args": [destination_slot, length["result"]]})
         return stored["state"]
     if kind == "method_call":
+        if expression["name"] == "get" and expression["receiver"]["kind"] == "var":
+            helper_args = [expression["receiver"]]
+            arg_idx = 0
+            while arg_idx < len(expression["args"]):
+                argument = expression["args"][arg_idx]
+                if argument["kind"] == "kwarg":
+                    argument = argument["value"]
+                helper_args = method_append(helper_args, argument)
+                arg_idx = arg_idx + 1
+            helper_call = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_dict_get"}, "args": helper_args}
+            return native_direct_lower_language_call_into_slot(state, helper_call, destination_slot, path + ".dict-get-helper", temporary_depth)
+        if expression["name"] == "values":
+            helper_call = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_dict_values"}, "args": [expression["receiver"]]}
+            return native_direct_lower_language_call_into_slot(state, helper_call, destination_slot, path + ".dict-values-helper", temporary_depth)
+        if expression["name"] == "update":
+            return native_direct_lower_dict_update_method_into_slot(state, expression, destination_slot, path, temporary_depth)
+        if expression["name"] == "setdefault":
+            helper_args = [expression["receiver"]]
+            for argument in expression["args"]:
+                helper_args.append(argument)
+            if len(helper_args) == 2:
+                helper_args.append({"kind": "none", "value": none, "items": []})
+            helper_call = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_dict_setdefault_pair"}, "args": helper_args}
+            pair_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 0, path + ".dict-setdefault-pair")
+            state = native_direct_lower_language_call_into_slot(state, helper_call, pair_slot, path + ".dict-setdefault-helper", temporary_depth)
+            index_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 1, path + ".dict-setdefault-index")
+            state = native_direct_lower_value_into_slot(state, {"kind": "int", "value": 0, "items": []}, index_slot, path + ".dict-setdefault-result-index", temporary_depth + 1)
+            state = native_direct_append_instruction(state, "direct_slot_index", "i32", {"args": [destination_slot, pair_slot, index_slot]})["state"]
+            if expression["receiver"]["kind"] == "var":
+                receiver_slot = native_direct_local_slot(state, expression["receiver"]["value"])
+                state = native_direct_lower_value_into_slot(state, {"kind": "int", "value": 1, "items": []}, index_slot, path + ".dict-setdefault-receiver-index", temporary_depth + 1)
+                state = native_direct_append_instruction(state, "direct_slot_index", "i32", {"args": [receiver_slot, pair_slot, index_slot]})["state"]
+            return state
+        if expression["name"] == "clear" and expression["receiver"]["kind"] == "var":
+            helper_call = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_dict_clear_pair"}, "args": [expression["receiver"]]}
+            pair_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 0, path + ".dict-clear-pair")
+            state = native_direct_lower_language_call_into_slot(state, helper_call, pair_slot, path + ".dict-clear-helper", temporary_depth)
+            index_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 1, path + ".dict-clear-index")
+            state = native_direct_lower_value_into_slot(state, {"kind": "int", "value": 0, "items": []}, index_slot, path + ".dict-clear-result-index", temporary_depth + 1)
+            state = native_direct_append_instruction(state, "direct_slot_index", "i32", {"args": [destination_slot, pair_slot, index_slot]})["state"]
+            receiver_slot = native_direct_local_slot(state, expression["receiver"]["value"])
+            state = native_direct_lower_value_into_slot(state, {"kind": "int", "value": 1, "items": []}, index_slot, path + ".dict-clear-receiver-index", temporary_depth + 1)
+            return native_direct_append_instruction(state, "direct_slot_index", "i32", {"args": [receiver_slot, pair_slot, index_slot]})["state"]
+        if expression["name"] == "popitem" and expression["receiver"]["kind"] == "var":
+            helper_call = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_dict_popitem_pair"}, "args": [expression["receiver"]]}
+            pair_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 0, path + ".dict-popitem-pair")
+            state = native_direct_lower_language_call_into_slot(state, helper_call, pair_slot, path + ".dict-popitem-helper", temporary_depth)
+            index_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 1, path + ".dict-popitem-index")
+            state = native_direct_lower_value_into_slot(state, {"kind": "int", "value": 0, "items": []}, index_slot, path + ".dict-popitem-result-index", temporary_depth + 1)
+            state = native_direct_append_instruction(state, "direct_slot_index", "i32", {"args": [destination_slot, pair_slot, index_slot]})["state"]
+            receiver_slot = native_direct_local_slot(state, expression["receiver"]["value"])
+            state = native_direct_lower_value_into_slot(state, {"kind": "int", "value": 1, "items": []}, index_slot, path + ".dict-popitem-receiver-index", temporary_depth + 1)
+            return native_direct_append_instruction(state, "direct_slot_index", "i32", {"args": [receiver_slot, pair_slot, index_slot]})["state"]
+        if expression["name"] == "pop" and (len(expression["args"]) == 2 or (len(expression["args"]) == 1 and expression["args"][0]["kind"] == "string")):
+            helper_args = [expression["receiver"], expression["args"][0]]
+            if len(expression["args"]) == 2:
+                helper_args.append(expression["args"][1])
+                helper_args.append({"kind": "bool", "value": True, "items": []})
+            else:
+                helper_args.append({"kind": "none", "value": none, "items": []})
+                helper_args.append({"kind": "bool", "value": False, "items": []})
+            helper_call = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_dict_pop_rebuild"}, "args": helper_args}
+            tuple_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 0, path + ".dict-pop-result")
+            state = native_direct_lower_language_call_into_slot(state, helper_call, tuple_slot, path + ".dict-pop-helper", temporary_depth)
+            index_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 1, path + ".dict-pop-index")
+            state = native_direct_lower_value_into_slot(state, {"kind": "int", "value": 0, "items": []}, index_slot, path + ".dict-pop-index", temporary_depth + 1)
+            state = native_direct_append_instruction(state, "direct_slot_index", "i32", {"args": [destination_slot, tuple_slot, index_slot]})["state"]
+            if expression["receiver"]["kind"] == "var":
+                receiver_slot = native_direct_local_slot(state, expression["receiver"]["value"])
+                state = native_direct_lower_value_into_slot(state, {"kind": "int", "value": 1, "items": []}, index_slot, path + ".dict-pop-replacement-index", temporary_depth + 1)
+                state = native_direct_append_instruction(state, "direct_slot_index", "i32", {"args": [receiver_slot, tuple_slot, index_slot]})["state"]
+            return state
+        if expression["name"] == "count" and (expression["receiver"]["kind"] == "list" or expression["receiver"]["kind"] == "tuple" or (expression["receiver"]["kind"] == "var" and (native_direct_name_in_list(state["aggregate_names"], expression["receiver"]["value"]) or native_direct_name_in_list(state["range_names"], expression["receiver"]["value"])) )):
+            helper_args = [expression["receiver"], expression["args"][0]]
+            helper_call = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_list_count"}, "args": helper_args}
+            # These helpers are ordinary core-language functions.  Lower the
+            # synthesized call directly so it does not depend on the generic
+            # expression dispatcher recognizing a call that was created after
+            # method analysis.
+            return native_direct_lower_language_call_into_slot(state, helper_call, destination_slot, path + ".list-count-helper", temporary_depth)
+        if expression["name"] == "index" and (expression["receiver"]["kind"] == "list" or expression["receiver"]["kind"] == "tuple" or (expression["receiver"]["kind"] == "var" and (native_direct_name_in_list(state["aggregate_names"], expression["receiver"]["value"]) or native_direct_name_in_list(state["range_names"], expression["receiver"]["value"])) )):
+            helper_args = [expression["receiver"]]
+            arg_idx = 0
+            while arg_idx < len(expression["args"]):
+                helper_arg = expression["args"][arg_idx]
+                if helper_arg["kind"] == "kwarg":
+                    helper_arg = {"kind": "kwarg", "name": helper_arg["name"], "value": helper_arg["value"]}
+                helper_args = method_append(helper_args, helper_arg)
+                arg_idx = arg_idx + 1
+            helper_call = {"kind": "call", "callee": {"kind": "var", "value": "__tyrion_method_list_index"}, "args": helper_args}
+            return native_direct_lower_language_call_into_slot(state, helper_call, destination_slot, path + ".list-index-helper", temporary_depth)
+        if expression["name"] == "sort" and expression["receiver"]["kind"] == "var" and len(expression["args"]) > 0:
+            key_expr = none
+            reverse_expr = {"kind": "bool", "value": False, "items": []}
+            has_key = False
+            arg_idx = 0
+            while arg_idx < len(expression["args"]):
+                argument = expression["args"][arg_idx]
+                if argument["kind"] == "kwarg" and argument["name"] == "key":
+                    key_expr = argument["value"]
+                    has_key = True
+                elif argument["kind"] == "kwarg" and argument["name"] == "reverse":
+                    reverse_expr = argument["value"]
+                elif argument["kind"] == "lambda" or argument["kind"] == "var":
+                    key_expr = argument
+                    has_key = True
+                else:
+                    reverse_expr = argument
+                arg_idx = arg_idx + 1
+            if has_key:
+                if key_expr["kind"] == "lambda":
+                    key_expr = {"kind": "lambda", "params": key_expr["params"], "body": key_expr["body"], "entries": key_expr["entries"], "native_path": path + ".arg[0].value"}
+                sorted_expr = {"kind": "call", "callee": {"kind": "var", "value": "sorted"}, "args": [expression["receiver"], {"kind": "kwarg", "name": "key", "value": key_expr}]}
+                sorted_slot = native_direct_value_temporary_pair_slot(state, temporary_depth + 1, 0, path + ".sorted-key")
+                cursor_slot = native_direct_value_temporary_pair_slot(state, temporary_depth + 1, 1, path + ".cursor")
+                index_slot = native_direct_value_temporary_pair_slot(state, temporary_depth + 2, 0, path + ".index")
+                item_slot = native_direct_value_temporary_pair_slot(state, temporary_depth + 2, 1, path + ".item")
+                receiver_slot = native_direct_local_slot(state, expression["receiver"]["value"])
+                state = native_direct_lower_sorted_builtin_into_slot(state, sorted_expr, sorted_slot, path + ".sorted-key", temporary_depth + 2)
+                zero = native_direct_append_const_int(state, 0, "i32")
+                state = zero["state"]
+                state = native_direct_append_instruction(state, "slot_set_int", "slot_ptr", {"args": [cursor_slot, zero["result"]]})["state"]
+                condition_block = state["next_block"]
+                state = native_direct_finish_block(state, native_ir_v2_jump(condition_block))
+                state = native_direct_begin_next_block(state)
+                current = native_direct_append_instruction(state, "slot_get_int", "i32", {"args": [cursor_slot]})
+                state = current["state"]
+                count = native_direct_append_instruction(state, "direct_iterable_count", "i32", {"args": [sorted_slot]})
+                state = count["state"]
+                has_item = native_direct_append_instruction(state, "lt", "i1", {"args": [current["result"], count["result"]]})
+                state = has_item["state"]
+                body_block = state["next_block"]
+                state = native_direct_finish_block(state, native_ir_v2_branch(has_item["result"], body_block, -1))
+                state = native_direct_begin_next_block(state)
+                copy_index = current["result"]
+                if reverse_expr["kind"] == "bool" and reverse_expr["value"]:
+                    last = native_direct_append_instruction(state, "sub", "i32", {"args": [count["result"], current["result"]]})
+                    state = last["state"]
+                    one = native_direct_append_const_int(state, 1, "i32")
+                    state = one["state"]
+                    copy_index_value = native_direct_append_instruction(state, "sub", "i32", {"args": [last["result"], one["result"]]})
+                    state = copy_index_value["state"]
+                    copy_index = copy_index_value["result"]
+                state = native_direct_append_instruction(state, "direct_iterable_item_copy", "i32", {"args": [item_slot, sorted_slot, copy_index]})["state"]
+                state = native_direct_append_instruction(state, "direct_slot_set_int_owned", "slot_ptr", {"args": [index_slot, current["result"]]})["state"]
+                state = native_direct_append_instruction(state, "direct_slot_index_set", "i32", {"args": [receiver_slot, index_slot, item_slot]})["state"]
+                next_current = native_direct_append_instruction(state, "slot_get_int", "i32", {"args": [cursor_slot]})
+                state = next_current["state"]
+                one = native_direct_append_const_int(state, 1, "i32")
+                state = one["state"]
+                next_value = native_direct_append_instruction(state, "add", "i32", {"args": [next_current["result"], one["result"]]})
+                state = next_value["state"]
+                state = native_direct_append_instruction(state, "slot_set_int", "slot_ptr", {"args": [cursor_slot, next_value["result"]]})["state"]
+                state = native_direct_finish_block(state, native_ir_v2_jump(condition_block))
+                exit_block = state["next_block"]
+                state = native_direct_patch_branch_false_target(state, condition_block, exit_block)
+                state = native_direct_begin_next_block(state)
+                state = native_direct_append_instruction(state, "direct_slot_release", "i32", {"args": [sorted_slot]})["state"]
+                return native_direct_append_instruction(state, "direct_slot_set_none_owned", "slot_ptr", {"args": [destination_slot]})["state"]
         if len(native_direct_classes_with_method(state, expression["name"])) > 0:
             return native_direct_lower_bound_method_into_slot(state, expression, destination_slot, path, temporary_depth)
+        if expression["name"] == "join" or expression["name"] == "replace" or expression["name"] == "lower" or expression["name"] == "upper" or expression["name"] == "find" or expression["name"] == "count" or expression["name"] == "index" or expression["name"] == "removeprefix" or expression["name"] == "removesuffix" or expression["name"] == "partition" or expression["name"] == "rpartition" or expression["name"] == "lstrip" or expression["name"] == "rstrip" or expression["name"] == "strip" or expression["name"] == "split" or expression["name"] == "rsplit" or expression["name"] == "splitlines":
+            helper_name = "__tyrion_method_" + expression["name"]
+            helper_args = [expression["receiver"]]
+            arg_idx = 0
+            while arg_idx < len(expression["args"]):
+                helper_args = method_append(helper_args, expression["args"][arg_idx])
+                arg_idx = arg_idx + 1
+            helper_call = {"kind": "call", "callee": {"kind": "var", "value": helper_name}, "args": helper_args}
+            return native_direct_lower_language_call_into_slot(state, helper_call, destination_slot, path + "." + expression["name"] + "-helper", temporary_depth)
         file_method = expression["name"] == "read" or expression["name"] == "write" or expression["name"] == "flush" or expression["name"] == "seek" or expression["name"] == "close"
         if file_method:
             receiver_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 0, path + ".receiver")
@@ -4886,7 +5719,7 @@ def native_direct_lower_value_into_slot(state, expression, destination_slot, pat
             lowered = native_direct_append_instruction(state, "direct_file_method", "i32", {"args": args, "method": expression["name"]})
             return native_direct_require_runtime_success(lowered["state"], lowered["result"], path, temporary_depth + 1)
         receiver_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 0, path + ".receiver")
-        mutates_receiver = expression["name"] == "append" or expression["name"] == "remove" or expression["name"] == "add"
+        mutates_receiver = expression["name"] == "append" or expression["name"] == "extend" or expression["name"] == "insert" or expression["name"] == "clear" or expression["name"] == "reverse" or expression["name"] == "sort" or expression["name"] == "remove" or expression["name"] == "add" or expression["name"] == "pop"
         if mutates_receiver and expression["receiver"]["kind"] == "var":
             receiver_name = expression["receiver"]["value"]
             if not native_direct_name_in_list(state["initialized_locals"], receiver_name):
@@ -4895,10 +5728,15 @@ def native_direct_lower_value_into_slot(state, expression, destination_slot, pat
         else:
             state = native_direct_lower_value_into_slot(state, expression["receiver"], receiver_slot, path + ".receiver", temporary_depth + 1)
         args = [destination_slot, receiver_slot]
-        if len(expression["args"]) == 1:
-            argument_slot = native_direct_value_temporary_pair_slot(state, temporary_depth, 1, path + ".arg[0]")
-            state = native_direct_lower_value_into_slot(state, expression["args"][0], argument_slot, path + ".arg[0]", temporary_depth + 1)
+        arg_idx = 0
+        while arg_idx < len(expression["args"]):
+            argument_slot = native_direct_value_temporary_offset_slot(state, temporary_depth, arg_idx + 1, path + ".arg[" + str(arg_idx) + "]")
+            argument_expression = expression["args"][arg_idx]
+            if argument_expression["kind"] == "kwarg":
+                argument_expression = argument_expression["value"]
+            state = native_direct_lower_value_into_slot(state, argument_expression, argument_slot, path + ".arg[" + str(arg_idx) + "]", temporary_depth + 1)
             args = method_append(args, argument_slot)
+            arg_idx = arg_idx + 1
         lowered = native_direct_append_instruction(state, "direct_slot_method", "i32", {"args": args, "method": expression["name"]})
         state = lowered["state"]
         # Indexed and attributed receivers are materialized into a temporary.
@@ -5229,6 +6067,7 @@ def native_direct_lower_statement(state, statement, path):
         target_slot = native_direct_local_slot(state, target_name)
         state = native_direct_lower_value_into_slot(state, statement["value"], target_slot, path + ".value", 0)
         state = native_direct_mark_local_initialized(state, target_name)
+        state = native_direct_record_range_assignment(state, target_name, statement["value"])
         if statement["value"]["kind"] == "bool":
             return native_direct_set_known_bool(state, target_name, True, statement["value"]["value"])
         return native_direct_set_known_bool(state, target_name, False, False)
@@ -5272,6 +6111,35 @@ def native_direct_lower_statement(state, statement, path):
     return native_direct_lower_print_statement(state, statement, path)
 
 
+def native_direct_append_zeroed_slot(state, collection_name):
+    allocated = native_direct_append_instruction(state, "slot_alloc", "slot_ptr", {"args": []})
+    allocated_result = allocated["result"]
+    state = allocated["state"]
+    allocated = None
+    zeroed = native_direct_append_instruction(state, "slot_zero", "slot_ptr", {"args": [allocated_result]})
+    zeroed_result = zeroed["result"]
+    state = zeroed["state"]
+    zeroed = None
+    state[collection_name] = method_append(state[collection_name], zeroed_result)
+    state["frame_slots"] = method_append(state["frame_slots"], zeroed_result)
+    return state
+
+
+def native_direct_append_local_slot(state, local_name, local_owned):
+    allocated = native_direct_append_instruction(state, "slot_alloc", "slot_ptr", {"args": []})
+    allocated_result = allocated["result"]
+    state = allocated["state"]
+    allocated = None
+    zeroed = native_direct_append_instruction(state, "slot_zero", "slot_ptr", {"args": [allocated_result]})
+    zeroed_result = zeroed["result"]
+    state = zeroed["state"]
+    zeroed = None
+    state["locals"] = method_append(state["locals"], {"name": local_name, "slot": zeroed_result})
+    state = native_direct_local_index_append(state, local_name, zeroed_result, local_owned)
+    state["frame_slots"] = method_append(state["frame_slots"], zeroed_result)
+    return state
+
+
 def native_direct_function_state(scope_plan, function_plan_store, symbol_index, constant_pool, primitive_manifest, is_user_function):
     scope_id = 0
     top_level_source_indices = []
@@ -5281,7 +6149,9 @@ def native_direct_function_state(scope_plan, function_plan_store, symbol_index, 
     else:
         top_level_source_indices = scope_plan["executable_source_indices"]
         report_unhandled_exception = scope_plan["root_manifest"]["report_unhandled_exception"]
-    state = {"blocks": __tyrion_native_ast_builder_create(), "block_patches": __tyrion_native_ast_builder_create(), "current_block": 0, "next_block": 1, "instructions": __tyrion_native_ast_builder_create(), "constant_pool": constant_pool, "primitive_manifest": primitive_manifest, "next_result": 0, "locals": [], "local_index": native_direct_local_index_create(), "initialized_locals": [], "known_bools": [], "loop_contexts": [], "cleanup_contexts": [], "exception_contexts": [], "loop_control_slots": [], "next_loop_control_slot": 0, "exception_control_slots": [], "next_exception_control_slot": 0, "value_temporary_slots": [], "top_level_source_indices": top_level_source_indices, "aggregate_names": scope_plan["aggregate_names"], "string_names": scope_plan["string_names"], "aggregate_core": scope_plan["aggregate_core"], "frame_slots": [], "terminated": False, "function_plan_store": function_plan_store, "symbol_index": symbol_index, "target": scope_plan["target"], "class_plans": scope_plan["classes"], "attribute_names": scope_plan["attribute_names"], "global_names": scope_plan["global_names"], "global_frame": -1, "scope_id": scope_id, "is_user_function": is_user_function, "report_unhandled_exception": report_unhandled_exception, "is_generator_resume": False, "generator_descriptor": -1, "yield_slot": -1, "yield_dispatch_blocks": [], "next_yield_state": 1, "result_slot": -1, "exception_slot": -1}
+    state = {"blocks": __tyrion_native_ast_builder_create(), "block_patches": __tyrion_native_ast_builder_create(), "current_block": 0, "next_block": 1, "instructions": __tyrion_native_ast_builder_create(), "constant_pool": constant_pool, "primitive_manifest": primitive_manifest, "operation_inventory": [], "primitive_ids": [], "next_result": 0, "locals": [], "local_index": native_direct_local_index_create(), "initialized_locals": [], "known_bools": [], "loop_contexts": [], "cleanup_contexts": [], "exception_contexts": [], "loop_control_slots": [], "next_loop_control_slot": 0, "exception_control_slots": [], "next_exception_control_slot": 0, "value_temporary_slots": [], "top_level_source_indices": top_level_source_indices, "aggregate_names": scope_plan["aggregate_names"], "string_names": scope_plan["string_names"], "aggregate_core": scope_plan["aggregate_core"], "frame_slots": [], "terminated": False, "function_plan_store": function_plan_store, "symbol_index": symbol_index, "target": scope_plan["target"], "class_plans": scope_plan["classes"], "attribute_names": scope_plan["attribute_names"], "global_names": scope_plan["global_names"], "global_frame": -1, "scope_id": scope_id, "is_user_function": is_user_function, "report_unhandled_exception": report_unhandled_exception, "is_generator_resume": False, "generator_descriptor": -1, "yield_slot": -1, "yield_dispatch_blocks": [], "next_yield_state": 1, "result_slot": -1, "exception_slot": -1}
+    state["range_names"] = []
+    state["range_descriptors"] = []
     args_base = -1
     closure_base = -1
     if is_user_function:
@@ -5307,15 +6177,9 @@ def native_direct_function_state(scope_plan, function_plan_store, symbol_index, 
             state["global_frame"] = closure_base
     local_idx = 0
     while local_idx < len(scope_plan["locals"]):
-        allocated = native_direct_append_instruction(state, "slot_alloc", "slot_ptr", {"args": []})
-        state = allocated["state"]
-        zeroed = native_direct_append_instruction(state, "slot_zero", "slot_ptr", {"args": [allocated["result"]]})
-        state = zeroed["state"]
         local_name = scope_plan["locals"][local_idx]["name"]
         local_owned = native_direct_name_in_list(scope_plan["aggregate_names"], local_name) or native_direct_name_in_list(scope_plan["string_names"], local_name)
-        state["locals"] = method_append(state["locals"], {"name": local_name, "slot": zeroed["result"]})
-        state = native_direct_local_index_append(state, local_name, zeroed["result"], local_owned)
-        state["frame_slots"] = method_append(state["frame_slots"], zeroed["result"])
+        state = native_direct_append_local_slot(state, local_name, local_owned)
         local_idx = local_idx + 1
     if not is_user_function:
         global_args = []
@@ -5326,30 +6190,15 @@ def native_direct_function_state(scope_plan, function_plan_store, symbol_index, 
         state["global_frame"] = globals["result"]
     control_slot_idx = 0
     while control_slot_idx < scope_plan["loop_control_slot_count"]:
-        allocated = native_direct_append_instruction(state, "slot_alloc", "slot_ptr", {"args": []})
-        state = allocated["state"]
-        zeroed = native_direct_append_instruction(state, "slot_zero", "slot_ptr", {"args": [allocated["result"]]})
-        state = zeroed["state"]
-        state["loop_control_slots"] = method_append(state["loop_control_slots"], zeroed["result"])
-        state["frame_slots"] = method_append(state["frame_slots"], zeroed["result"])
+        state = native_direct_append_zeroed_slot(state, "loop_control_slots")
         control_slot_idx = control_slot_idx + 1
     exception_slot_idx = 0
     while exception_slot_idx < scope_plan["exception_control_slot_count"]:
-        allocated = native_direct_append_instruction(state, "slot_alloc", "slot_ptr", {"args": []})
-        state = allocated["state"]
-        zeroed = native_direct_append_instruction(state, "slot_zero", "slot_ptr", {"args": [allocated["result"]]})
-        state = zeroed["state"]
-        state["exception_control_slots"] = method_append(state["exception_control_slots"], zeroed["result"])
-        state["frame_slots"] = method_append(state["frame_slots"], zeroed["result"])
+        state = native_direct_append_zeroed_slot(state, "exception_control_slots")
         exception_slot_idx = exception_slot_idx + 1
     temporary_slot_idx = 0
     while temporary_slot_idx < scope_plan["value_temporary_slot_count"]:
-        allocated = native_direct_append_instruction(state, "slot_alloc", "slot_ptr", {"args": []})
-        state = allocated["state"]
-        zeroed = native_direct_append_instruction(state, "slot_zero", "slot_ptr", {"args": [allocated["result"]]})
-        state = zeroed["state"]
-        state["value_temporary_slots"] = method_append(state["value_temporary_slots"], zeroed["result"])
-        state["frame_slots"] = method_append(state["frame_slots"], zeroed["result"])
+        state = native_direct_append_zeroed_slot(state, "value_temporary_slots")
         temporary_slot_idx = temporary_slot_idx + 1
     if is_user_function:
         capture_idx = 0
@@ -5372,7 +6221,9 @@ def native_direct_function_state(scope_plan, function_plan_store, symbol_index, 
 
 
 def native_direct_generator_resume_state(function_plan, function_plan_store, symbol_index, constant_pool, primitive_manifest):
-    state = {"blocks": __tyrion_native_ast_builder_create(), "block_patches": __tyrion_native_ast_builder_create(), "current_block": 0, "next_block": 1, "instructions": __tyrion_native_ast_builder_create(), "constant_pool": constant_pool, "primitive_manifest": primitive_manifest, "next_result": 0, "locals": [], "local_index": native_direct_local_index_create(), "initialized_locals": [], "known_bools": [], "loop_contexts": [], "cleanup_contexts": [], "exception_contexts": [], "loop_control_slots": [], "next_loop_control_slot": 0, "exception_control_slots": [], "next_exception_control_slot": 0, "value_temporary_slots": [], "aggregate_names": function_plan["aggregate_names"], "string_names": function_plan["string_names"], "aggregate_core": True, "frame_slots": [], "terminated": False, "function_plan_store": function_plan_store, "symbol_index": symbol_index, "class_plans": function_plan["classes"], "attribute_names": function_plan["attribute_names"], "global_names": function_plan["global_names"], "global_frame": -1, "scope_id": function_plan["id"], "is_user_function": True, "is_generator_resume": True, "generator_descriptor": -1, "yield_slot": -1, "yield_dispatch_blocks": [-1], "next_yield_state": 1, "result_slot": -1, "exception_slot": -1}
+    state = {"blocks": __tyrion_native_ast_builder_create(), "block_patches": __tyrion_native_ast_builder_create(), "current_block": 0, "next_block": 1, "instructions": __tyrion_native_ast_builder_create(), "constant_pool": constant_pool, "primitive_manifest": primitive_manifest, "operation_inventory": [], "primitive_ids": [], "next_result": 0, "locals": [], "local_index": native_direct_local_index_create(), "initialized_locals": [], "known_bools": [], "loop_contexts": [], "cleanup_contexts": [], "exception_contexts": [], "loop_control_slots": [], "next_loop_control_slot": 0, "exception_control_slots": [], "next_exception_control_slot": 0, "value_temporary_slots": [], "aggregate_names": function_plan["aggregate_names"], "string_names": function_plan["string_names"], "aggregate_core": True, "frame_slots": [], "terminated": False, "function_plan_store": function_plan_store, "symbol_index": symbol_index, "class_plans": function_plan["classes"], "attribute_names": function_plan["attribute_names"], "global_names": function_plan["global_names"], "global_frame": -1, "scope_id": function_plan["id"], "is_user_function": True, "is_generator_resume": True, "generator_descriptor": -1, "yield_slot": -1, "yield_dispatch_blocks": [-1], "next_yield_state": 1, "result_slot": -1, "exception_slot": -1}
+    state["range_names"] = []
+    state["range_descriptors"] = []
     descriptor = native_direct_append_instruction(state, "parameter", "ptr", {"index": 0})
     state = descriptor["state"]
     state["generator_descriptor"] = descriptor["result"]
@@ -5413,12 +6264,7 @@ def native_direct_generator_resume_state(function_plan, function_plan_store, sym
         exception_idx = exception_idx + 1
     temporary_idx = 0
     while temporary_idx < function_plan["value_temporary_slot_count"]:
-        allocated = native_direct_append_instruction(state, "slot_alloc", "slot_ptr", {"args": []})
-        state = allocated["state"]
-        zeroed = native_direct_append_instruction(state, "slot_zero", "slot_ptr", {"args": [allocated["result"]]})
-        state = zeroed["state"]
-        state["value_temporary_slots"] = method_append(state["value_temporary_slots"], zeroed["result"])
-        state["frame_slots"] = method_append(state["frame_slots"], zeroed["result"])
+        state = native_direct_append_zeroed_slot(state, "value_temporary_slots")
         temporary_idx = temporary_idx + 1
     capture_idx = 0
     while capture_idx < len(function_plan["captures"]):
@@ -5455,6 +6301,28 @@ def native_direct_generator_resume_state(function_plan, function_plan_store, sym
     body_block = state["next_block"]
     state = native_direct_patch_branch_true_target(state, initial_dispatch, body_block)
     return native_direct_begin_next_block(state)
+
+
+def native_direct_function_publish_inventory(function, state):
+    implementations = []
+    capabilities = []
+    primitive_idx = 0
+    while primitive_idx < len(state["primitive_ids"]):
+        primitive_id = state["primitive_ids"][primitive_idx]
+        implementation = primitive_schema_implementation_for_id(primitive_id)
+        capability = primitive_schema_capability_for_id(primitive_id)
+        if implementation == "" or capability == "":
+            fail("direct-native lowering rejected code=primitive-id;id=" + str(primitive_id))
+        if not native_direct_name_in_list(implementations, implementation):
+            implementations = method_append(implementations, implementation)
+        if not native_direct_name_in_list(capabilities, capability):
+            capabilities = method_append(capabilities, capability)
+        primitive_idx = primitive_idx + 1
+    function["operation_inventory"] = state["operation_inventory"]
+    function["primitive_ids"] = state["primitive_ids"]
+    function["primitive_implementations"] = implementations
+    function["primitive_capabilities"] = capabilities
+    return function
 
 
 def native_direct_finish_generator_constructor(state, function_plan):
@@ -5525,6 +6393,27 @@ def native_direct_finish_user_function(state, function_plan):
     function["effects"] = ["io"]
     function["ownership"] = "owned-frame-cleanup"
     return {"state": state, "function": function}
+
+
+def native_direct_finish_unreachable_function(function_plan):
+    # Preserve the stable function-ID ABI without spending native-emission
+    # time lowering dead source bodies.  The reachability pass guarantees that
+    # no call targets these placeholders; they exist only so the module's
+    # ID-indexed function table remains contiguous for diagnostics/verification.
+    instruction = native_ir_v2_const_int(0, 0, "i32")
+    block = native_ir_v2_block(0, [instruction], native_ir_v2_return(0))
+    frame = native_ir_v2_frame(0, 0, 0, 1)
+    function = native_ir_v2_function(function_plan["id"], function_plan["symbol"], "private", ["ptr", "usize", "slot_ptr", "slot_ptr", "ptr"], "i32", frame, [block])
+    function["source_name"] = function_plan["source_name"]
+    function["source_arity"] = len(function_plan["parameters"])
+    function["callable_kind"] = function_plan["callable_kind"]
+    function["address_taken"] = False
+    function["capture_count"] = 0
+    function["class_id"] = function_plan["class_id"]
+    function["method_name"] = function_plan["method_name"]
+    function["effects"] = []
+    function["ownership"] = "scalar-only"
+    return function
 
 
 def native_direct_functions_have_operation(functions, operation):
@@ -5719,30 +6608,54 @@ def native_direct_module_from_plan(plan):
     function_idx = 0
     while function_idx < len(plan["functions"]):
         function_plan = plan["functions"][function_idx]
-        function_state = native_direct_function_state(function_plan, function_plan_store, symbol_index, constant_pool, primitive_manifest, True)
-        if function_plan["is_generator"]:
-            finished = native_direct_finish_generator_constructor(function_state, function_plan)
+        if not function_plan["reachable"]:
+            finished_function = native_direct_finish_unreachable_function(function_plan)
+            finished = {"state": {"constant_pool": constant_pool, "primitive_manifest": primitive_manifest}, "function": finished_function}
         else:
-            function_state = native_direct_lower_statements(function_state, function_plan["body"], "function." + function_plan["source_name"])
-            finished = native_direct_finish_user_function(function_state, function_plan)
+            function_state = native_direct_function_state(function_plan, function_plan_store, symbol_index, constant_pool, primitive_manifest, True)
+            if function_plan["is_generator"]:
+                finished = native_direct_finish_generator_constructor(function_state, function_plan)
+            else:
+                function_state = native_direct_lower_statements(function_state, function_plan["body"], "function." + function_plan["source_name"])
+                finished = native_direct_finish_user_function(function_state, function_plan)
         constant_pool = finished["state"]["constant_pool"]
         primitive_manifest = finished["state"]["primitive_manifest"]
-        __tyrion_native_ast_builder_append(functions, 0, finished["function"])
+        finished_function = finished["function"]
+        finished_function["module_path"] = function_plan["module_path"]
+        finished_function["module_fingerprint"] = function_plan["module_fingerprint"]
+        __tyrion_native_ast_builder_append(functions, 0, finished_function)
         function_idx = function_idx + 1
     function_idx = 0
     while function_idx < len(plan["functions"]):
         function_plan = plan["functions"][function_idx]
         if function_plan["is_generator"]:
-            resume_state = native_direct_generator_resume_state(function_plan, function_plan_store, symbol_index, constant_pool, primitive_manifest)
-            resume_state = native_direct_lower_statements(resume_state, function_plan["body"], "generator." + function_plan["source_name"])
-            finished = native_direct_finish_generator_resume(resume_state, function_plan)
+            if function_plan["reachable"]:
+                resume_state = native_direct_generator_resume_state(function_plan, function_plan_store, symbol_index, constant_pool, primitive_manifest)
+                resume_state = native_direct_lower_statements(resume_state, function_plan["body"], "generator." + function_plan["source_name"])
+                finished = native_direct_finish_generator_resume(resume_state, function_plan)
+            else:
+                resume_block = native_ir_v2_block(0, [native_ir_v2_const_int(0, 1, "i32")], native_ir_v2_return(0))
+                resume_function = native_ir_v2_function(function_plan["resume_id"], function_plan["resume_symbol"], "private", ["ptr", "slot_ptr", "slot_ptr"], "i32", native_ir_v2_frame(0, 0, 0, 1), [resume_block])
+                resume_function["source_name"] = function_plan["source_name"]
+                resume_function["source_arity"] = 3
+                resume_function["callable_kind"] = "generator-resume"
+                resume_function["address_taken"] = False
+                resume_function["capture_count"] = 0
+                resume_function["class_id"] = function_plan["class_id"]
+                resume_function["method_name"] = function_plan["method_name"]
+                resume_function["module_path"] = function_plan["module_path"]
+                resume_function["module_fingerprint"] = function_plan["module_fingerprint"]
+                resume_function["effects"] = []
+                resume_function["ownership"] = "scalar-only"
+                finished = {"state": {"constant_pool": constant_pool, "primitive_manifest": primitive_manifest}, "function": resume_function}
             constant_pool = finished["state"]["constant_pool"]
             primitive_manifest = finished["state"]["primitive_manifest"]
             __tyrion_native_ast_builder_append(functions, 0, finished["function"])
         function_idx = function_idx + 1
     function_lists = __tyrion_native_ast_builder_finish(functions)
     constant_lists = __tyrion_native_ast_builder_finish(constant_pool["constants"])
-    return native_direct_module_from_parts(plan, function_lists[0], constant_lists[0], primitive_manifest)
+    reindexed = native_direct_reindex_constants(function_lists[0], constant_lists[0])
+    return native_direct_module_from_parts(plan, reindexed["functions"], reindexed["constants"], primitive_manifest)
 
 
 def native_direct_module_from_program(program, target, extensions):

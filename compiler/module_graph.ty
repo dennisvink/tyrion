@@ -8,7 +8,7 @@
 
 def module_graph_import_name(line):
     text = trim_spaces(line)
-    parts = text.split(" ")
+    parts = split_inventory_text(text, " ")
     if len(parts) >= 2 and (parts[0] == "import" or parts[0] == "from"):
         return parts[1]
     return ""
@@ -16,7 +16,7 @@ def module_graph_import_name(line):
 
 def module_graph_metadata_line(line):
     text = trim_spaces(line)
-    parts = text.split(" ")
+    parts = split_inventory_text(text, " ")
     if len(parts) < 2:
         return False
     if parts[0] != "module" and parts[0] != "export":
@@ -85,28 +85,40 @@ def module_graph_visit(path, root_path, loaded, active, symbol_heads, symbol_ent
     source = builtin_module_source_for_path(path)
     if source == "":
         source = read_text_file(path)
-    lines = source.split("\n")
-    __tyrion_native_ast_builder_append(fragments, 0, "# module-source: " + path + "\n")
+    lines = split_inventory_text(source, "\n")
+    import_paths = []
     idx = 0
     while idx < len(lines):
         line = lines[idx]
-        text = line.strip()
-        parts = text.split(" ")
+        text = trim_spaces(line)
+        parts = split_inventory_text(text, " ")
         module_name = ""
         if len(parts) >= 2 and (parts[0] == "import" or parts[0] == "from"):
             module_name = parts[1]
         if module_name != "":
             module_path = module_graph_resolve(root_path, module_name)
+            import_paths.append(module_path)
             child = module_graph_visit(module_path, root_path, loaded, next_active, symbol_heads, symbol_entries, fragments, depth + 1)
             loaded = child["loaded"]
             symbol_heads = child["symbol_heads"]
             symbol_entries = child["symbol_entries"]
         idx = idx + 1
+    # Publish a unit boundary only after its dependencies have been visited.
+    # The previous preorder marker was followed by recursively emitted child
+    # modules before the parent's source, so read_module_units() attributed
+    # parent text and import edges to the last descendant. Keeping each marker,
+    # import inventory, and source body contiguous gives the cache a real
+    # dependency graph while preserving dependency-before-consumer code order.
+    __tyrion_native_ast_builder_append(fragments, 0, "# module-source: " + path + "\n")
+    import_idx = 0
+    while import_idx < len(import_paths):
+        __tyrion_native_ast_builder_append(fragments, 0, "# module-import: " + import_paths[import_idx] + "\n")
+        import_idx = import_idx + 1
     idx = 0
     while idx < len(lines):
         line = lines[idx]
-        text = line.strip()
-        parts = text.split(" ")
+        text = trim_spaces(line)
+        parts = split_inventory_text(text, " ")
         module_name = ""
         if len(parts) >= 2 and (parts[0] == "import" or parts[0] == "from"):
             module_name = parts[1]
@@ -171,6 +183,176 @@ def read_module_graph(path):
         symbol_head_idx = symbol_head_idx + 1
     symbol_entries = __tyrion_native_ast_builder_create()
     fragments = __tyrion_native_ast_builder_create()
+    # Core functions are part of the language surface, not an opt-in module.
+    # Load them before the user graph so ordinary programs can use helpers
+    # such as abs(), str.join(), and str.lower() without an import.
+    module_graph_visit("@tyrion/core", path, loaded, active, symbol_heads, symbol_entries, fragments, 0)
     module_graph_visit(path, path, loaded, active, symbol_heads, symbol_entries, fragments, 0)
     __tyrion_native_ast_builder_append(fragments, 0, "# module-graph-hash: generated-source-order\n")
     return module_graph_join_fragments(__tyrion_native_ast_builder_finish(fragments)[0])
+
+
+def module_units_from_graph(graph):
+    # The graph text already carries deterministic source-boundary markers.
+    # Preserve those boundaries as immutable unit records so later compiler
+    # stages can cache parsed/lowered/generated data per module without
+    # changing graph traversal or source ordering.
+    lines = split_inventory_text(graph, "\n")
+    units = []
+    current_path = ""
+    current_source = ""
+    current_imports = []
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        if len(line) >= 17 and line[0:17] == "# module-source: ":
+            if current_path != "":
+                units.append({"path": current_path, "source": current_source, "imports": current_imports})
+            current_path = line[17:]
+            current_source = ""
+            current_imports = []
+        elif len(line) >= 17 and line[0:17] == "# module-import: ":
+            if current_path != "":
+                current_imports.append(line[17:])
+        elif len(line) >= 23 and line[0:23] == "# module-graph-hash: ":
+            pass
+        elif current_path != "":
+            current_source = current_source + line + "\n"
+        idx = idx + 1
+    if current_path != "":
+        units.append({"path": current_path, "source": current_source, "imports": current_imports})
+    return units
+
+
+def read_module_units(path):
+    return module_units_from_graph(read_module_graph(path))
+
+
+def module_graph_source_content(path):
+    source = builtin_module_source_for_path(path)
+    if source == "":
+        source = read_text_file(path)
+    return source
+
+
+def module_graph_units_with_contents(units):
+    result = []
+    root_path = ""
+    if len(units) > 0:
+        # Module graph publication is dependency-first, so the requested root
+        # is the last unit. Reconstruct source/import metadata from exact file
+        # contents instead of trusting boundary-adjacent graph text.
+        root_path = units[len(units) - 1]["path"]
+    idx = 0
+    while idx < len(units):
+        unit = units[idx]
+        content = module_graph_source_content(unit["path"])
+        lines = split_inventory_text(content, "\n")
+        source = ""
+        imports = []
+        line_idx = 0
+        while line_idx < len(lines):
+            line = lines[line_idx]
+            module_name = module_graph_import_name(line)
+            if module_name != "":
+                imports.append(module_graph_resolve(root_path, module_name))
+            elif not module_graph_metadata_line(line):
+                source = source + line + "\n"
+            line_idx = line_idx + 1
+        result.append({"path": unit["path"], "source": source, "imports": imports, "content": content})
+        idx = idx + 1
+    return result
+
+
+def module_graph_cached_units_current(units):
+    if len(units) == 0:
+        return False
+    idx = 0
+    while idx < len(units):
+        unit = units[idx]
+        if not ("path" in unit):
+            return False
+        if not ("content" in unit):
+            return False
+        if not ("source" in unit):
+            return False
+        if not ("imports" in unit):
+            return False
+        if module_graph_source_content(unit["path"]) != unit["content"]:
+            return False
+        idx = idx + 1
+    return True
+
+
+def module_graph_cache_note(cache_dir, event, enabled=False):
+    if cache_dir == "" or not enabled:
+        return
+    stats_path = cache_dir + "/.module-graph-cache-events"
+    previous = ""
+    try:
+        previous = read_text_file(stats_path)
+    except:
+        previous = ""
+    write_text_file(stats_path, previous + event + "\n")
+
+
+def read_module_graph_units_cached(path, cache_dir="", context="compiler=1.0.0", cache_stats=False):
+    fingerprint = context + "\nroot=" + path
+    cache_path = ""
+    if cache_dir != "":
+        cache_path = cache_dir + "/" + str(compiler_cache_path_hash(fingerprint)) + ".graphcache"
+        try:
+            cached = __tyrion_native_cache_decode(read_text_file(cache_path))
+            if cached["fingerprint"] == fingerprint and cached["graph"] != "" and module_graph_cached_units_current(cached["units"]):
+                module_graph_cache_note(cache_dir, "graph-hit", cache_stats)
+                return {"graph": cached["graph"], "units": cached["units"]}
+        except:
+            cached = None
+    module_graph_cache_note(cache_dir, "graph-miss", cache_stats)
+    graph = read_module_graph(path)
+    units = module_graph_units_with_contents(module_units_from_graph(graph))
+    if cache_dir != "":
+        record = {"fingerprint": fingerprint, "graph": graph, "units": units}
+        temporary_path = cache_path + ".tmp"
+        write_text_file(temporary_path, __tyrion_native_cache_encode(record))
+        if not __tyrion_run_tool("mv", [temporary_path, cache_path])["ok"]:
+            fail("compiler cache rejected code=publish-failed;path=" + cache_path)
+    return {"graph": graph, "units": units}
+
+
+def module_unit_fingerprint(unit, context):
+    # Keep the complete content in the identity.  A later disk cache may use
+    # a short filename hash, but must retain this fingerprint in its record so
+    # collisions and compiler/target/ABI changes are rejected exactly.
+    return context + "\n" + unit["path"] + "\n" + unit["source"]
+
+def module_unit_find(units, path):
+    idx = 0
+    while idx < len(units):
+        if units[idx]["path"] == path:
+            return units[idx]
+        idx = idx + 1
+    return None
+
+def module_unit_fingerprint_with_dependencies(unit, units, context, active):
+    # Include transitive dependencies in the identity.  This preserves cache
+    # reuse for unrelated modules while invalidating a consumer whenever an
+    # imported unit (at any depth) changes.
+    if list_contains_string(active, unit["path"]):
+        fail("compiler cache rejected code=dependency-cycle;path=" + unit["path"])
+    next_active = []
+    for path in active:
+        next_active.append(path)
+    next_active.append(unit["path"])
+    fingerprint = module_unit_fingerprint(unit, context)
+    imports = []
+    if "imports" in unit:
+        imports = unit["imports"]
+    idx = 0
+    while idx < len(imports):
+        dependency = module_unit_find(units, imports[idx])
+        if dependency != None:
+            dependency_fingerprint = module_unit_fingerprint_with_dependencies(dependency, units, context, next_active)
+            fingerprint = fingerprint + "\ndependency=" + dependency_fingerprint
+        idx = idx + 1
+    return fingerprint

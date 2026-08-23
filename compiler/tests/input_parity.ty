@@ -1,0 +1,4 @@
+first = input("Name: ")
+blank = input()
+third = input(42)
+print("values", first, "[" + blank + "]", "[" + third + "]")

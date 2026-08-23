@@ -112,6 +112,12 @@ def ast_call(callee, args):
     return node
 
 
+def ast_starred(value):
+    node = ast_record("starred")
+    node["value"] = value
+    return node
+
+
 def ast_method_call(receiver, name, args):
     node = ast_record("method_call")
     node["receiver"] = receiver
@@ -405,11 +411,12 @@ def ast_function(name, params, body):
     return node
 
 
-def ast_parameter(name, has_default, default_value):
+def ast_parameter(name, has_default, default_value, vararg=False):
     node = ast_record("parameter")
     node["name"] = name
     node["has_default"] = has_default
     node["default"] = default_value
+    node["vararg"] = vararg
     return node
 
 
@@ -462,13 +469,24 @@ def pratt_infix_binding_power(kind):
         return 30
     if kind == "PLUS" or kind == "MINUS":
         return 40
-    if kind == "STAR" or kind == "SLASH" or kind == "PERCENT":
+    if kind == "POW":
+        return 60
+    if kind == "STAR" or kind == "SLASH" or kind == "FLOOR" or kind == "PERCENT":
         return 50
+    if kind == "PIPE":
+        return 25
+    if kind == "CARET":
+        return 35
+    if kind == "AMP":
+        return 36
+    if kind == "LSHIFT" or kind == "RSHIFT":
+        return 37
     return 0
 
 
 
 def parse_pratt_expr(tokens, pos, min_bp):
+    start_pos = pos
     if token_kind_at(tokens, pos) == "EOF":
         fail("expected expression")
     prefix_kind = token_kind_at(tokens, pos)
@@ -476,6 +494,9 @@ def parse_pratt_expr(tokens, pos, min_bp):
         inner = parse_pratt_expr(tokens, pos + 1, 60)
         zero = ast_value("int", 0)
         parsed = {"node": ast_binary("-", zero, inner["node"]), "pos": inner["pos"]}
+    elif prefix_kind == "TILDE":
+        inner = parse_pratt_expr(tokens, pos + 1, 60)
+        parsed = {"node": ast_unary("~", inner["node"]), "pos": inner["pos"]}
     elif prefix_kind == "KW_NOT":
         inner = parse_pratt_expr(tokens, pos + 1, 60)
         parsed = {"node": ast_unary("not", inner["node"]), "pos": inner["pos"]}
@@ -641,6 +662,18 @@ def parse_pratt_expr(tokens, pos, min_bp):
                         is_kwarg = False
                         current_kind = token_kind_at(tokens, postfix_pos)
                         next_kind = token_kind_next(tokens, postfix_pos)
+                        if current_kind == "STAR":
+                            arg = parse_expression(tokens, postfix_pos + 1)
+                            args = parser_list_append(args, ast_starred(arg["node"]))
+                            postfix_pos = arg["pos"]
+                            comma_kind = token_kind_at(tokens, postfix_pos)
+                            if comma_kind == "COMMA":
+                                postfix_pos = postfix_pos + 1
+                                if token_kind_at(tokens, postfix_pos) == "RPAREN":
+                                    reading = False
+                            if comma_kind != "COMMA":
+                                reading = False
+                            continue
                         if current_kind == "IDENTIFIER":
                             if next_kind == "EQ":
                                 is_kwarg = True
@@ -679,6 +712,18 @@ def parse_pratt_expr(tokens, pos, min_bp):
                                 is_kwarg = False
                                 current_kind = token_kind_at(tokens, postfix_pos)
                                 next_kind = token_kind_next(tokens, postfix_pos)
+                                if current_kind == "STAR":
+                                    arg = parse_expression(tokens, postfix_pos + 1)
+                                    args = parser_list_append(args, ast_starred(arg["node"]))
+                                    postfix_pos = arg["pos"]
+                                    comma_kind = token_kind_at(tokens, postfix_pos)
+                                    if comma_kind == "COMMA":
+                                        postfix_pos = postfix_pos + 1
+                                        if token_kind_at(tokens, postfix_pos) == "RPAREN":
+                                            reading = False
+                                    if comma_kind != "COMMA":
+                                        reading = False
+                                    continue
                                 if current_kind == "IDENTIFIER":
                                     if next_kind == "EQ":
                                         is_kwarg = True
@@ -698,7 +743,25 @@ def parse_pratt_expr(tokens, pos, min_bp):
                                 if comma_kind != "COMMA":
                                     reading = False
                         postfix_pos = parser_expect(tokens, postfix_pos, "RPAREN")
-                        postfix_node = ast_method_call(postfix_node, name, parser_list_finish(args))
+                        finished_args = parser_list_finish(args)
+                        if name == "update":
+                            helper_args = parser_list_create()
+                            helper_args = parser_list_append(helper_args, postfix_node)
+                            positional_update = ast_value("none", none)
+                            keyword_entries = parser_list_create()
+                            for helper_arg in finished_args:
+                                if helper_arg["kind"] == "kwarg":
+                                    keyword_entries = parser_list_append(keyword_entries, ast_dict_entry(ast_value("string", helper_arg["name"]), helper_arg["value"]))
+                                else:
+                                    positional_update = helper_arg
+                            helper_args = parser_list_append(helper_args, positional_update)
+                            helper_args = parser_list_append(helper_args, ast_dict(parser_list_finish(keyword_entries)))
+                            postfix_node = ast_call(ast_value("var", "__tyrion_method_dict_update"), parser_list_finish(helper_args))
+                        else:
+                            if postfix_node["kind"] == "var" and postfix_node["value"] == "dict" and name == "fromkeys":
+                                postfix_node = ast_call(ast_value("var", "__tyrion_dict_fromkeys"), finished_args)
+                            else:
+                                postfix_node = ast_method_call(postfix_node, name, finished_args)
                     if method_kind != "LPAREN":
                         postfix_node = ast_attr(postfix_node, name)
             if not postfix_handled:
@@ -750,11 +813,17 @@ def parse_pratt_expr(tokens, pos, min_bp):
                     op = "and"
                 if kind == "KW_OR":
                     op = "or"
-                right = parse_pratt_expr(tokens, pos + 1, bp + 1)
+                right_bp = bp
+                if kind != "POW":
+                    right_bp = bp + 1
+                right = parse_pratt_expr(tokens, pos + 1, right_bp)
+                # `|` is runtime-dispatched: integer operands use bitwise OR
+                # while dictionaries use merge semantics.
                 node = ast_binary(op, node, right["node"])
                 pos = right["pos"]
             if not take_infix:
                 active = False
+    node["source_pos"] = start_pos
     return {"node": node, "pos": pos}
 
 
@@ -764,12 +833,20 @@ def parse_expression(tokens, pos):
 
 
 
-def parse_statement(tokens, pos):
+def parse_statement_unguarded(tokens, pos):
     pos = parser_skip_newlines(tokens, pos)
     kind = token_kind_at(tokens, pos)
     text = token_text_at(tokens, pos)
     if kind == "IDENTIFIER" and text == "eturn":
         kind = "KW_RETURN"
+    if kind == "IDENTIFIER" and text == "del":
+        kind = "KW_DEL"
+    if text == "del":
+        kind = "KW_DEL"
+    if kind == "IDENTIFIER" and text == "pass":
+        next_kind = token_kind_next(tokens, pos)
+        if next_kind == "NEWLINE" or next_kind == "DEDENT" or next_kind == "EOF" or next_kind == "RBRACE":
+            return {"node": ast_expr(ast_value("none", none)), "pos": pos + 1}
     if kind == "KW_DEF":
         pos = parser_expect(tokens, pos, "KW_DEF")
         name = token_text_at(tokens, pos)
@@ -779,18 +856,26 @@ def parse_statement(tokens, pos):
         if current_kind != "RPAREN":
             reading = True
             while reading:
+                vararg = False
+                if token_kind_at(tokens, pos) == "STAR":
+                    vararg = True
+                    pos = pos + 1
                 param_name = token_text_at(tokens, pos)
+                if token_kind_at(tokens, pos) != "IDENTIFIER":
+                    fail("expected parameter name")
                 pos = pos + 1
                 has_default = False
                 current_kind = token_kind_at(tokens, pos)
                 if current_kind == "EQ":
+                    if vararg:
+                        fail("variadic parameter cannot have a default")
                     parsed_default = parse_expression(tokens, pos + 1)
                     default_value = parsed_default["node"]
                     has_default = True
                     pos = parsed_default["pos"]
                 if not has_default:
                     default_value = ast_value("none", none)
-                params = parser_list_append(params, ast_parameter(param_name, has_default, default_value))
+                params = parser_list_append(params, ast_parameter(param_name, has_default, default_value, vararg))
                 current_kind = token_kind_at(tokens, pos)
                 if current_kind == "COMMA":
                     pos = pos + 1
@@ -1313,6 +1398,23 @@ def parse_statement(tokens, pos):
     if kind == "KW_RAISE":
         value = parse_expression(tokens, pos + 1)
         return {"node": ast_raise(value["node"]), "pos": value["pos"]}
+    if kind == "KW_DEL":
+        target = parse_expression(tokens, pos + 1)
+        target_node = target["node"]
+        if target_node["kind"] == "index":
+            helper = ast_value("var", "__tyrion_delete_index")
+            args = parser_list_create()
+            args = parser_list_append(args, target_node["receiver"])
+            args = parser_list_append(args, target_node["index"])
+            return {"node": ast_assign_target(target_node["receiver"], ast_call(helper, parser_list_finish(args))), "pos": target["pos"]}
+        if target_node["kind"] == "slice":
+            helper = ast_value("var", "__tyrion_delete_slice")
+            args = parser_list_create()
+            args = parser_list_append(args, target_node["receiver"])
+            args = parser_list_append(args, target_node["start"])
+            args = parser_list_append(args, target_node["stop"])
+            return {"node": ast_assign_target(target_node["receiver"], ast_call(helper, parser_list_finish(args))), "pos": target["pos"]}
+        fail("delete requires a list item or slice target")
     if kind == "KW_YIELD":
         value = parse_expression(tokens, pos + 1)
         return {"node": ast_yield(value["node"]), "pos": value["pos"]}
@@ -1361,6 +1463,10 @@ def parse_statement(tokens, pos):
         fail("expected unpack assignment after starred target")
     if kind == "IDENTIFIER":
         next_kind = token_kind_next(tokens, pos)
+        if next_kind == "PIPEEQ":
+            target = ast_value("var", token_text_at(tokens, pos))
+            value = parse_expression(tokens, pos + 2)
+            return {"node": ast_assign_target(target, ast_binary("|", target, value["node"])), "pos": value["pos"]}
         if next_kind == "COMMA":
             targets = parser_list_create()
             scan = pos
@@ -1439,6 +1545,14 @@ def parse_statement(tokens, pos):
             name = ""
             if target["node"]["kind"] == "var":
                 name = target["node"]["value"]
+            if target["node"]["kind"] == "slice":
+                helper = ast_value("var", "__tyrion_assign_slice")
+                args = parser_list_create()
+                args = parser_list_append(args, target["node"]["receiver"])
+                args = parser_list_append(args, target["node"]["start"])
+                args = parser_list_append(args, target["node"]["stop"])
+                args = parser_list_append(args, value["node"])
+                return {"node": ast_assign_target(target["node"]["receiver"], ast_call(helper, parser_list_finish(args))), "pos": value["pos"]}
             return {"node": ast_assign_target(target["node"], value["node"]), "pos": value["pos"]}
         if target_kind == "PLUSEQ":
             value = parse_expression(tokens, target["pos"] + 1)
@@ -1446,6 +1560,25 @@ def parse_statement(tokens, pos):
             if target["node"]["kind"] == "var":
                 name = target["node"]["value"]
             return {"node": ast_assign_target(target["node"], ast_binary("+", target["node"], value["node"])), "pos": value["pos"]}
+        if target_kind == "FLOOREQ":
+            value = parse_expression(tokens, target["pos"] + 1)
+            return {"node": ast_assign_target(target["node"], ast_binary("//", target["node"], value["node"])), "pos": value["pos"]}
+        if target_kind == "POWEQ":
+            value = parse_expression(tokens, target["pos"] + 1)
+            return {"node": ast_assign_target(target["node"], ast_binary("**", target["node"], value["node"])), "pos": value["pos"]}
+        if target_kind == "PIPEEQ":
+            value = parse_expression(tokens, target["pos"] + 1)
+            return {"node": ast_assign_target(target["node"], ast_binary("|", target["node"], value["node"])), "pos": value["pos"]}
+        if target_kind == "AMPEQ" or target_kind == "CARETEQ" or target_kind == "LSHIFTEQ" or target_kind == "RSHIFTEQ":
+            value = parse_expression(tokens, target["pos"] + 1)
+            op = "&"
+            if target_kind == "CARETEQ":
+                op = "^"
+            elif target_kind == "LSHIFTEQ":
+                op = "<<"
+            elif target_kind == "RSHIFTEQ":
+                op = ">>"
+            return {"node": ast_assign_target(target["node"], ast_binary(op, target["node"], value["node"])), "pos": value["pos"]}
     expr = parse_expression(tokens, pos)
     # Parse assignment syntax independently from assignment-target validity.
     # Semantic analysis owns that validity decision and its canonical
@@ -1453,10 +1586,78 @@ def parse_statement(tokens, pos):
     # from descendant compilers instead.
     if token_kind_at(tokens, expr["pos"]) == "EQ":
         value = parse_expression(tokens, expr["pos"] + 1)
+        if expr["node"]["kind"] == "slice":
+            helper = ast_value("var", "__tyrion_assign_slice")
+            args = parser_list_create()
+            args = parser_list_append(args, expr["node"]["receiver"])
+            args = parser_list_append(args, expr["node"]["start"])
+            args = parser_list_append(args, expr["node"]["stop"])
+            args = parser_list_append(args, value["node"])
+            return {"node": ast_assign_target(expr["node"]["receiver"], ast_call(helper, parser_list_finish(args))), "pos": value["pos"]}
         return {"node": ast_assign_target(expr["node"], value["node"]), "pos": value["pos"]}
+    if token_kind_at(tokens, expr["pos"]) == "PIPEEQ":
+        value = parse_expression(tokens, expr["pos"] + 1)
+        return {"node": ast_assign_target(expr["node"], ast_binary("|", expr["node"], value["node"])), "pos": value["pos"]}
+    if token_kind_at(tokens, expr["pos"]) == "FLOOREQ":
+        value = parse_expression(tokens, expr["pos"] + 1)
+        return {"node": ast_assign_target(expr["node"], ast_binary("//", expr["node"], value["node"])), "pos": value["pos"]}
+    if token_kind_at(tokens, expr["pos"]) == "POWEQ":
+        value = parse_expression(tokens, expr["pos"] + 1)
+        return {"node": ast_assign_target(expr["node"], ast_binary("**", expr["node"], value["node"])), "pos": value["pos"]}
+    if token_kind_at(tokens, expr["pos"]) == "AMPEQ" or token_kind_at(tokens, expr["pos"]) == "CARETEQ" or token_kind_at(tokens, expr["pos"]) == "LSHIFTEQ" or token_kind_at(tokens, expr["pos"]) == "RSHIFTEQ":
+        target_kind = token_kind_at(tokens, expr["pos"])
+        value = parse_expression(tokens, expr["pos"] + 1)
+        op = "&"
+        if target_kind == "CARETEQ":
+            op = "^"
+        elif target_kind == "LSHIFTEQ":
+            op = "<<"
+        elif target_kind == "RSHIFTEQ":
+            op = ">>"
+        return {"node": ast_assign_target(expr["node"], ast_binary(op, expr["node"], value["node"])), "pos": value["pos"]}
+    if expr["node"]["kind"] == "call" and expr["node"]["callee"]["kind"] == "attr" and expr["node"]["callee"]["receiver"]["kind"] == "var" and expr["node"]["callee"]["receiver"]["value"] == "dict" and expr["node"]["callee"]["name"] == "fromkeys":
+        expr["node"] = ast_call(ast_value("var", "__tyrion_dict_fromkeys"), expr["node"]["args"])
+    if expr["node"]["kind"] == "method_call" and expr["node"]["receiver"]["kind"] == "var" and expr["node"]["receiver"]["value"] == "dict" and expr["node"]["name"] == "fromkeys":
+        expr["node"] = ast_call(ast_value("var", "__tyrion_dict_fromkeys"), expr["node"]["args"])
     expr_node = ast_expr(expr["node"])
+    if expr_node["value"]["kind"] == "call" and expr_node["value"]["callee"]["kind"] == "var" and expr_node["value"]["callee"]["value"] == "__tyrion_method_dict_update" and len(expr_node["value"]["args"]) >= 1 and expr_node["value"]["args"][0]["kind"] == "var":
+        receiver = expr_node["value"]["args"][0]
+        return {"node": ast_assign_target(receiver, expr_node["value"]), "pos": expr["pos"]}
+    if expr_node["value"]["kind"] == "method_call" and expr_node["value"]["name"] == "update" and expr_node["value"]["receiver"]["kind"] == "var":
+        helper_args = parser_list_create()
+        helper_args = parser_list_append(helper_args, expr_node["value"]["receiver"])
+        for update_arg in expr_node["value"]["args"]:
+            helper_args = parser_list_append(helper_args, update_arg)
+        helper = ast_call(ast_value("var", "__tyrion_method_dict_update"), parser_list_finish(helper_args))
+        return {"node": ast_assign_target(expr_node["value"]["receiver"], helper), "pos": expr["pos"]}
     expr_pos = expr["pos"]
     return {"node": expr_node, "pos": expr_pos}
+
+
+def parse_statement(tokens, pos):
+    statement = parse_statement_unguarded(tokens, pos)
+    statement_kind = statement["node"]["kind"]
+    guard_kind = token_kind_at(tokens, statement["pos"])
+    has_guard = guard_kind == "KW_IF" or guard_kind == "KW_UNLESS"
+    guardable = statement_kind == "expr" or statement_kind == "assign"
+    guardable = guardable or statement_kind == "return" or statement_kind == "raise"
+    guardable = guardable or statement_kind == "break" or statement_kind == "continue"
+    if not guardable:
+        if statement_kind == "yield" and has_guard:
+            parser_reject_token(tokens, statement["pos"])
+        return statement
+    if not has_guard:
+        return statement
+    if statement_kind == "expr" and statement["node"]["value"]["kind"] == "var" and statement["node"]["value"]["value"] == "pass":
+        parser_reject_token(tokens, statement["pos"])
+    condition = parse_expression(tokens, statement["pos"] + 1)
+    condition_end_kind = token_kind_at(tokens, condition["pos"])
+    if condition_end_kind != "NEWLINE" and condition_end_kind != "DEDENT" and condition_end_kind != "EOF" and condition_end_kind != "RBRACE":
+        parser_reject_token(tokens, condition["pos"])
+    condition_node = condition["node"]
+    if guard_kind == "KW_UNLESS":
+        condition_node = ast_unary("not", condition_node)
+    return {"node": ast_if(condition_node, [statement["node"]], [], []), "pos": condition["pos"]}
 
 def parse_program_items(tokens):
     items = parser_list_create()
@@ -1478,6 +1679,54 @@ def parse_program_items(tokens):
 def parse_program(tokens):
     items = parse_program_items(tokens)
     return ast_collection("program", items)
+
+
+def parse_module_unit_cached(unit, units, cache_dir, context):
+    fingerprint = module_unit_fingerprint_with_dependencies(unit, units, context, [])
+    cache_path = ""
+    if cache_dir != "":
+        cache_path = cache_dir + "/" + str(compiler_cache_path_hash(fingerprint)) + ".ast"
+        try:
+            cached = __tyrion_native_cache_decode(read_text_file(cache_path))
+            if cached["fingerprint"] == fingerprint:
+                return cached["program"]
+        except:
+            cached = None
+    parsed = parse_program(lex(unit["source"]))
+    if cache_dir != "":
+        record = {"fingerprint": fingerprint, "program": parsed}
+        encoded = __tyrion_native_cache_encode(record)
+        temporary_path = cache_path + ".tmp"
+        write_text_file(temporary_path, encoded)
+        if not __tyrion_run_tool("mv", [temporary_path, cache_path])["ok"]:
+            fail("compiler cache rejected code=publish-failed;path=" + cache_path)
+    return parsed
+
+
+def parse_module_unit_records(units, cache_dir="", context="compiler=1.0.0"):
+    # Parse each deterministic module unit independently.  The resulting
+    # program preserves graph order while establishing the cache boundary for
+    # pointer-free parsed or lowered unit data.
+    item_builder = parser_list_create()
+    item_count = 0
+    module_fingerprints = []
+    module_ranges = []
+    idx = 0
+    while idx < len(units):
+        fingerprint = module_unit_fingerprint_with_dependencies(units[idx], units, context, [])
+        parsed = parse_module_unit_cached(units[idx], units, cache_dir, context)
+        module_fingerprints.append({"path": units[idx]["path"], "fingerprint": fingerprint})
+        range_start = item_count
+        for item in parsed["items"]:
+            __tyrion_native_ast_builder_append(item_builder, 0, item)
+            item_count = item_count + 1
+        module_ranges.append({"start": range_start, "stop": item_count, "path": units[idx]["path"]})
+        idx = idx + 1
+    return {"kind": "program", "items": parser_list_finish(item_builder), "module_fingerprints": module_fingerprints, "module_ranges": module_ranges}
+
+
+def parse_module_units(path, cache_dir="", context="compiler=1.0.0"):
+    return parse_module_unit_records(read_module_units(path), cache_dir, context)
 
 
 def ast_inventory_node(node, inv):

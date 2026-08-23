@@ -1,0 +1,5 @@
+def add(left, right):
+    return left + right
+
+iterables = [[1, 2], [10, 20]]
+print(map(add, *iterables))

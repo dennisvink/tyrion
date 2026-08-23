@@ -1,0 +1,2 @@
+values = sorted([1, 3, 2], key=lambda value: 0 - value)
+print(values)

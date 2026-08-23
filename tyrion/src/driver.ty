@@ -64,7 +64,9 @@ def tyrion_import_name(line):
 
 def tyrion_read_module_graph(path):
     loaded = []
-    tasks = [{"kind": "visit", "path": path, "text": ""}]
+    # Core functions are part of the language surface and are available to
+    # interpreted programs without an explicit import, matching native builds.
+    tasks = [{"kind": "visit", "path": path, "text": ""}, {"kind": "visit", "path": "@tyrion/core", "text": builtin_module_source_for_path("@tyrion/core")}]
     text = ""
     while len(tasks) > 0:
         task = tasks[len(tasks) - 1]

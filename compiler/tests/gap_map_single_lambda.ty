@@ -1,0 +1,1 @@
+print(map(lambda value: value * 2, [1, 2, 3]))

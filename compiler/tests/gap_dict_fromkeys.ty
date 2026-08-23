@@ -1,0 +1,3 @@
+keys = ["a", "b"]
+print(dict.fromkeys(keys, 7))
+print(dict.fromkeys(keys))

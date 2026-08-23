@@ -1,0 +1,7 @@
+values = [1, 2, 3]
+other = values.copy()
+other.append(4)
+print(values)
+print(other)
+empty = [].copy()
+print(empty)

@@ -1,0 +1,2 @@
+value = input("Partial: ")
+print("value", "[" + value + "]")

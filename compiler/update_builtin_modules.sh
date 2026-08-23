@@ -41,6 +41,7 @@ emit_source() {
   ' "$source_path" >>"$temporary_path"
 }
 
+emit_source core
 emit_source http
 emit_source tls
 
@@ -48,6 +49,8 @@ printf '%s\n' \
   '' \
   '' \
   'def builtin_module_path(name):' \
+  '    if name == "core":' \
+  '        return "@tyrion/core"' \
   '    if name == "http":' \
   '        return "@tyrion/http"' \
   '    if name == "tls":' \
@@ -56,6 +59,8 @@ printf '%s\n' \
   '' \
   '' \
   'def builtin_module_source_for_path(path):' \
+  '    if path == "@tyrion/core":' \
+  '        return builtin_module_core_source()' \
   '    if path == "@tyrion/http":' \
   '        return builtin_module_http_source()' \
   '    if path == "@tyrion/tls":' \

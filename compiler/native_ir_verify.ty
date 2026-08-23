@@ -448,9 +448,9 @@ def verify_native_ir_v1(module):
             if extension["id"] != extension_idx:
                 fail("native-ir rejected code=noncanonical-extension-id")
             if static_extension_identifier_valid(extension["name"]) != True:
-                fail("native-ir rejected code=invalid-extension-name")
+                fail("native-ir rejected code=invalid-extension-name;name=" + str(extension["name"]) + ";symbol=" + str(extension["call_symbol"]))
             if static_extension_identifier_valid(extension["call_symbol"]) != True:
-                fail("native-ir rejected code=invalid-extension-symbol")
+                fail("native-ir rejected code=invalid-extension-symbol;name=" + str(extension["name"]) + ";symbol=" + str(extension["call_symbol"]))
             extension_idx = extension_idx + 1
     global_idx = 0
     while global_idx < len(module["globals"]):
@@ -1151,7 +1151,7 @@ def native_ir_v2_require_initialized_slot_state(value, root_idx, is_uninitialize
 
 
 def native_ir_v2_operation_has_slot_state(op):
-    return op == "slot_zero" or op == "slot_set_int" or op == "slot_set_bool" or op == "slot_set_none" or op == "direct_slot_set_int_owned" or op == "direct_slot_set_bool_owned" or op == "direct_slot_set_none_owned" or op == "direct_slot_set_float_text" or op == "direct_slot_set_string" or op == "direct_slot_set_collection" or op == "direct_slot_collection_new" or op == "direct_slot_dict_new" or op == "direct_slot_binary" or op == "direct_slot_unary" or op == "direct_slot_index" or op == "direct_slot_slice" or op == "direct_slot_method" or op == "direct_file_open" or op == "direct_file_method" or op == "direct_file_close" or op == "direct_process_argv" or op == "direct_primitive_call" or op == "direct_slot_unpack_star" or op == "direct_slot_index_set" or op == "direct_collection_append_owned" or op == "direct_dict_put_owned" or op == "direct_slot_copy_owned" or op == "direct_slot_release" or op == "slot_get_int" or op == "direct_slot_truthy" or op == "direct_iterable_prepare" or op == "direct_iterable_count" or op == "direct_iterable_item_copy" or op == "direct_print_string_slot" or op == "direct_language_call" or op == "direct_slot_closure_new" or op == "direct_closure_call" or op == "direct_generator_new" or op == "direct_object_new" or op == "direct_object_class_id" or op == "direct_object_attr_get" or op == "direct_object_attr_set"
+    return op == "slot_zero" or op == "slot_set_int" or op == "slot_set_bool" or op == "slot_set_none" or op == "direct_slot_set_int_owned" or op == "direct_slot_set_bool_owned" or op == "direct_slot_set_none_owned" or op == "direct_slot_set_float_text" or op == "direct_slot_set_string" or op == "direct_slot_set_collection" or op == "direct_slot_collection_new" or op == "direct_slot_dict_new" or op == "direct_slot_binary" or op == "direct_slot_unary" or op == "direct_slot_index" or op == "direct_slot_slice" or op == "direct_slot_method" or op == "direct_file_open" or op == "direct_file_method" or op == "direct_file_close" or op == "direct_process_argv" or op == "direct_primitive_call" or op == "direct_iterator_new" or op == "direct_iterator_next" or op == "direct_slot_unpack_star" or op == "direct_slot_index_set" or op == "direct_collection_append_owned" or op == "direct_dict_put_owned" or op == "direct_slot_copy_owned" or op == "direct_slot_release" or op == "slot_get_int" or op == "direct_slot_truthy" or op == "direct_iterable_prepare" or op == "direct_iterable_count" or op == "direct_iterable_item_copy" or op == "direct_print_string_slot" or op == "direct_language_call" or op == "direct_slot_closure_new" or op == "direct_closure_call" or op == "direct_closure_call_vector" or op == "direct_generator_new" or op == "direct_object_new" or op == "direct_object_class_id" or op == "direct_object_attr_get" or op == "direct_object_attr_set"
 
 
 def native_ir_v2_operation_initializes_slot_group_0(op):
@@ -1163,11 +1163,11 @@ def native_ir_v2_operation_initializes_slot_group_1(op):
 
 
 def native_ir_v2_operation_initializes_slot_group_2(op):
-    return op == "direct_file_open" or op == "direct_file_method" or op == "direct_process_argv" or op == "direct_primitive_call" or op == "direct_slot_unpack_star" or op == "direct_slot_copy_owned" or op == "direct_iterable_item_copy" or op == "direct_language_call"
+    return op == "direct_file_open" or op == "direct_file_method" or op == "direct_process_argv" or op == "direct_primitive_call" or op == "direct_iterator_new" or op == "direct_iterator_next" or op == "direct_slot_unpack_star" or op == "direct_slot_copy_owned" or op == "direct_iterable_item_copy" or op == "direct_language_call"
 
 
 def native_ir_v2_operation_initializes_slot_group_3(op):
-    return op == "direct_slot_closure_new" or op == "direct_closure_call" or op == "direct_generator_new" or op == "direct_object_new" or op == "direct_object_attr_get"
+    return op == "direct_slot_closure_new" or op == "direct_closure_call" or op == "direct_closure_call_vector" or op == "direct_generator_new" or op == "direct_object_new" or op == "direct_object_attr_get"
 
 
 def native_ir_v2_operation_initializes_slot(op):
@@ -1180,21 +1180,31 @@ def native_ir_v2_verify_all_slot_paths(function, roots, root_initially_initializ
         return none
     block_count = len(function["blocks"])
     root_indices = native_ir_v2_slot_root_indices(root_map, roots)
-    state_count = block_count * root_count
-    entry_uninitialized = range(state_count)
-    entry_initialized = range(state_count)
-    state_idx = 0
-    while state_idx < state_count:
-        entry_uninitialized[state_idx] = False
-        entry_initialized[state_idx] = False
-        state_idx = state_idx + 1
+    # Keep dataflow state in block-sized rows. A single flattened
+    # block_count * root_count list can exceed the runtime's per-collection
+    # bound for otherwise valid large functions (for example the interpreter's
+    # method dispatcher). No individual dimension is large, and the verifier
+    # only ever reads or updates one block row at a time.
+    entry_uninitialized = []
+    entry_initialized = []
+    block_idx = 0
+    while block_idx < block_count:
+        uninitialized_row = range(root_count)
+        initialized_row = range(root_count)
+        root_idx = 0
+        while root_idx < root_count:
+            uninitialized_row[root_idx] = False
+            initialized_row[root_idx] = False
+            root_idx = root_idx + 1
+        entry_uninitialized.append(uninitialized_row)
+        entry_initialized.append(initialized_row)
+        block_idx = block_idx + 1
     root_idx = 0
     while root_idx < root_count:
-        state_idx = function["entry_block"] * root_count + root_idx
         if root_initially_initialized[root_idx]:
-            entry_initialized[state_idx] = True
+            entry_initialized[function["entry_block"]][root_idx] = True
         else:
-            entry_uninitialized[state_idx] = True
+            entry_uninitialized[function["entry_block"]][root_idx] = True
         root_idx = root_idx + 1
 
     queued = range(block_count)
@@ -1214,9 +1224,8 @@ def native_ir_v2_verify_all_slot_paths(function, roots, root_initially_initializ
         initialized = range(root_count)
         root_idx = 0
         while root_idx < root_count:
-            state_idx = block_idx * root_count + root_idx
-            uninitialized[root_idx] = entry_uninitialized[state_idx]
-            initialized[root_idx] = entry_initialized[state_idx]
+            uninitialized[root_idx] = entry_uninitialized[block_idx][root_idx]
+            initialized[root_idx] = entry_initialized[block_idx][root_idx]
             root_idx = root_idx + 1
         instructions = function["blocks"][block_idx]["instructions"]
         instruction_idx = 0
@@ -1260,7 +1269,7 @@ def native_ir_v2_verify_all_slot_paths(function, roots, root_initially_initializ
                 if op == "direct_slot_unpack_star":
                     source_root_idx = native_ir_v2_slot_root_index(args[1], root_indices)
                     native_ir_v2_require_initialized_slot_state(args[1], source_root_idx, uninitialized[source_root_idx], block_idx)
-                if op == "direct_slot_method" or op == "direct_file_open" or op == "direct_file_method" or op == "direct_language_call" or op == "direct_primitive_call" or op == "direct_slot_closure_new" or op == "direct_generator_new" or op == "direct_closure_call":
+                if op == "direct_slot_method" or op == "direct_file_open" or op == "direct_file_method" or op == "direct_language_call" or op == "direct_primitive_call" or op == "direct_slot_closure_new" or op == "direct_generator_new" or op == "direct_closure_call" or op == "direct_closure_call_vector":
                     source_idx = 1
                     while source_idx < len(args):
                         source_root_idx = native_ir_v2_slot_root_index(args[source_idx], root_indices)
@@ -1288,16 +1297,19 @@ def native_ir_v2_verify_all_slot_paths(function, roots, root_initially_initializ
         while target_idx < len(targets):
             target = targets[target_idx]
             target_changed = False
+            target_uninitialized = entry_uninitialized[target]
+            target_initialized = entry_initialized[target]
             root_idx = 0
             while root_idx < root_count:
-                state_idx = target * root_count + root_idx
-                if uninitialized[root_idx] and not entry_uninitialized[state_idx]:
-                    entry_uninitialized[state_idx] = True
+                if uninitialized[root_idx] and not target_uninitialized[root_idx]:
+                    target_uninitialized[root_idx] = True
                     target_changed = True
-                if initialized[root_idx] and not entry_initialized[state_idx]:
-                    entry_initialized[state_idx] = True
+                if initialized[root_idx] and not target_initialized[root_idx]:
+                    target_initialized[root_idx] = True
                     target_changed = True
                 root_idx = root_idx + 1
+            entry_uninitialized[target] = target_uninitialized
+            entry_initialized[target] = target_initialized
             if target_changed and not queued[target]:
                 __tyrion_native_ast_builder_append(worklist, 0, target)
                 queued[target] = True
@@ -1338,13 +1350,13 @@ def native_ir_v2_verify_slot_paths(function, root, root_map):
             while instruction_idx < len(instructions):
                 instruction = instructions[instruction_idx]
                 op = instruction["op"]
-                if op == "slot_zero" or op == "slot_set_int" or op == "slot_set_bool" or op == "slot_set_none" or op == "direct_slot_set_int_owned" or op == "direct_slot_set_bool_owned" or op == "direct_slot_set_none_owned" or op == "direct_slot_set_float_text" or op == "direct_slot_set_string" or op == "direct_slot_set_collection" or op == "direct_slot_collection_new" or op == "direct_slot_dict_new" or op == "direct_slot_binary" or op == "direct_slot_unary" or op == "direct_slot_index" or op == "direct_slot_slice" or op == "direct_slot_method" or op == "direct_file_open" or op == "direct_file_method" or op == "direct_file_close" or op == "direct_process_argv" or op == "direct_primitive_call" or op == "direct_slot_unpack_star" or op == "direct_slot_index_set" or op == "direct_collection_append_owned" or op == "direct_dict_put_owned" or op == "direct_slot_copy_owned" or op == "direct_slot_release" or op == "slot_get_int" or op == "direct_slot_truthy" or op == "direct_iterable_prepare" or op == "direct_iterable_count" or op == "direct_iterable_item_copy" or op == "direct_print_string_slot" or op == "direct_language_call" or op == "direct_slot_closure_new" or op == "direct_closure_call" or op == "direct_generator_new" or op == "direct_object_new" or op == "direct_object_class_id" or op == "direct_object_attr_get" or op == "direct_object_attr_set":
+                if op == "slot_zero" or op == "slot_set_int" or op == "slot_set_bool" or op == "slot_set_none" or op == "direct_slot_set_int_owned" or op == "direct_slot_set_bool_owned" or op == "direct_slot_set_none_owned" or op == "direct_slot_set_float_text" or op == "direct_slot_set_string" or op == "direct_slot_set_collection" or op == "direct_slot_collection_new" or op == "direct_slot_dict_new" or op == "direct_slot_binary" or op == "direct_slot_unary" or op == "direct_slot_index" or op == "direct_slot_slice" or op == "direct_slot_method" or op == "direct_file_open" or op == "direct_file_method" or op == "direct_file_close" or op == "direct_process_argv" or op == "direct_primitive_call" or op == "direct_slot_unpack_star" or op == "direct_slot_index_set" or op == "direct_collection_append_owned" or op == "direct_dict_put_owned" or op == "direct_slot_copy_owned" or op == "direct_slot_release" or op == "slot_get_int" or op == "direct_slot_truthy" or op == "direct_iterable_prepare" or op == "direct_iterable_count" or op == "direct_iterable_item_copy" or op == "direct_print_string_slot" or op == "direct_language_call" or op == "direct_slot_closure_new" or op == "direct_closure_call" or op == "direct_closure_call_vector" or op == "direct_generator_new" or op == "direct_object_new" or op == "direct_object_class_id" or op == "direct_object_attr_get" or op == "direct_object_attr_set":
                     args = instruction["fields"]["args"]
                     instruction_root = native_ir_v2_slot_root_mapped(root_map, args[0])
                     reads_root = False
                     if instruction_root == root and (op == "slot_get_int" or op == "direct_slot_truthy" or op == "direct_iterable_prepare" or op == "direct_iterable_count" or op == "direct_collection_append_owned" or op == "direct_dict_put_owned" or op == "direct_print_string_slot"):
                         reads_root = True
-                    if op == "direct_slot_copy_owned" or op == "direct_iterable_item_copy" or op == "direct_collection_append_owned" or op == "direct_dict_put_owned":
+                    if op == "direct_slot_copy_owned" or op == "direct_iterable_item_copy" or op == "direct_collection_append_owned" or op == "direct_dict_put_owned" or op == "direct_iterator_new" or op == "direct_iterator_next":
                         source_root = native_ir_v2_slot_root_mapped(root_map, args[1])
                         if source_root == root:
                             reads_root = True
@@ -1400,6 +1412,13 @@ def native_ir_v2_verify_slot_paths(function, root, root_map):
                             if source_root == root:
                                 reads_root = True
                             source_idx = source_idx + 1
+                    if op == "direct_iterator_next":
+                        source_idx = 1
+                        while source_idx < len(args):
+                            source_root = native_ir_v2_slot_root_mapped(root_map, args[source_idx])
+                            if source_root == root:
+                                reads_root = True
+                            source_idx = source_idx + 1
                     if op == "direct_slot_closure_new":
                         source_idx = 1
                         while source_idx < len(args):
@@ -1414,7 +1433,7 @@ def native_ir_v2_verify_slot_paths(function, root, root_map):
                             if source_root == root:
                                 reads_root = True
                             source_idx = source_idx + 1
-                    if op == "direct_closure_call":
+                    if op == "direct_closure_call" or op == "direct_closure_call_vector":
                         source_idx = 1
                         while source_idx < len(args):
                             source_root = native_ir_v2_slot_root_mapped(root_map, args[source_idx])
@@ -1440,7 +1459,7 @@ def native_ir_v2_verify_slot_paths(function, root, root_map):
                     if instruction_root == root and (op == "slot_zero" or op == "direct_slot_release"):
                         can_be_uninitialized = can_be_uninitialized or can_be_initialized
                         can_be_initialized = False
-                    elif instruction_root == root and (op == "slot_set_int" or op == "slot_set_bool" or op == "slot_set_none" or op == "direct_slot_set_int_owned" or op == "direct_slot_set_bool_owned" or op == "direct_slot_set_none_owned" or op == "direct_slot_set_float_text" or op == "direct_slot_set_string" or op == "direct_slot_set_collection" or op == "direct_slot_collection_new" or op == "direct_slot_dict_new" or op == "direct_slot_binary" or op == "direct_slot_unary" or op == "direct_slot_index" or op == "direct_slot_slice" or op == "direct_slot_method" or op == "direct_file_open" or op == "direct_file_method" or op == "direct_process_argv" or op == "direct_primitive_call" or op == "direct_slot_unpack_star" or op == "direct_slot_copy_owned" or op == "direct_iterable_item_copy" or op == "direct_language_call" or op == "direct_slot_closure_new" or op == "direct_closure_call" or op == "direct_generator_new" or op == "direct_object_new" or op == "direct_object_attr_get"):
+                    elif instruction_root == root and (op == "slot_set_int" or op == "slot_set_bool" or op == "slot_set_none" or op == "direct_slot_set_int_owned" or op == "direct_slot_set_bool_owned" or op == "direct_slot_set_none_owned" or op == "direct_slot_set_float_text" or op == "direct_slot_set_string" or op == "direct_slot_set_collection" or op == "direct_slot_collection_new" or op == "direct_slot_dict_new" or op == "direct_slot_binary" or op == "direct_slot_unary" or op == "direct_slot_index" or op == "direct_slot_slice" or op == "direct_slot_method" or op == "direct_file_open" or op == "direct_file_method" or op == "direct_process_argv" or op == "direct_primitive_call" or op == "direct_iterator_new" or op == "direct_iterator_next" or op == "direct_slot_unpack_star" or op == "direct_slot_copy_owned" or op == "direct_iterable_item_copy" or op == "direct_language_call" or op == "direct_slot_closure_new" or op == "direct_closure_call" or op == "direct_closure_call_vector" or op == "direct_generator_new" or op == "direct_object_new" or op == "direct_object_attr_get"):
                         can_be_initialized = can_be_initialized or can_be_uninitialized
                         can_be_uninitialized = False
                 instruction_idx = instruction_idx + 1
@@ -1641,7 +1660,7 @@ def verify_native_ir_v2_instruction(module, function, block_idx, instruction_idx
         if instruction["type"] != "i32" or len(fields["args"]) != 3:
             fail("native-ir rejected code=operation-arity-or-type;op=" + op)
         operator = fields["operator"]
-        if operator != "+" and operator != "-" and operator != "*" and operator != "/" and operator != "//" and operator != "%" and operator != "==" and operator != "!=" and operator != "<" and operator != "<=" and operator != ">" and operator != ">=" and operator != "in" and operator != "not in":
+        if operator != "+" and operator != "-" and operator != "*" and operator != "/" and operator != "//" and operator != "**" and operator != "%" and operator != "|" and operator != "^" and operator != "&" and operator != "<<" and operator != ">>" and operator != "==" and operator != "!=" and operator != "<" and operator != "<=" and operator != ">" and operator != ">=" and operator != "in" and operator != "not in":
             fail("native-ir rejected code=binary-operator;operator=" + operator)
         arg_idx = 0
         while arg_idx < len(fields["args"]):
@@ -1651,7 +1670,7 @@ def verify_native_ir_v2_instruction(module, function, block_idx, instruction_idx
     if op == "direct_slot_unary":
         if instruction["type"] != "i32" or len(fields["args"]) != 2:
             fail("native-ir rejected code=operation-arity-or-type;op=" + op)
-        if fields["operator"] != "not" and fields["operator"] != "-" and fields["operator"] != "+":
+        if fields["operator"] != "not" and fields["operator"] != "-" and fields["operator"] != "+" and fields["operator"] != "~":
             fail("native-ir rejected code=unary-operator;operator=" + fields["operator"])
         native_ir_v2_require_value(function, block_idx, instruction_idx, fields["args"][0], "slot_ptr", op)
         native_ir_v2_require_value(function, block_idx, instruction_idx, fields["args"][1], "slot_ptr", op)
@@ -1690,12 +1709,20 @@ def verify_native_ir_v2_instruction(module, function, block_idx, instruction_idx
         return
     if op == "direct_slot_method":
         method = fields["method"]
-        zero_arg = method == "keys" or method == "items" or method == "strip"
-        one_arg = method == "append" or method == "remove" or method == "add" or method == "split" or method == "startswith" or method == "endswith"
+        zero_arg = method == "keys" or method == "items" or method == "strip" or method == "clear" or method == "copy" or method == "reverse" or method == "sort"
+        one_arg = method == "append" or method == "extend" or method == "remove" or method == "add" or method == "split" or method == "rsplit" or method == "splitlines" or method == "pop" or method == "startswith" or method == "endswith"
         expected_arity = 3
         if zero_arg:
             expected_arity = 2
-        if (not zero_arg and not one_arg) or instruction["type"] != "i32" or len(fields["args"]) != expected_arity:
+        arity_ok = len(fields["args"]) == expected_arity
+        if method == "sort":
+            arity_ok = len(fields["args"]) == 2 or len(fields["args"]) == 3
+        if method == "pop":
+            arity_ok = len(fields["args"]) == 2 or len(fields["args"]) == 3
+        if method == "insert":
+            arity_ok = len(fields["args"]) == 4
+        method_ok = zero_arg or one_arg or method == "pop" or method == "insert"
+        if (not method_ok) or instruction["type"] != "i32" or not arity_ok:
             fail("native-ir rejected code=operation-arity-or-type;op=" + op)
         arg_idx = 0
         while arg_idx < len(fields["args"]):
@@ -1747,6 +1774,22 @@ def verify_native_ir_v2_instruction(module, function, block_idx, instruction_idx
             fail("native-ir rejected code=operation-arity-or-type;op=" + op)
         if not primitive_schema_accepts_arity(primitive_name, argc):
             fail("native-ir rejected code=primitive-arity;name=" + primitive_name)
+        arg_idx = 0
+        while arg_idx < len(fields["args"]):
+            native_ir_v2_require_value(function, block_idx, instruction_idx, fields["args"][arg_idx], "slot_ptr", op)
+            arg_idx = arg_idx + 1
+        return
+    if op == "direct_iterator_new":
+        if instruction["type"] != "i32" or len(fields["args"]) != 2:
+            fail("native-ir rejected code=operation-arity-or-type;op=" + op)
+        native_ir_v2_require_value(function, block_idx, instruction_idx, fields["args"][0], "slot_ptr", op)
+        native_ir_v2_require_value(function, block_idx, instruction_idx, fields["args"][1], "slot_ptr", op)
+        return
+    if op == "direct_iterator_next":
+        if instruction["type"] != "i32" or len(fields["args"]) != 4:
+            fail("native-ir rejected code=operation-arity-or-type;op=" + op)
+        if fields["has_default"] != True and fields["has_default"] != False:
+            fail("native-ir rejected code=iterator-default-flag;op=" + op)
         arg_idx = 0
         while arg_idx < len(fields["args"]):
             native_ir_v2_require_value(function, block_idx, instruction_idx, fields["args"][arg_idx], "slot_ptr", op)
@@ -1934,7 +1977,23 @@ def verify_native_ir_v2_instruction(module, function, block_idx, instruction_idx
         args = fields["args"]
         argc = fields["argc"]
         if instruction["type"] != "i32" or argc < 0 or len(args) != argc + 3 or len(fields["targets"]) == 0:
-            fail("native-ir rejected code=operation-arity-or-type;op=" + op)
+            fail("native-ir rejected code=operation-arity-or-type;op=" + op + ";type=" + instruction["type"] + ";argc=" + str(argc) + ";args=" + str(len(args)) + ";targets=" + str(len(fields["targets"])))
+        arg_idx = 0
+        while arg_idx < len(args):
+            native_ir_v2_require_value(function, block_idx, instruction_idx, args[arg_idx], "slot_ptr", op)
+            arg_idx = arg_idx + 1
+        target_idx = 0
+        while target_idx < len(fields["targets"]):
+            target = fields["targets"][target_idx]
+            callee = native_ir_v2_function_by_id(module, target["id"])
+            if callee["name"] != target["name"] or (callee["callable_kind"] != "lambda" and callee["callable_kind"] != "function") or callee["source_arity"] != target["arity"]:
+                fail("native-ir rejected code=closure-dispatch-target;id=" + str(target["id"]))
+            target_idx = target_idx + 1
+        return
+    if op == "direct_closure_call_vector":
+        args = fields["args"]
+        if instruction["type"] != "i32" or len(args) != 4 or len(fields["targets"]) == 0:
+            fail("native-ir rejected code=operation-arity-or-type;op=" + op + ";type=" + instruction["type"] + ";args=" + str(len(args)) + ";targets=" + str(len(fields["targets"])))
         arg_idx = 0
         while arg_idx < len(args):
             native_ir_v2_require_value(function, block_idx, instruction_idx, args[arg_idx], "slot_ptr", op)
@@ -1997,7 +2056,8 @@ def verify_native_ir_v2_function(module, function):
             fail("native-ir rejected code=missing-effect;function=" + function["name"] + ";effect=io")
     if (native_ir_v2_has_text(function["operation_inventory"], "call_external") or native_ir_v2_has_text(function["operation_inventory"], "print_int") or native_ir_v2_has_text(function["operation_inventory"], "print_bool") or native_ir_v2_has_text(function["operation_inventory"], "direct_print_string_slot")) and not native_ir_v2_has_text(module["components"], "print"):
         fail("native-ir rejected code=missing-component;component=print")
-    has_aggregate_operation = native_ir_v2_has_text(function["operation_inventory"], "direct_slot_set_int_owned") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_set_bool_owned") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_set_none_owned") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_set_float_text") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_set_string") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_set_collection") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_collection_new") or native_ir_v2_has_text(function["operation_inventory"], "direct_collection_append_owned") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_dict_new") or native_ir_v2_has_text(function["operation_inventory"], "direct_dict_put_owned") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_binary") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_unary") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_index") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_slice") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_method") or native_ir_v2_has_text(function["operation_inventory"], "direct_file_open") or native_ir_v2_has_text(function["operation_inventory"], "direct_file_method") or native_ir_v2_has_text(function["operation_inventory"], "direct_file_close") or native_ir_v2_has_text(function["operation_inventory"], "direct_process_argv") or native_ir_v2_has_text(function["operation_inventory"], "direct_primitive_call") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_unpack_star") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_index_set") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_truthy") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_copy_owned") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_release") or native_ir_v2_has_text(function["operation_inventory"], "direct_iterable_prepare") or native_ir_v2_has_text(function["operation_inventory"], "direct_iterable_count") or native_ir_v2_has_text(function["operation_inventory"], "direct_iterable_item_copy") or native_ir_v2_has_text(function["operation_inventory"], "direct_language_call") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_closure_new") or native_ir_v2_has_text(function["operation_inventory"], "direct_closure_call") or native_ir_v2_has_text(function["operation_inventory"], "direct_generator_new") or native_ir_v2_has_text(function["operation_inventory"], "direct_generator_saved_slot") or native_ir_v2_has_text(function["operation_inventory"], "direct_object_new") or native_ir_v2_has_text(function["operation_inventory"], "direct_object_class_id") or native_ir_v2_has_text(function["operation_inventory"], "direct_object_attr_get") or native_ir_v2_has_text(function["operation_inventory"], "direct_object_attr_set")
+    has_aggregate_operation = native_ir_v2_has_text(function["operation_inventory"], "direct_slot_set_int_owned") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_set_bool_owned") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_set_none_owned") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_set_float_text") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_set_string") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_set_collection") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_collection_new") or native_ir_v2_has_text(function["operation_inventory"], "direct_collection_append_owned") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_dict_new") or native_ir_v2_has_text(function["operation_inventory"], "direct_dict_put_owned") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_binary") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_unary") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_index") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_slice") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_method") or native_ir_v2_has_text(function["operation_inventory"], "direct_file_open") or native_ir_v2_has_text(function["operation_inventory"], "direct_file_method") or native_ir_v2_has_text(function["operation_inventory"], "direct_file_close") or native_ir_v2_has_text(function["operation_inventory"], "direct_process_argv") or native_ir_v2_has_text(function["operation_inventory"], "direct_primitive_call") or native_ir_v2_has_text(function["operation_inventory"], "direct_iterator_new") or native_ir_v2_has_text(function["operation_inventory"], "direct_iterator_next") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_unpack_star") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_index_set") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_truthy") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_copy_owned") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_release") or native_ir_v2_has_text(function["operation_inventory"], "direct_iterable_prepare") or native_ir_v2_has_text(function["operation_inventory"], "direct_iterable_count") or native_ir_v2_has_text(function["operation_inventory"], "direct_iterable_item_copy") or native_ir_v2_has_text(function["operation_inventory"], "direct_language_call") or native_ir_v2_has_text(function["operation_inventory"], "direct_slot_closure_new") or native_ir_v2_has_text(function["operation_inventory"], "direct_closure_call") or native_ir_v2_has_text(function["operation_inventory"], "direct_generator_new") or native_ir_v2_has_text(function["operation_inventory"], "direct_generator_saved_slot") or native_ir_v2_has_text(function["operation_inventory"], "direct_object_new") or native_ir_v2_has_text(function["operation_inventory"], "direct_object_class_id") or native_ir_v2_has_text(function["operation_inventory"], "direct_object_attr_get") or native_ir_v2_has_text(function["operation_inventory"], "direct_object_attr_set")
+    has_aggregate_operation = has_aggregate_operation or native_ir_v2_has_text(function["operation_inventory"], "direct_closure_call_vector")
     has_aggregate_operation = has_aggregate_operation or native_ir_v2_has_text(function["operation_inventory"], "direct_slots_release_contiguous")
     if has_aggregate_operation and not native_ir_v2_has_text(module["components"], "aggregate-core"):
         fail("native-ir rejected code=missing-component;component=aggregate-core")
@@ -2136,9 +2196,9 @@ def verify_native_ir_v2(module):
         if extension["id"] != extension_idx:
             fail("native-ir rejected code=noncanonical-extension-id")
         if static_extension_identifier_valid(extension["name"]) != True:
-            fail("native-ir rejected code=invalid-extension-name")
+            fail("native-ir rejected code=invalid-extension-name;name=" + str(extension["name"]) + ";symbol=" + str(extension["call_symbol"]))
         if static_extension_identifier_valid(extension["call_symbol"]) != True:
-            fail("native-ir rejected code=invalid-extension-symbol")
+            fail("native-ir rejected code=invalid-extension-symbol;name=" + str(extension["name"]) + ";symbol=" + str(extension["call_symbol"]))
         extension_idx = extension_idx + 1
     if "exception_abi" in module:
         if module["exception_abi"] != "caller-owned-slot-status-v1":
@@ -2188,7 +2248,7 @@ def verify_native_ir_v2(module):
         if not native_ir_v2_text_lists_equal(module["root_manifest"]["runtime_roots"], module["components"]):
             fail("native-ir rejected code=root-manifest-runtime-roots")
     expected_components = ["scalar-core"]
-    aggregate_operations = ["direct_slot_set_int_owned", "direct_slot_set_bool_owned", "direct_slot_set_none_owned", "direct_slot_set_float_text", "direct_slot_set_string", "direct_slot_set_collection", "direct_slot_collection_new", "direct_collection_append_owned", "direct_slot_dict_new", "direct_dict_put_owned", "direct_slot_binary", "direct_slot_unary", "direct_slot_index", "direct_slot_slice", "direct_slot_method", "direct_file_open", "direct_file_method", "direct_file_close", "direct_process_argv", "direct_primitive_call", "direct_slot_unpack_star", "direct_slot_index_set", "direct_slot_truthy", "direct_slot_copy_owned", "direct_slot_release", "direct_iterable_prepare", "direct_iterable_count", "direct_iterable_item_copy", "direct_language_call", "direct_slot_closure_new", "direct_closure_call", "direct_generator_new", "direct_generator_saved_slot", "direct_generator_state", "direct_generator_set_state", "direct_generator_finish", "direct_object_new", "direct_object_class_id", "direct_object_attr_get", "direct_object_attr_set"]
+    aggregate_operations = ["direct_slot_set_int_owned", "direct_slot_set_bool_owned", "direct_slot_set_none_owned", "direct_slot_set_float_text", "direct_slot_set_string", "direct_slot_set_collection", "direct_slot_collection_new", "direct_collection_append_owned", "direct_slot_dict_new", "direct_dict_put_owned", "direct_slot_binary", "direct_slot_unary", "direct_slot_index", "direct_slot_slice", "direct_slot_method", "direct_file_open", "direct_file_method", "direct_file_close", "direct_process_argv", "direct_primitive_call", "direct_iterator_new", "direct_iterator_next", "direct_slot_unpack_star", "direct_slot_index_set", "direct_slot_truthy", "direct_slot_copy_owned", "direct_slot_release", "direct_iterable_prepare", "direct_iterable_count", "direct_iterable_item_copy", "direct_language_call", "direct_slot_closure_new", "direct_closure_call", "direct_closure_call_vector", "direct_generator_new", "direct_generator_saved_slot", "direct_generator_state", "direct_generator_set_state", "direct_generator_finish", "direct_object_new", "direct_object_class_id", "direct_object_attr_get", "direct_object_attr_set"]
     aggregate_operations = method_append(aggregate_operations, "direct_slots_release_contiguous")
     if native_ir_v2_module_has_any_operation(module, aggregate_operations):
         expected_components = method_append(expected_components, "aggregate-core")

@@ -147,7 +147,7 @@ def tyrion_heap_alloc(state, object_kind, items):
 
 
 def tyrion_heap_get(state, value):
-    if not value["kind"] in ["list", "tuple", "set", "dict", "file", "object"]:
+    if not value["kind"] in ["list", "tuple", "set", "dict", "file", "object", "iterator", "bytearray"]:
         raise "expected collection, got " + value["kind"]
     return state["heap"][value["value"]]
 
@@ -221,7 +221,37 @@ def tyrion_env_get(state, environment, name):
 
 
 def tyrion_is_builtin(name):
-    return name in ["__tyrion_native_ascii_text", "__tyrion_native_host_call", "__tyrion_native_host_load", "__tyrion_native_host_unload", "__tyrion_native_tcp_close", "__tyrion_native_tcp_connect", "__tyrion_native_tcp_read", "__tyrion_native_tcp_write", "__tyrion_native_tls_read", "__tyrion_native_tls_write", "__tyrion_native_wall_time", "__tyrion_run_tool", "all", "ansi_escape", "any", "argv", "bool", "enumerate", "float", "int", "len", "max", "min", "open", "print", "range", "read_key", "run_tool", "sorted", "std_io_tcp_close", "std_io_tcp_connect", "std_io_tcp_read", "std_io_tcp_write", "str", "sum", "time", "zip"]
+    return name in ["__tyrion_native_ascii_text", "__tyrion_native_host_call", "__tyrion_native_host_load", "__tyrion_native_host_unload", "__tyrion_native_tcp_close", "__tyrion_native_tcp_connect", "__tyrion_native_tcp_read", "__tyrion_native_tcp_write", "__tyrion_native_tls_read", "__tyrion_native_tls_write", "__tyrion_native_wall_time", "__tyrion_run_tool", "all", "ansi_escape", "any", "argv", "ascii", "bool", "bytearray", "bytes", "callable", "delattr", "dict", "enumerate", "float", "format", "getattr", "hasattr", "input", "int", "isinstance", "iter", "len", "max", "min", "next", "open", "print", "range", "read_key", "repr", "reversed", "run_tool", "set", "setattr", "sorted", "std_io_tcp_close", "std_io_tcp_connect", "std_io_tcp_read", "std_io_tcp_write", "str", "sum", "time", "tuple", "type", "zip"]
+
+
+def tyrion_type_name(state, value):
+    if value["kind"] == "string":
+        return "str"
+    if value["kind"] == "none":
+        return "NoneType"
+    if value["kind"] == "object":
+        return tyrion_heap_get(state, value)["items"]["class"]["value"]["name"]
+    if value["kind"] == "object_method" or value["kind"] == "bound_method":
+        return "method"
+    return value["kind"]
+
+
+def tyrion_isinstance_value(state, value, specification):
+    if specification["kind"] == "string":
+        return tyrion_type_name(state, value) == specification["value"]
+    if specification["kind"] == "class":
+        if value["kind"] != "object":
+            return False
+        return tyrion_heap_get(state, value)["items"]["class"]["value"]["name"] == specification["value"]["name"]
+    if specification["kind"] == "tuple" or specification["kind"] == "list":
+        choices = tyrion_collection_items(state, specification)
+        index = 0
+        while index < len(choices):
+            if tyrion_isinstance_value(state, value, choices[index]):
+                return True
+            index = index + 1
+        return False
+    raise "TypeError: isinstance type specification must be a type name, class, or tuple"
 
 
 def tyrion_embedded_tls_anchor():
@@ -245,7 +275,7 @@ def tyrion_truthy(state, value):
         return value["value"] != ""
     if kind == "bytes":
         return tyrion_bytes_length(value) != 0
-    if kind in ["list", "tuple", "set", "dict"]:
+    if kind in ["list", "tuple", "set", "dict", "bytearray"]:
         return len(tyrion_heap_get(state, value)["items"]) != 0
     if kind == "file":
         return tyrion_heap_get(state, value)["items"]["path"] != ""
@@ -279,6 +309,16 @@ def tyrion_value_text(state, value):
             out = out + str(raw[index])
             index = index + 1
         return out + "]"
+    if kind == "bytearray":
+        raw_values = tyrion_heap_get(state, value)["items"]
+        out = "bytearray(["
+        index = 0
+        while index < len(raw_values):
+            if index > 0:
+                out = out + ", "
+            out = out + str(raw_values[index]["value"])
+            index = index + 1
+        return out + "])"
     if kind == "function":
         return "<function " + value["value"]["node"]["name"] + ">"
     if kind == "lambda":
@@ -443,6 +483,12 @@ def tyrion_dict_get(state, dictionary, key):
         raise "KeyError: " + tyrion_value_text(state, key)
     return tyrion_heap_get(state, dictionary)["items"][index]["value"]
 
+def tyrion_dict_get_default(state, dictionary, key, default):
+    index = tyrion_dict_find(state, dictionary, key)
+    if index < 0:
+        return default
+    return tyrion_heap_get(state, dictionary)["items"][index]["value"]
+
 
 def tyrion_dict_set(state, dictionary, key, value):
     object_value = tyrion_heap_get(state, dictionary)
@@ -479,7 +525,7 @@ def tyrion_collection_items(state, value):
                 values.append(tyrion_int(current))
                 current = current + data["step"]
         return values
-    if kind == "list" or kind == "tuple" or kind == "set":
+    if kind == "list" or kind == "tuple" or kind == "set" or kind == "bytearray":
         return tyrion_heap_get(state, value)["items"]
     if kind == "dict":
         entries = tyrion_heap_get(state, value)["items"]
@@ -517,7 +563,7 @@ def tyrion_index_get(state, receiver, index):
         return tyrion_string(receiver["value"][raw_index])
     if kind == "bytes":
         return tyrion_int(tyrion_bytes_index(receiver, raw_index))
-    if kind in ["list", "tuple", "set", "range"]:
+    if kind in ["list", "tuple", "set", "range", "bytearray"]:
         items = tyrion_collection_items(state, receiver)
         raw_index = tyrion_index_normalize(len(items), raw_index)
         return items[raw_index]
@@ -527,7 +573,7 @@ def tyrion_index_get(state, receiver, index):
 def tyrion_index_set(state, receiver, index, value):
     if receiver["kind"] == "dict":
         return tyrion_dict_set(state, receiver, index, value)
-    if receiver["kind"] != "list":
+    if receiver["kind"] != "list" and receiver["kind"] != "bytearray":
         raise "TypeError: assignment target is not mutable"
     object_value = tyrion_heap_get(state, receiver)
     items = object_value["items"]
@@ -537,15 +583,71 @@ def tyrion_index_set(state, receiver, index, value):
     return tyrion_heap_set(state, receiver, object_value)
 
 
-def tyrion_builtin_print(state, args):
+def tyrion_builtin_print(state, args, kwargs):
+    separator = " "
+    ending = "\n"
+    output_value = tyrion_none()
+    flush_output = False
+    seen_sep = False
+    seen_end = False
+    seen_file = False
+    seen_flush = False
+    keyword_index = 0
+    while keyword_index < len(kwargs):
+        keyword = kwargs[keyword_index]
+        if keyword["name"] == "sep":
+            if seen_sep:
+                raise "TypeError: print() got multiple values for keyword argument 'sep'"
+            seen_sep = True
+            if keyword["value"]["kind"] == "none":
+                separator = " "
+            elif keyword["value"]["kind"] == "string":
+                separator = keyword["value"]["value"]
+            else:
+                raise "TypeError: sep must be None or a string"
+        elif keyword["name"] == "end":
+            if seen_end:
+                raise "TypeError: print() got multiple values for keyword argument 'end'"
+            seen_end = True
+            if keyword["value"]["kind"] == "none":
+                ending = "\n"
+            elif keyword["value"]["kind"] == "string":
+                ending = keyword["value"]["value"]
+            else:
+                raise "TypeError: end must be None or a string"
+        elif keyword["name"] == "file":
+            if seen_file:
+                raise "TypeError: print() got multiple values for keyword argument 'file'"
+            seen_file = True
+            output_value = keyword["value"]
+        elif keyword["name"] == "flush":
+            if seen_flush:
+                raise "TypeError: print() got multiple values for keyword argument 'flush'"
+            seen_flush = True
+            flush_output = tyrion_truthy(state, keyword["value"])
+        else:
+            raise "TypeError: print got an unexpected keyword argument"
+        keyword_index = keyword_index + 1
     text = ""
     index = 0
     while index < len(args):
         if index > 0:
-            text = text + " "
+            text = text + separator
         text = text + tyrion_value_text(state, args[index])
         index = index + 1
-    print(text)
+    if output_value["kind"] == "none" and separator == " " and ending == "\n" and not flush_output:
+        print(text)
+    elif output_value["kind"] == "none":
+        with open("/dev/stdout", "a") as stdout_file:
+            stdout_file.write(text + ending)
+            if flush_output:
+                stdout_file.flush()
+    else:
+        written = tyrion_call_method(state, output_value, "write", [tyrion_string(text + ending)])
+        state = written["state"]
+        if flush_output:
+            flushed = tyrion_call_method(state, output_value, "flush", [])
+            state = flushed["state"]
     return {"state": state, "value": tyrion_none()}
 
 
@@ -584,10 +686,388 @@ def tyrion_host_event_value(state, event):
     return tyrion_heap_alloc(state, "dict", entries)
 
 
-def tyrion_call_method(state, receiver, name, args):
+def tyrion_sequence_find(state, items, value, start, stop):
+    if start < 0:
+        start = len(items) + start
+    if stop < 0:
+        stop = len(items) + stop
+    if start < 0:
+        start = 0
+    if stop > len(items):
+        stop = len(items)
+    index = start
+    while index < stop:
+        if tyrion_value_equal(state, items[index], value):
+            return index
+        index = index + 1
+    return -1
+
+
+def tyrion_string_find(text, needle, start, stop, reverse):
+    if start < 0:
+        start = len(text) + start
+    if stop < 0:
+        stop = len(text) + stop
+    if start < 0:
+        start = 0
+    if stop > len(text):
+        stop = len(text)
+    found = -1
+    index = start
+    if needle == "":
+        return stop
+    while index + len(needle) <= stop:
+        if text[index:index + len(needle)] == needle:
+            found = index
+            if not reverse:
+                return found
+        index = index + 1
+    return found
+
+
+def tyrion_string_case(text, upper):
+    lowercase = "abcdefghijklmnopqrstuvwxyz"
+    uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    out = ""
+    index = 0
+    while index < len(text):
+        ch = text[index]
+        translated = ch
+        scan = 0
+        while scan < len(lowercase):
+            if upper and ch == lowercase[scan]:
+                translated = uppercase[scan]
+            if not upper and ch == uppercase[scan]:
+                translated = lowercase[scan]
+            scan = scan + 1
+        out = out + translated
+        index = index + 1
+    return out
+
+
+def tyrion_string_trim(text, chars, trim_left, trim_right):
+    start = 0
+    stop = len(text)
+    if trim_left:
+        while start < stop and tyrion_text_contains(chars, text[start]):
+            start = start + 1
+    if trim_right:
+        while stop > start and tyrion_text_contains(chars, text[stop - 1]):
+            stop = stop - 1
+    return text[start:stop]
+
+
+def tyrion_string_join_values(state, separator, values):
+    out = ""
+    index = 0
+    while index < len(values):
+        if values[index]["kind"] != "string":
+            raise "TypeError: join expects string items"
+        if index > 0:
+            out = out + separator
+        out = out + values[index]["value"]
+        index = index + 1
+    return out
+
+
+def tyrion_ascii_letter(character):
+    return tyrion_text_contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", character)
+
+
+def tyrion_ascii_digit(character):
+    return tyrion_text_contains("0123456789", character)
+
+
+def tyrion_string_classify(text, mode):
+    if mode == "isascii":
+        # Tyrion source strings are currently ASCII-oriented. The native text
+        # boundary will tighten this once the runtime has full Unicode scalar
+        # values.
+        return True
+    if len(text) == 0:
+        return False
+    seen_cased = False
+    seen_content = False
+    index = 0
+    while index < len(text):
+        character = text[index]
+        is_letter = tyrion_ascii_letter(character)
+        is_digit = tyrion_ascii_digit(character)
+        if mode == "isalpha" and not is_letter:
+            return False
+        if (mode == "isdigit" or mode == "isdecimal" or mode == "isnumeric") and not is_digit:
+            return False
+        if mode == "isalnum" and not is_letter and not is_digit:
+            return False
+        if mode == "isspace" and not tyrion_text_contains(" \t\r\n", character):
+            return False
+        if mode == "isprintable" and tyrion_text_contains("\t\r\n", character):
+            return False
+        if mode == "islower" or mode == "isupper":
+            if is_letter:
+                seen_cased = True
+                if mode == "islower" and tyrion_text_contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ", character):
+                    return False
+                if mode == "isupper" and tyrion_text_contains("abcdefghijklmnopqrstuvwxyz", character):
+                    return False
+        seen_content = True
+        index = index + 1
+    if mode == "islower" or mode == "isupper":
+        return seen_cased
+    return seen_content
+
+
+def tyrion_string_repeat(text, count):
+    out = ""
+    while count > 0:
+        out = out + text
+        count = count - 1
+    return out
+
+
+def tyrion_parse_int_base(text, base):
+    if base < 2 or base > 36:
+        raise "ValueError: int base must be between 2 and 36"
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    sign = 1
+    index = 0
+    if len(text) > 0 and (text[0] == "+" or text[0] == "-"):
+        if text[0] == "-":
+            sign = -1
+        index = 1
+    if index >= len(text):
+        raise "ValueError: invalid integer literal"
+    result = 0
+    while index < len(text):
+        character = tyrion_string_case(text[index], False)
+        digit = tyrion_string_find(digits, character, 0, len(digits), False)
+        if digit < 0 or digit >= base:
+            raise "ValueError: invalid digit for base " + str(base)
+        result = result * base + digit
+        index = index + 1
+    return result * sign
+
+
+def tyrion_string_split_raw(text, separator, maxsplit, whitespace):
+    out = []
+    start = 0
+    splits = 0
+    index = 0
+    while index <= len(text):
+        matched = False
+        width = len(separator)
+        if whitespace:
+            if index < len(text) and tyrion_text_contains(" \t\r\n", text[index]):
+                matched = True
+                width = 1
+        elif width > 0 and index + width <= len(text) and text[index:index + width] == separator:
+            matched = True
+        if matched and (maxsplit < 0 or splits < maxsplit):
+            if not whitespace or index > start:
+                out.append(text[start:index])
+                splits = splits + 1
+            index = index + width
+            if whitespace:
+                while index < len(text) and tyrion_text_contains(" \t\r\n", text[index]):
+                    index = index + 1
+            start = index
+        else:
+            index = index + 1
+    if not whitespace or start < len(text):
+        out.append(text[start:])
+    return out
+
+
+def tyrion_string_split_values(text, separator, maxsplit, reverse, whitespace):
+    forward_limit = maxsplit
+    if reverse:
+        forward_limit = -1
+    raw = tyrion_string_split_raw(text, separator, forward_limit, whitespace)
+    if reverse and maxsplit >= 0 and len(raw) > maxsplit + 1:
+        keep_from = len(raw) - maxsplit
+        prefix = raw[0]
+        index = 1
+        while index < keep_from:
+            prefix = prefix + separator + raw[index]
+            index = index + 1
+        trimmed = [prefix]
+        while index < len(raw):
+            trimmed.append(raw[index])
+            index = index + 1
+        raw = trimmed
+    out = []
+    index = 0
+    while index < len(raw):
+        out.append(tyrion_string(raw[index]))
+        index = index + 1
+    return out
+
+
+def tyrion_set_contains(state, items, value):
+    index = 0
+    while index < len(items):
+        if tyrion_value_equal(state, items[index], value):
+            return True
+        index = index + 1
+    return False
+
+
+def tyrion_set_result(state, left, right, operation):
+    out = []
+    index = 0
+    while index < len(left):
+        present = tyrion_set_contains(state, right, left[index])
+        if (operation == "intersection" and present) or (operation == "difference" and not present) or operation == "union":
+            if not tyrion_set_contains(state, out, left[index]):
+                out.append(left[index])
+        index = index + 1
+    if operation == "union" or operation == "symmetric_difference":
+        index = 0
+        while index < len(right):
+            present = tyrion_set_contains(state, left, right[index])
+            if operation == "union" or not present:
+                if not tyrion_set_contains(state, out, right[index]):
+                    out.append(right[index])
+            index = index + 1
+    if operation == "symmetric_difference":
+        index = 0
+        while index < len(left):
+            if not tyrion_set_contains(state, right, left[index]):
+                out.append(left[index])
+            index = index + 1
+    return out
+
+
+def tyrion_call_method(state, receiver, name, args, kwargs=[]):
+    if receiver["kind"] == "dict" and name == "get" and len(args) >= 1 and len(args) <= 2:
+        default = tyrion_none()
+        if len(args) == 2:
+            default = args[1]
+        return {"state": state, "value": tyrion_dict_get_default(state, receiver, args[0], default)}
+    if receiver["kind"] == "bytes" or receiver["kind"] == "bytearray":
+        raw_values = []
+        if receiver["kind"] == "bytes":
+            raw = tyrion_bytes_flatten(receiver)
+            index = 0
+            while index < len(raw):
+                raw_values.append(tyrion_int(raw[index]))
+                index = index + 1
+        else:
+            raw_values = tyrion_heap_get(state, receiver)["items"]
+        if name == "hex" and len(args) == 0:
+            digits = "0123456789abcdef"
+            out = ""
+            index = 0
+            while index < len(raw_values):
+                byte = raw_values[index]["value"]
+                out = out + digits[int(byte / 16)] + digits[byte % 16]
+                index = index + 1
+            return {"state": state, "value": tyrion_string(out)}
+        if name == "decode" and len(args) <= 1:
+            encoding = "utf-8"
+            if len(args) == 1:
+                encoding = args[0]["value"]
+            if encoding != "ascii" and encoding != "utf-8":
+                raise "ValueError: interpreter byte decoding supports ascii and utf-8"
+            table = "\t\n\r !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+            codes = [9, 10, 13]
+            code = 32
+            while code <= 126:
+                codes.append(code)
+                code = code + 1
+            out = ""
+            index = 0
+            while index < len(raw_values):
+                found = -1
+                code_index = 0
+                while code_index < len(codes):
+                    if codes[code_index] == raw_values[index]["value"]:
+                        found = code_index
+                    code_index = code_index + 1
+                if found < 0:
+                    raise "UnicodeDecodeError: non-ASCII UTF-8 requires the Unicode runtime slice"
+                out = out + table[found]
+                index = index + 1
+            return {"state": state, "value": tyrion_string(out)}
+    if receiver["kind"] == "int" and name == "bit_length" and len(args) == 0:
+        value = receiver["value"]
+        if value < 0:
+            value = 0 - value
+        bits = 0
+        while value > 0:
+            value = int(value / 2)
+            bits = bits + 1
+        return {"state": state, "value": tyrion_int(bits)}
+    if receiver["kind"] == "int" and name == "bit_count" and len(args) == 0:
+        value = receiver["value"]
+        if value < 0:
+            value = 0 - value
+        count = 0
+        while value > 0:
+            if value % 2 == 1:
+                count = count + 1
+            value = int(value / 2)
+        return {"state": state, "value": tyrion_int(count)}
+    if receiver["kind"] == "int" and name == "as_integer_ratio" and len(args) == 0:
+        return tyrion_heap_alloc(state, "tuple", [receiver, tyrion_int(1)])
+    if receiver["kind"] == "int" and name == "is_integer" and len(args) == 0:
+        return {"state": state, "value": tyrion_bool(True)}
+    if receiver["kind"] == "float" and name == "is_integer" and len(args) == 0:
+        return {"state": state, "value": tyrion_bool(receiver["value"] == int(receiver["value"]))}
+    if receiver["kind"] == "int" and name == "to_bytes" and len(args) >= 1 and len(args) <= 3:
+        length = args[0]["value"]
+        byteorder = "big"
+        signed = False
+        if len(args) >= 2:
+            byteorder = args[1]["value"]
+        if len(args) == 3:
+            signed = tyrion_truthy(state, args[2])
+        value = receiver["value"]
+        if value < 0:
+            if not signed:
+                raise "OverflowError: cannot convert negative int to unsigned"
+            value = pow(256, length) + value
+        raw = range(length)
+        index = 0
+        while index < length:
+            byte = value % 256
+            position = length - index - 1
+            if byteorder == "little":
+                position = index
+            raw[position] = byte
+            value = int(value / 256)
+            index = index + 1
+        if value != 0:
+            raise "OverflowError: int too big to convert"
+        return {"state": state, "value": tyrion_bytes(raw)}
+    if receiver["kind"] == "builtin" and receiver["value"] == "int" and name == "from_bytes" and len(args) >= 1 and len(args) <= 3:
+        raw = tyrion_builtin_iterable_items(state, args[0])
+        byteorder = "big"
+        signed = False
+        if len(args) >= 2:
+            byteorder = args[1]["value"]
+        if len(args) == 3:
+            signed = tyrion_truthy(state, args[2])
+        value = 0
+        index = 0
+        while index < len(raw):
+            source_index = index
+            if byteorder == "little":
+                source_index = len(raw) - index - 1
+            value = value * 256 + raw[source_index]["value"]
+            index = index + 1
+        if signed and len(raw) > 0:
+            sign_index = 0
+            if byteorder == "little":
+                sign_index = len(raw) - 1
+            if raw[sign_index]["value"] >= 128:
+                value = value - pow(256, len(raw))
+        return {"state": state, "value": tyrion_int(value)}
     if receiver["kind"] == "file":
         object_value = tyrion_heap_get(state, receiver)
         file_data = object_value["items"]
+        if file_data["closed"] and name != "close":
+            raise "ValueError: I/O operation on closed file"
         if name == "read" and len(args) <= 1:
             with open(file_data["path"], "r") as input_file:
                 file_text = input_file.read()
@@ -604,7 +1084,76 @@ def tyrion_call_method(state, receiver, name, args):
             return {"state": state, "value": tyrion_string(file_result)}
         if name == "write" and len(args) == 1:
             with open(file_data["path"], file_data["mode"]) as output_file:
-                output_file.write(tyrion_value_text(state, args[0]))
+                written_text = tyrion_value_text(state, args[0])
+                output_file.write(written_text)
+            file_data["offset"] = file_data["offset"] + len(written_text)
+            object_value["items"] = file_data
+            state = tyrion_heap_set(state, receiver, object_value)
+            return {"state": state, "value": tyrion_int(len(written_text))}
+        if name == "readline" and len(args) <= 1:
+            with open(file_data["path"], "r") as input_file:
+                file_text = input_file.read()
+            start = file_data["offset"]
+            stop = start
+            limit = -1
+            if len(args) == 1:
+                limit = args[0]["value"]
+            while stop < len(file_text) and file_text[stop] != "\n" and (limit < 0 or stop - start < limit):
+                stop = stop + 1
+            if stop < len(file_text) and file_text[stop] == "\n" and (limit < 0 or stop - start < limit):
+                stop = stop + 1
+            file_data["offset"] = stop
+            object_value["items"] = file_data
+            state = tyrion_heap_set(state, receiver, object_value)
+            return {"state": state, "value": tyrion_string(file_text[start:stop])}
+        if name == "readlines" and len(args) <= 1:
+            lines = []
+            total = 0
+            hint = -1
+            if len(args) == 1:
+                hint = args[0]["value"]
+            active = True
+            while active and (hint < 0 or total < hint):
+                result = tyrion_call_method(state, receiver, "readline", [])
+                state = result["state"]
+                if result["value"]["value"] == "":
+                    active = False
+                else:
+                    lines.append(result["value"])
+                    total = total + len(result["value"]["value"])
+            return tyrion_heap_alloc(state, "list", lines)
+        if name == "writelines" and len(args) == 1:
+            lines = tyrion_builtin_iterable_items(state, args[0])
+            index = 0
+            while index < len(lines):
+                result = tyrion_call_method(state, receiver, "write", [lines[index]])
+                state = result["state"]
+                index = index + 1
+            return {"state": state, "value": tyrion_none()}
+        if name == "tell" and len(args) == 0:
+            return {"state": state, "value": tyrion_int(file_data["offset"])}
+        if name == "truncate" and len(args) <= 1:
+            size = file_data["offset"]
+            if len(args) == 1:
+                size = args[0]["value"]
+            with open(file_data["path"], "r") as input_file:
+                file_text = input_file.read()
+            with open(file_data["path"], "w") as output_file:
+                output_file.write(file_text[:size])
+            return {"state": state, "value": tyrion_int(size)}
+        if name == "readable" and len(args) == 0:
+            return {"state": state, "value": tyrion_bool(tyrion_text_contains(file_data["mode"], "r") or tyrion_text_contains(file_data["mode"], "+"))}
+        if name == "writable" and len(args) == 0:
+            writable = tyrion_text_contains(file_data["mode"], "w") or tyrion_text_contains(file_data["mode"], "a") or tyrion_text_contains(file_data["mode"], "x") or tyrion_text_contains(file_data["mode"], "+")
+            return {"state": state, "value": tyrion_bool(writable)}
+        if name == "seekable" and len(args) == 0:
+            return {"state": state, "value": tyrion_bool(True)}
+        if name == "isatty" and len(args) == 0:
+            return {"state": state, "value": tyrion_bool(False)}
+        if name == "close" and len(args) == 0:
+            file_data["closed"] = True
+            object_value["items"] = file_data
+            state = tyrion_heap_set(state, receiver, object_value)
             return {"state": state, "value": tyrion_none()}
         if name == "flush" and len(args) == 0:
             return {"state": state, "value": tyrion_none()}
@@ -626,14 +1175,160 @@ def tyrion_call_method(state, receiver, name, args):
             return {"state": state, "value": tyrion_none()}
         raise "AttributeError: unsupported file method " + name
     if name == "append":
-        if receiver["kind"] != "list" or len(args) != 1:
+        if not receiver["kind"] in ["list", "bytearray"] or len(args) != 1:
             raise "TypeError: append expects a list receiver and one argument"
+        if receiver["kind"] == "bytearray" and (args[0]["kind"] != "int" or args[0]["value"] < 0 or args[0]["value"] > 255):
+            raise "ValueError: byte must be in range(0, 256)"
         object_value = tyrion_heap_get(state, receiver)
         items = object_value["items"]
         items.append(args[0])
         object_value["items"] = items
         state = tyrion_heap_set(state, receiver, object_value)
         return {"state": state, "value": receiver}
+    if receiver["kind"] == "list" and name == "extend" and len(args) == 1:
+        object_value = tyrion_heap_get(state, receiver)
+        items = object_value["items"]
+        extra = tyrion_collection_items(state, args[0])
+        index = 0
+        while index < len(extra):
+            items.append(extra[index])
+            index = index + 1
+        object_value["items"] = items
+        state = tyrion_heap_set(state, receiver, object_value)
+        return {"state": state, "value": receiver}
+    if receiver["kind"] == "list" and name == "insert" and len(args) == 2:
+        object_value = tyrion_heap_get(state, receiver)
+        items = object_value["items"]
+        insert_at = args[0]["value"]
+        if insert_at < 0:
+            insert_at = len(items) + insert_at
+        if insert_at < 0:
+            insert_at = 0
+        if insert_at > len(items):
+            insert_at = len(items)
+        out = []
+        index = 0
+        while index < len(items):
+            if index == insert_at:
+                out.append(args[1])
+            out.append(items[index])
+            index = index + 1
+        if insert_at == len(items):
+            out.append(args[1])
+        object_value["items"] = out
+        state = tyrion_heap_set(state, receiver, object_value)
+        return {"state": state, "value": receiver}
+    if receiver["kind"] == "list" and name == "pop" and len(args) <= 1:
+        object_value = tyrion_heap_get(state, receiver)
+        items = object_value["items"]
+        if len(items) == 0:
+            raise "IndexError: pop from empty list"
+        pop_at = len(items) - 1
+        if len(args) == 1:
+            pop_at = tyrion_index_normalize(len(items), args[0]["value"])
+        if pop_at < 0 or pop_at >= len(items):
+            raise "IndexError: pop index out of range"
+        value = items[pop_at]
+        out = []
+        index = 0
+        while index < len(items):
+            if index != pop_at:
+                out.append(items[index])
+            index = index + 1
+        object_value["items"] = out
+        state = tyrion_heap_set(state, receiver, object_value)
+        return {"state": state, "value": value}
+    if receiver["kind"] == "list" and name == "clear" and len(args) == 0:
+        object_value = tyrion_heap_get(state, receiver)
+        object_value["items"] = []
+        state = tyrion_heap_set(state, receiver, object_value)
+        return {"state": state, "value": tyrion_none()}
+    if receiver["kind"] == "list" and name == "copy" and len(args) == 0:
+        items = tyrion_heap_get(state, receiver)["items"]
+        out = []
+        index = 0
+        while index < len(items):
+            out.append(items[index])
+            index = index + 1
+        return tyrion_heap_alloc(state, "list", out)
+    if receiver["kind"] == "list" and name == "reverse" and len(args) == 0:
+        object_value = tyrion_heap_get(state, receiver)
+        items = object_value["items"]
+        out = []
+        index = len(items)
+        while index > 0:
+            index = index - 1
+            out.append(items[index])
+        object_value["items"] = out
+        state = tyrion_heap_set(state, receiver, object_value)
+        return {"state": state, "value": tyrion_none()}
+    if receiver["kind"] in ["list", "tuple"] and name == "count" and len(args) == 1:
+        items = tyrion_collection_items(state, receiver)
+        count = 0
+        index = 0
+        while index < len(items):
+            if tyrion_value_equal(state, items[index], args[0]):
+                count = count + 1
+            index = index + 1
+        return {"state": state, "value": tyrion_int(count)}
+    if receiver["kind"] in ["list", "tuple"] and name == "index" and len(args) >= 1 and len(args) <= 3:
+        items = tyrion_collection_items(state, receiver)
+        start = 0
+        stop = len(items)
+        if len(args) >= 2:
+            start = args[1]["value"]
+        if len(args) == 3:
+            stop = args[2]["value"]
+        found = tyrion_sequence_find(state, items, args[0], start, stop)
+        if found < 0:
+            raise "ValueError: value is not in sequence"
+        return {"state": state, "value": tyrion_int(found)}
+    if receiver["kind"] == "range" and name == "count" and len(args) == 1:
+        items = tyrion_collection_items(state, receiver)
+        count = 0
+        if tyrion_set_contains(state, items, args[0]):
+            count = 1
+        return {"state": state, "value": tyrion_int(count)}
+    if receiver["kind"] == "range" and name == "index" and len(args) == 1:
+        items = tyrion_collection_items(state, receiver)
+        found = tyrion_sequence_find(state, items, args[0], 0, len(items))
+        if found < 0:
+            raise "ValueError: value is not in range"
+        return {"state": state, "value": tyrion_int(found)}
+    if receiver["kind"] == "list" and name == "sort" and len(args) <= 2:
+        object_value = tyrion_heap_get(state, receiver)
+        items = object_value["items"]
+        reverse = False
+        if len(args) == 1:
+            if args[0]["kind"] != "bool":
+                raise "TypeError: sort positional argument must be bool reverse"
+            reverse = args[0]["value"]
+        keyword_index = 0
+        while keyword_index < len(kwargs):
+            keyword = kwargs[keyword_index]
+            if keyword["name"] == "reverse":
+                if keyword["value"]["kind"] != "bool":
+                    raise "TypeError: sort reverse must be bool"
+                reverse = keyword["value"]["value"]
+            elif keyword["name"] != "key":
+                raise "TypeError: sort unexpected keyword argument"
+            keyword_index = keyword_index + 1
+        left = 0
+        while left < len(items):
+            right = left + 1
+            while right < len(items):
+                should_swap = items[right]["value"] < items[left]["value"]
+                if reverse:
+                    should_swap = items[left]["value"] < items[right]["value"]
+                if should_swap:
+                    swap = items[left]
+                    items[left] = items[right]
+                    items[right] = swap
+                right = right + 1
+            left = left + 1
+        object_value["items"] = items
+        state = tyrion_heap_set(state, receiver, object_value)
+        return {"state": state, "value": tyrion_none()}
     if name == "add":
         if receiver["kind"] != "set" or len(args) != 1:
             raise "TypeError: add expects a set receiver and one argument"
@@ -669,7 +1364,82 @@ def tyrion_call_method(state, receiver, name, args):
         object_value["items"] = out
         state = tyrion_heap_set(state, receiver, object_value)
         return {"state": state, "value": receiver}
-    if name == "keys" or name == "items":
+    if receiver["kind"] == "set" and name == "discard" and len(args) == 1:
+        object_value = tyrion_heap_get(state, receiver)
+        items = object_value["items"]
+        out = []
+        index = 0
+        while index < len(items):
+            if not tyrion_value_equal(state, items[index], args[0]):
+                out.append(items[index])
+            index = index + 1
+        object_value["items"] = out
+        state = tyrion_heap_set(state, receiver, object_value)
+        return {"state": state, "value": tyrion_none()}
+    if receiver["kind"] == "set" and name == "pop" and len(args) == 0:
+        object_value = tyrion_heap_get(state, receiver)
+        items = object_value["items"]
+        if len(items) == 0:
+            raise "KeyError: pop from an empty set"
+        value = items[len(items) - 1]
+        object_value["items"] = items[:len(items) - 1]
+        state = tyrion_heap_set(state, receiver, object_value)
+        return {"state": state, "value": value}
+    if receiver["kind"] == "set" and name == "clear" and len(args) == 0:
+        object_value = tyrion_heap_get(state, receiver)
+        object_value["items"] = []
+        state = tyrion_heap_set(state, receiver, object_value)
+        return {"state": state, "value": tyrion_none()}
+    if receiver["kind"] == "set" and name == "copy" and len(args) == 0:
+        source = tyrion_heap_get(state, receiver)["items"]
+        out = []
+        index = 0
+        while index < len(source):
+            out.append(source[index])
+            index = index + 1
+        return tyrion_heap_alloc(state, "set", out)
+    if receiver["kind"] == "set" and name in ["union", "intersection", "difference", "symmetric_difference"] and len(args) == 1:
+        right = tyrion_collection_items(state, args[0])
+        out = tyrion_set_result(state, tyrion_heap_get(state, receiver)["items"], right, name)
+        return tyrion_heap_alloc(state, "set", out)
+    if receiver["kind"] == "set" and name in ["update", "intersection_update", "difference_update", "symmetric_difference_update"] and len(args) == 1:
+        operation = name
+        if name == "update":
+            operation = "union"
+        elif name == "intersection_update":
+            operation = "intersection"
+        elif name == "difference_update":
+            operation = "difference"
+        else:
+            operation = "symmetric_difference"
+        object_value = tyrion_heap_get(state, receiver)
+        object_value["items"] = tyrion_set_result(state, object_value["items"], tyrion_collection_items(state, args[0]), operation)
+        state = tyrion_heap_set(state, receiver, object_value)
+        return {"state": state, "value": tyrion_none()}
+    if receiver["kind"] == "set" and name in ["isdisjoint", "issubset", "issuperset"] and len(args) == 1:
+        left = tyrion_heap_get(state, receiver)["items"]
+        right = tyrion_collection_items(state, args[0])
+        result = True
+        if name == "isdisjoint":
+            index = 0
+            while index < len(left):
+                if tyrion_set_contains(state, right, left[index]):
+                    result = False
+                index = index + 1
+        elif name == "issubset":
+            index = 0
+            while index < len(left):
+                if not tyrion_set_contains(state, right, left[index]):
+                    result = False
+                index = index + 1
+        else:
+            index = 0
+            while index < len(right):
+                if not tyrion_set_contains(state, left, right[index]):
+                    result = False
+                index = index + 1
+        return {"state": state, "value": tyrion_bool(result)}
+    if name == "keys" or name == "items" or name == "values":
         if receiver["kind"] != "dict" or len(args) != 0:
             raise "TypeError: " + name + " expects a dictionary receiver"
         entries = tyrion_heap_get(state, receiver)["items"]
@@ -678,31 +1448,284 @@ def tyrion_call_method(state, receiver, name, args):
         while index < len(entries):
             if name == "keys":
                 out.append(entries[index]["key"])
+            elif name == "values":
+                out.append(entries[index]["value"])
             else:
                 pair = tyrion_heap_alloc(state, "list", [entries[index]["key"], entries[index]["value"]])
                 state = pair["state"]
                 out.append(pair["value"])
             index = index + 1
         return tyrion_heap_alloc(state, "list", out)
+    if receiver["kind"] == "dict" and name == "get" and (len(args) == 1 or len(args) == 2):
+        found = tyrion_dict_find(state, receiver, args[0])
+        if found >= 0:
+            return {"state": state, "value": tyrion_heap_get(state, receiver)["items"][found]["value"]}
+        if len(args) == 2:
+            return {"state": state, "value": args[1]}
+        return {"state": state, "value": tyrion_none()}
+    if receiver["kind"] == "dict" and name == "setdefault" and (len(args) == 1 or len(args) == 2):
+        found = tyrion_dict_find(state, receiver, args[0])
+        if found >= 0:
+            return {"state": state, "value": tyrion_heap_get(state, receiver)["items"][found]["value"]}
+        value = tyrion_none()
+        if len(args) == 2:
+            value = args[1]
+        state = tyrion_dict_set(state, receiver, args[0], value)
+        return {"state": state, "value": value}
+    if receiver["kind"] == "dict" and name == "update" and len(args) <= 1:
+        if len(args) == 1:
+            if args[0]["kind"] != "dict":
+                raise "TypeError: update expects a dictionary"
+            entries = tyrion_heap_get(state, args[0])["items"]
+            index = 0
+            while index < len(entries):
+                state = tyrion_dict_set(state, receiver, entries[index]["key"], entries[index]["value"])
+                index = index + 1
+        keyword_index = 0
+        while keyword_index < len(kwargs):
+            state = tyrion_dict_set(state, receiver, tyrion_string(kwargs[keyword_index]["name"]), kwargs[keyword_index]["value"])
+            keyword_index = keyword_index + 1
+        return {"state": state, "value": tyrion_none()}
+    if receiver["kind"] == "dict" and name == "pop" and (len(args) == 1 or len(args) == 2):
+        object_value = tyrion_heap_get(state, receiver)
+        entries = object_value["items"]
+        found = tyrion_dict_find(state, receiver, args[0])
+        if found < 0:
+            if len(args) == 2:
+                return {"state": state, "value": args[1]}
+            raise "KeyError: " + tyrion_value_text(state, args[0])
+        value = entries[found]["value"]
+        out = []
+        index = 0
+        while index < len(entries):
+            if index != found:
+                out.append(entries[index])
+            index = index + 1
+        object_value["items"] = out
+        state = tyrion_heap_set(state, receiver, object_value)
+        return {"state": state, "value": value}
+    if receiver["kind"] == "dict" and name == "popitem" and len(args) == 0:
+        object_value = tyrion_heap_get(state, receiver)
+        entries = object_value["items"]
+        if len(entries) == 0:
+            raise "KeyError: popitem from empty dictionary"
+        last = entries[len(entries) - 1]
+        object_value["items"] = entries[:len(entries) - 1]
+        state = tyrion_heap_set(state, receiver, object_value)
+        return tyrion_heap_alloc(state, "tuple", [last["key"], last["value"]])
+    if receiver["kind"] == "dict" and name == "clear" and len(args) == 0:
+        object_value = tyrion_heap_get(state, receiver)
+        object_value["items"] = []
+        state = tyrion_heap_set(state, receiver, object_value)
+        return {"state": state, "value": tyrion_none()}
+    if receiver["kind"] == "dict" and name == "copy" and len(args) == 0:
+        entries = tyrion_heap_get(state, receiver)["items"]
+        out = []
+        index = 0
+        while index < len(entries):
+            out.append({"key": entries[index]["key"], "value": entries[index]["value"]})
+            index = index + 1
+        return tyrion_heap_alloc(state, "dict", out)
     if receiver["kind"] == "string":
         text = receiver["value"]
-        if name == "strip" and len(args) == 0:
-            return {"state": state, "value": tyrion_string(text.strip())}
-        if name == "startswith" and len(args) == 1:
-            return {"state": state, "value": tyrion_bool(text.startswith(args[0]["value"]))}
-        if name == "endswith" and len(args) == 1:
-            return {"state": state, "value": tyrion_bool(text.endswith(args[0]["value"]))}
-        if name == "split" and len(args) <= 1:
-            separator = " "
+        if name == "strip" or name == "lstrip" or name == "rstrip":
+            if len(args) > 1:
+                raise "TypeError: " + name + " expects zero or one argument"
+            chars = " \t\r\n"
             if len(args) == 1:
-                separator = args[0]["value"]
-            raw = text.split(separator)
-            parts = []
+                chars = args[0]["value"]
+            return {"state": state, "value": tyrion_string(tyrion_string_trim(text, chars, name != "rstrip", name != "lstrip"))}
+        if name == "lower" and len(args) == 0:
+            return {"state": state, "value": tyrion_string(tyrion_string_case(text, False))}
+        if name == "upper" and len(args) == 0:
+            return {"state": state, "value": tyrion_string(tyrion_string_case(text, True))}
+        if name in ["capitalize", "title", "swapcase"] and len(args) == 0:
+            out = ""
+            word_start = True
             index = 0
-            while index < len(raw):
-                parts.append(tyrion_string(raw[index]))
+            while index < len(text):
+                character = text[index]
+                if name == "swapcase":
+                    if tyrion_text_contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ", character):
+                        character = tyrion_string_case(character, False)
+                    elif tyrion_text_contains("abcdefghijklmnopqrstuvwxyz", character):
+                        character = tyrion_string_case(character, True)
+                elif name == "capitalize":
+                    character = tyrion_string_case(character, index == 0)
+                else:
+                    character = tyrion_string_case(character, word_start)
+                    word_start = not tyrion_ascii_letter(character) and not tyrion_ascii_digit(character)
+                out = out + character
                 index = index + 1
+            return {"state": state, "value": tyrion_string(out)}
+        if name in ["center", "ljust", "rjust"] and (len(args) == 1 or len(args) == 2):
+            width = args[0]["value"]
+            fill = " "
+            if len(args) == 2:
+                fill = args[1]["value"]
+            if len(fill) != 1:
+                raise "TypeError: fill character must be exactly one character"
+            remaining = width - len(text)
+            left = 0
+            right = 0
+            if remaining > 0:
+                if name == "ljust":
+                    right = remaining
+                elif name == "rjust":
+                    left = remaining
+                else:
+                    left = int(remaining / 2)
+                    right = remaining - left
+            return {"state": state, "value": tyrion_string(tyrion_string_repeat(fill, left) + text + tyrion_string_repeat(fill, right))}
+        if name == "zfill" and len(args) == 1:
+            width = args[0]["value"]
+            zeros = width - len(text)
+            if zeros <= 0:
+                return {"state": state, "value": receiver}
+            if len(text) > 0 and (text[0] == "+" or text[0] == "-"):
+                return {"state": state, "value": tyrion_string(text[0] + tyrion_string_repeat("0", zeros) + text[1:])}
+            return {"state": state, "value": tyrion_string(tyrion_string_repeat("0", zeros) + text)}
+        if name in ["isalnum", "isalpha", "isascii", "isdecimal", "isdigit", "islower", "isnumeric", "isprintable", "isspace", "isupper"] and len(args) == 0:
+            return {"state": state, "value": tyrion_bool(tyrion_string_classify(text, name))}
+        if name == "join" and len(args) == 1:
+            return {"state": state, "value": tyrion_string(tyrion_string_join_values(state, text, tyrion_collection_items(state, args[0])))}
+        if name == "find" or name == "rfind" or name == "index" or name == "rindex":
+            if len(args) < 1 or len(args) > 3:
+                raise "TypeError: " + name + " expects one to three arguments"
+            start = 0
+            stop = len(text)
+            if len(args) >= 2:
+                start = args[1]["value"]
+            if len(args) == 3:
+                stop = args[2]["value"]
+            found = tyrion_string_find(text, args[0]["value"], start, stop, name == "rfind" or name == "rindex")
+            if found < 0 and (name == "index" or name == "rindex"):
+                raise "ValueError: substring not found"
+            return {"state": state, "value": tyrion_int(found)}
+        if name == "count" and len(args) >= 1 and len(args) <= 3:
+            start = 0
+            stop = len(text)
+            if len(args) >= 2:
+                start = args[1]["value"]
+            if len(args) == 3:
+                stop = args[2]["value"]
+            count = 0
+            index = start
+            needle = args[0]["value"]
+            while index + len(needle) <= stop:
+                if text[index:index + len(needle)] == needle:
+                    count = count + 1
+                    index = index + len(needle)
+                else:
+                    index = index + 1
+            return {"state": state, "value": tyrion_int(count)}
+        if name == "replace" and (len(args) == 2 or len(args) == 3):
+            old = args[0]["value"]
+            replacement = args[1]["value"]
+            limit = -1
+            if len(args) == 3:
+                limit = args[2]["value"]
+            if old == "":
+                raise "ValueError: empty replacement pattern is not supported yet"
+            out = ""
+            start = 0
+            replaced = 0
+            found = tyrion_string_find(text, old, start, len(text), False)
+            while found >= 0 and (limit < 0 or replaced < limit):
+                out = out + text[start:found] + replacement
+                start = found + len(old)
+                replaced = replaced + 1
+                found = tyrion_string_find(text, old, start, len(text), False)
+            return {"state": state, "value": tyrion_string(out + text[start:])}
+        if (name == "removeprefix" or name == "removesuffix") and len(args) == 1:
+            affix = args[0]["value"]
+            if name == "removeprefix" and tyrion_string_find(text, affix, 0, len(text), False) == 0:
+                return {"state": state, "value": tyrion_string(text[len(affix):])}
+            if name == "removesuffix" and len(affix) <= len(text) and text[len(text) - len(affix):] == affix:
+                return {"state": state, "value": tyrion_string(text[:len(text) - len(affix)])}
+            return {"state": state, "value": receiver}
+        if (name == "partition" or name == "rpartition") and len(args) == 1:
+            separator = args[0]["value"]
+            found = tyrion_string_find(text, separator, 0, len(text), name == "rpartition")
+            if found < 0:
+                if name == "partition":
+                    return tyrion_heap_alloc(state, "tuple", [receiver, tyrion_string(""), tyrion_string("")])
+                return tyrion_heap_alloc(state, "tuple", [tyrion_string(""), tyrion_string(""), receiver])
+            return tyrion_heap_alloc(state, "tuple", [tyrion_string(text[:found]), args[0], tyrion_string(text[found + len(separator):])])
+        if (name == "startswith" or name == "endswith") and len(args) >= 1 and len(args) <= 3:
+            start = 0
+            stop = len(text)
+            if len(args) >= 2:
+                start = args[1]["value"]
+            if len(args) == 3:
+                stop = args[2]["value"]
+            bounded = text[start:stop]
+            prefixes = [args[0]]
+            if args[0]["kind"] == "tuple" or args[0]["kind"] == "list":
+                prefixes = tyrion_collection_items(state, args[0])
+            result = False
+            index = 0
+            while index < len(prefixes):
+                pattern = prefixes[index]["value"]
+                if name == "startswith" and len(pattern) <= len(bounded) and bounded[0:len(pattern)] == pattern:
+                    result = True
+                if name == "endswith" and len(pattern) <= len(bounded) and bounded[len(bounded) - len(pattern):] == pattern:
+                    result = True
+                index = index + 1
+            return {"state": state, "value": tyrion_bool(result)}
+        if (name == "split" or name == "rsplit") and len(args) <= 2:
+            separator = ""
+            whitespace = True
+            maxsplit = -1
+            if len(args) >= 1 and args[0]["kind"] != "none":
+                separator = args[0]["value"]
+                whitespace = False
+                if separator == "":
+                    raise "ValueError: empty separator"
+            if len(args) == 2:
+                maxsplit = args[1]["value"]
+            parts = tyrion_string_split_values(text, separator, maxsplit, name == "rsplit", whitespace)
             return tyrion_heap_alloc(state, "list", parts)
+        if name == "splitlines" and len(args) <= 1:
+            keepends = False
+            if len(args) == 1:
+                keepends = tyrion_truthy(state, args[0])
+            parts = []
+            start = 0
+            index = 0
+            while index < len(text):
+                if text[index] == "\n":
+                    stop = index
+                    if stop > start and text[stop - 1] == "\r" and not keepends:
+                        stop = stop - 1
+                    if keepends:
+                        stop = index + 1
+                    parts.append(tyrion_string(text[start:stop]))
+                    start = index + 1
+                index = index + 1
+            if start < len(text):
+                parts.append(tyrion_string(text[start:]))
+            return tyrion_heap_alloc(state, "list", parts)
+        if name == "expandtabs" and len(args) <= 1:
+            tabsize = 8
+            if len(args) == 1:
+                tabsize = args[0]["value"]
+            out = ""
+            column = 0
+            index = 0
+            while index < len(text):
+                if text[index] == "\t":
+                    spaces = tabsize - column % tabsize
+                    out = out + tyrion_string_repeat(" ", spaces)
+                    column = column + spaces
+                else:
+                    out = out + text[index]
+                    if text[index] == "\n" or text[index] == "\r":
+                        column = 0
+                    else:
+                        column = column + 1
+                index = index + 1
+            return {"state": state, "value": tyrion_string(out)}
     raise "AttributeError: unsupported method " + name
 
 
@@ -745,18 +1768,38 @@ def tyrion_builtin_enumerate(state, args, kwargs):
     return tyrion_heap_alloc(state, "list", out)
 
 
-def tyrion_builtin_zip(state, args):
-    if len(args) != 2:
-        raise "TypeError: zip expects two arguments"
-    left = tyrion_collection_items(state, args[0])
-    right = tyrion_collection_items(state, args[1])
-    count = len(left)
-    if len(right) < count:
-        count = len(right)
+def tyrion_builtin_zip(state, args, kwargs):
+    strict_value = tyrion_builtin_keyword(kwargs, "strict", tyrion_bool(False))
+    strict = tyrion_truthy(state, strict_value)
+    values = []
+    index = 0
+    while index < len(args):
+        values.append(tyrion_collection_items(state, args[index]))
+        index = index + 1
+    if strict and len(values) > 1:
+        expected = len(values[0])
+        index = 1
+        while index < len(values):
+            if len(values[index]) != expected:
+                raise "ValueError: zip() argument lengths differ"
+            index = index + 1
     out = []
+    count = 0
+    if len(values) > 0:
+        count = len(values[0])
+        index = 1
+        while index < len(values):
+            if len(values[index]) < count:
+                count = len(values[index])
+            index = index + 1
     index = 0
     while index < count:
-        pair = tyrion_heap_alloc(state, "list", [left[index], right[index]])
+        row = []
+        value_index = 0
+        while value_index < len(values):
+            row.append(values[value_index][index])
+            value_index = value_index + 1
+        pair = tyrion_heap_alloc(state, "list", row)
         state = pair["state"]
         out.append(pair["value"])
         index = index + 1
@@ -937,6 +1980,13 @@ def tyrion_builtin_extension(state, name, args):
 
 
 def tyrion_call_builtin(state, name, args, kwargs):
+    if name == "__tyrion_dict_fromkeys":
+        if len(args) != 2:
+            raise "TypeError: dict.fromkeys expects one or two arguments"
+        entries = []
+        for key in tyrion_builtin_iterable_items(state, args[0]):
+            entries.append({"key": key, "value": args[1]})
+        return tyrion_heap_alloc(state, "dict", entries)
     if name == "__tyrion_native_ascii_text":
         return tyrion_builtin_ascii_text(state, args)
     if name == "run_tool" or name == "__tyrion_run_tool":
@@ -952,7 +2002,96 @@ def tyrion_call_builtin(state, name, args, kwargs):
             raise "TypeError: " + name + " expects no arguments"
         return {"state": state, "value": tyrion_int(int(time()))}
     if name == "print":
-        return tyrion_builtin_print(state, args)
+        return tyrion_builtin_print(state, args, kwargs)
+    if name == "input":
+        if len(kwargs) != 0:
+            raise "TypeError: input() takes no keyword arguments"
+        if len(args) > 1:
+            raise "TypeError: input expected at most 1 argument, got " + str(len(args))
+        if len(args) == 1:
+            text = input(tyrion_value_text(state, args[0]))
+        else:
+            text = input()
+        return {"state": state, "value": tyrion_string(text)}
+    if name == "type":
+        if len(args) != 1:
+            raise "TypeError: type expects one argument"
+        return {"state": state, "value": tyrion_string(tyrion_type_name(state, args[0]))}
+    if name == "isinstance":
+        if len(args) != 2:
+            raise "TypeError: isinstance expects two arguments"
+        return {"state": state, "value": tyrion_bool(tyrion_isinstance_value(state, args[0], args[1]))}
+    if name == "callable":
+        if len(args) != 1:
+            raise "TypeError: callable expects one argument"
+        return {"state": state, "value": tyrion_bool(args[0]["kind"] in ["builtin", "function", "lambda", "bound_method", "object_method", "class"])}
+    if name == "iter":
+        if len(args) != 1:
+            raise "TypeError: iter expects one argument"
+        if args[0]["kind"] == "iterator":
+            return {"state": state, "value": args[0]}
+        items = tyrion_builtin_iterable_items(state, args[0])
+        return tyrion_heap_alloc(state, "iterator", {"items": items, "index": 0})
+    if name == "next":
+        if len(args) < 1 or len(args) > 2 or args[0]["kind"] != "iterator":
+            raise "TypeError: next expects an iterator and optional default"
+        iterator_record = tyrion_heap_get(state, args[0])
+        iterator_data = iterator_record["items"]
+        if iterator_data["index"] >= len(iterator_data["items"]):
+            if len(args) == 2:
+                return {"state": state, "value": args[1]}
+            raise "StopIteration"
+        value = iterator_data["items"][iterator_data["index"]]
+        iterator_data["index"] = iterator_data["index"] + 1
+        iterator_record["items"] = iterator_data
+        state = tyrion_heap_set(state, args[0], iterator_record)
+        return {"state": state, "value": value}
+    if name == "repr" or name == "ascii":
+        if len(args) != 1:
+            raise "TypeError: " + name + " expects one argument"
+        return {"state": state, "value": tyrion_string(tyrion_value_repr(state, args[0]))}
+    if name == "format":
+        if len(args) < 1 or len(args) > 2:
+            raise "TypeError: format expects one or two arguments"
+        if len(args) == 2 and args[1]["kind"] == "string" and args[1]["value"] != "":
+            raise "ValueError: non-empty format specifications are not supported yet"
+        return {"state": state, "value": tyrion_string(tyrion_value_text(state, args[0]))}
+    if name == "hasattr" or name == "getattr" or name == "setattr" or name == "delattr":
+        if args[0]["kind"] != "object" or args[1]["kind"] != "string":
+            raise "TypeError: " + name + " expects an object and attribute name"
+        object_value = tyrion_heap_get(state, args[0])
+        found = tyrion_object_find_attr(state, args[0], args[1]["value"])
+        if name == "hasattr":
+            if len(args) != 2:
+                raise "TypeError: hasattr expects two arguments"
+            return {"state": state, "value": tyrion_bool(found >= 0)}
+        if name == "getattr":
+            if len(args) < 2 or len(args) > 3:
+                raise "TypeError: getattr expects two or three arguments"
+            if found >= 0:
+                return {"state": state, "value": object_value["items"]["attrs"][found]["value"]}
+            if len(args) == 3:
+                return {"state": state, "value": args[2]}
+            raise "AttributeError: " + args[1]["value"]
+        if name == "delattr":
+            if len(args) != 2:
+                raise "TypeError: delattr expects two arguments"
+            if found < 0:
+                raise "AttributeError: " + args[1]["value"]
+            attrs = object_value["items"]["attrs"]
+            remaining = []
+            index = 0
+            while index < len(attrs):
+                if index != found:
+                    remaining.append(attrs[index])
+                index = index + 1
+            object_value["items"]["attrs"] = remaining
+            state = tyrion_heap_set(state, args[0], object_value)
+            return {"state": state, "value": tyrion_none()}
+        if len(args) != 3:
+            raise "TypeError: setattr expects three arguments"
+        state = tyrion_object_set_attr(state, args[0], args[1]["value"], args[2])
+        return {"state": state, "value": tyrion_none()}
     if name == "len":
         if len(args) != 1:
             raise "TypeError: len expects one argument"
@@ -963,8 +2102,20 @@ def tyrion_call_builtin(state, name, args, kwargs):
             return {"state": state, "value": tyrion_int(tyrion_bytes_length(value))}
         return {"state": state, "value": tyrion_int(len(tyrion_collection_items(state, value)))}
     if name == "str":
+        if len(args) == 0:
+            return {"state": state, "value": tyrion_string("")}
+        if len(args) != 1:
+            raise "TypeError: str expects zero or one argument"
         return {"state": state, "value": tyrion_string(tyrion_value_text(state, args[0]))}
     if name == "int":
+        if len(args) == 0:
+            return {"state": state, "value": tyrion_int(0)}
+        if len(args) == 2:
+            if args[0]["kind"] != "string" or args[1]["kind"] != "int":
+                raise "TypeError: int with a base expects text and an integer base"
+            return {"state": state, "value": tyrion_int(tyrion_parse_int_base(args[0]["value"], args[1]["value"]))}
+        if len(args) != 1:
+            raise "TypeError: int expects zero, one, or two arguments"
         value = args[0]
         if value["kind"] == "bool":
             if value["value"]:
@@ -972,17 +2123,89 @@ def tyrion_call_builtin(state, name, args, kwargs):
             return {"state": state, "value": tyrion_int(0)}
         return {"state": state, "value": tyrion_int(int(value["value"]))}
     if name == "float":
+        if len(args) == 0:
+            return {"state": state, "value": tyrion_float(0.0)}
+        if len(args) != 1:
+            raise "TypeError: float expects zero or one argument"
         if args[0]["kind"] == "string":
             return {"state": state, "value": tyrion_float(tyrion_parse_float_text(args[0]["value"]))}
         return {"state": state, "value": tyrion_float(args[0]["value"])}
     if name == "bool":
+        if len(args) == 0:
+            return {"state": state, "value": tyrion_bool(False)}
+        if len(args) != 1:
+            raise "TypeError: bool expects zero or one argument"
         return {"state": state, "value": tyrion_bool(tyrion_truthy(state, args[0]))}
+    if name == "bytes" or name == "bytearray":
+        if len(args) > 1:
+            raise "TypeError: " + name + " expects zero or one argument"
+        raw = []
+        if len(args) == 1 and args[0]["kind"] == "int":
+            raw = range(args[0]["value"])
+            zero_index = 0
+            while zero_index < len(raw):
+                raw[zero_index] = 0
+                zero_index = zero_index + 1
+        elif len(args) == 1 and args[0]["kind"] == "bytes":
+            raw = tyrion_bytes_flatten(args[0])
+        elif len(args) == 1:
+            values = tyrion_builtin_iterable_items(state, args[0])
+            index = 0
+            while index < len(values):
+                if values[index]["kind"] != "int" or values[index]["value"] < 0 or values[index]["value"] > 255:
+                    raise "ValueError: bytes must be in range(0, 256)"
+                raw.append(values[index]["value"])
+                index = index + 1
+        if name == "bytes":
+            return {"state": state, "value": tyrion_bytes(raw)}
+        boxed = []
+        index = 0
+        while index < len(raw):
+            boxed.append(tyrion_int(raw[index]))
+            index = index + 1
+        return tyrion_heap_alloc(state, "bytearray", boxed)
+    if name == "tuple" or name == "set" or name == "dict":
+        if len(args) > 1:
+            raise "TypeError: " + name + " expects zero or one argument"
+        source = []
+        if len(args) == 1:
+            source = tyrion_builtin_iterable_items(state, args[0])
+        if name == "tuple":
+            return tyrion_heap_alloc(state, "tuple", source)
+        if name == "set":
+            unique = []
+            index = 0
+            while index < len(source):
+                if not tyrion_set_contains(state, unique, source[index]):
+                    unique.append(source[index])
+                index = index + 1
+            return tyrion_heap_alloc(state, "set", unique)
+        entries = []
+        if len(args) == 1 and args[0]["kind"] == "dict":
+            existing = tyrion_heap_get(state, args[0])["items"]
+            index = 0
+            while index < len(existing):
+                entries.append({"key": existing[index]["key"], "value": existing[index]["value"]})
+                index = index + 1
+        elif len(args) == 1:
+            index = 0
+            while index < len(source):
+                pair = tyrion_collection_items(state, source[index])
+                if len(pair) != 2:
+                    raise "ValueError: dictionary update sequence element must have length 2"
+                entries.append({"key": pair[0], "value": pair[1]})
+                index = index + 1
+        keyword_index = 0
+        while keyword_index < len(kwargs):
+            entries.append({"key": tyrion_string(kwargs[keyword_index]["name"]), "value": kwargs[keyword_index]["value"]})
+            keyword_index = keyword_index + 1
+        return tyrion_heap_alloc(state, "dict", entries)
     if name == "range":
         return tyrion_builtin_range(state, args)
     if name == "enumerate":
         return tyrion_builtin_enumerate(state, args, kwargs)
     if name == "zip":
-        return tyrion_builtin_zip(state, args)
+        return tyrion_builtin_zip(state, args, kwargs)
     if name == "sum":
         total = tyrion_int(0)
         items = tyrion_collection_items(state, args[0])
@@ -1012,7 +2235,7 @@ def tyrion_call_builtin(state, name, args, kwargs):
         file_mode = "r"
         if len(args) == 2:
             file_mode = tyrion_value_text(state, args[1])
-        return tyrion_heap_alloc(state, "file", {"path": tyrion_value_text(state, args[0]), "mode": file_mode, "offset": 0})
+        return tyrion_heap_alloc(state, "file", {"path": tyrion_value_text(state, args[0]), "mode": file_mode, "offset": 0, "closed": False})
     if name == "argv":
         values = []
         index = 0

@@ -1,0 +1,1 @@
+print(filter(lambda value: value > 1, [1, 2, 3]))

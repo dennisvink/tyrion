@@ -11,7 +11,7 @@
 # id|public|symbol|min|max|keywords|args|result|ownership|effects|capability|impl|dispatch
 
 def primitive_schema_count():
-    return 54
+    return 57
 
 def primitive_schema_public_name(index):
     if index < 12:
@@ -126,6 +126,12 @@ def primitive_schema_public_name(index):
             return "__tyrion_native_tls_read"
         if index == 41:
             return "__tyrion_native_ascii_text"
+        if index == 42:
+            return "input"
+        if index == 43:
+            return "__tyrion_native_cache_encode"
+        if index == 44:
+            return "__tyrion_native_cache_decode"
         fail("primitive schema public name index out of range")
 
 def primitive_schema_row(index):
@@ -133,9 +139,9 @@ def primitive_schema_row(index):
         if index == 0:
             return "1|len|-|1|1|-|value|int|borrow|pure|core|len|2"
         if index == 1:
-            return "2|int|-|1|1|-|value|int|borrow|pure|core|int|2"
+            return "2|int|-|1|2|-|value,int|int|borrow|pure|core|int|3"
         if index == 2:
-            return "3|str|-|1|1|-|value|string|owned|pure|core|str|2"
+            return "3|str|-|0|1|-|value|string|owned|pure|core|str|2"
         if index == 3:
             return "4|range|-|1|3|-|int,int,int|range|owned|pure|collections|range|4"
         if index == 4:
@@ -186,11 +192,11 @@ def primitive_schema_row(index):
         if index == 13:
             return "26|asm_writer_is_x86|-|1|1|-|writer|bool|borrow|pure|compiler-writer|writer_is_x86|2"
         if index == 14:
-            return "27|float|-|1|1|-|value|float|borrow|pure|core|float|2"
+            return "27|float|-|0|1|-|value|float|borrow|pure|core|float|2"
         if index == 15:
             return "28|enumerate|-|1|2|start|value,int|list|owned|pure|collections|enumerate|3"
         if index == 16:
-            return "29|bool|-|1|1|-|value|bool|borrow|pure|core|bool|2"
+            return "29|bool|-|0|1|-|value|bool|borrow|pure|core|bool|2"
         if index == 17:
             return "30|zip|-|1|8|-|value|list|owned|pure|collections|zip|3"
         if index == 18:
@@ -241,6 +247,12 @@ def primitive_schema_row(index):
             return "53|__tyrion_native_tls_read|-|3|3|-|int,int,int|bytes-or-none|owned|network|host-extension|tls_read|4"
         if index == 41:
             return "54|__tyrion_native_ascii_text|-|1|1|-|bytes|string-or-none|owned|pure|core|ascii_text|2"
+        if index == 42:
+            return "55|input|-|0|1|-|value|string|owned|terminal|terminal|input|2"
+        if index == 43:
+            return "56|__tyrion_native_cache_encode|-|1|1|-|value|string|owned|allocation|compiler-cache|cache_encode|2"
+        if index == 44:
+            return "57|__tyrion_native_cache_decode|-|1|1|-|string|value|owned|allocation|compiler-cache|cache_decode|2"
         fail("primitive schema row index out of range")
 
 def primitive_schema_rows():
@@ -379,6 +391,12 @@ def primitive_schema_index_page_1(page_1_name):
         return 52
     if page_1_name == "__tyrion_native_ascii_text":
         return 53
+    if page_1_name == "input":
+        return 54
+    if page_1_name == "__tyrion_native_cache_encode":
+        return 55
+    if page_1_name == "__tyrion_native_cache_decode":
+        return 56
     return -1
 
 def primitive_schema_index(index_name):
@@ -468,7 +486,7 @@ def primitive_schema_runtime_visible(visibility_name):
     if len(fields) == 0:
         return False
     capability = fields[10]
-    return capability == "core" or capability == "collections" or capability == "file" or capability == "terminal" or capability == "clock" or capability == "tcp" or capability == "host-extension"
+    return capability == "core" or capability == "collections" or capability == "file" or capability == "terminal" or capability == "clock" or capability == "tcp" or capability == "host-extension" or capability == "compiler-cache"
 
 def primitive_schema_runtime_operations():
     out = []
@@ -484,7 +502,7 @@ def primitive_schema_runtime_operations():
 
 def primitive_schema_lowered_fixed(fixed_name):
     implementation = primitive_schema_impl_key(fixed_name)
-    fixed = ["len", "tcp_connect", "tcp_write", "tcp_read", "tcp_close", "read_text_file", "read_module_graph", "write_text_file", "run_tool", "writer_open", "writer_append", "writer_close", "writer_bytes", "writer_set_backend", "writer_is_x86", "ast_builder_create", "ast_builder_len", "ast_builder_append", "ast_builder_finish", "ast_builder_get", "token_builder_count", "token_builder_append", "token_builder_field", "lex"]
+    fixed = ["len", "tcp_connect", "tcp_write", "tcp_read", "tcp_close", "read_text_file", "read_module_graph", "write_text_file", "run_tool", "writer_open", "writer_append", "writer_close", "writer_bytes", "writer_set_backend", "writer_is_x86", "ast_builder_create", "ast_builder_len", "ast_builder_append", "ast_builder_finish", "ast_builder_get", "token_builder_count", "token_builder_append", "token_builder_field", "lex", "cache_encode", "cache_decode"]
     idx = 0
     while idx < len(fixed):
         if fixed[idx] == implementation:
@@ -494,17 +512,19 @@ def primitive_schema_lowered_fixed(fixed_name):
 
 
 def primitive_schema_direct_source_body(source_name):
-    # These operations already have complete Tyrion implementations. Keep
-    # those implementations in the ordinary AArch64 application call graph.
-    # The x86 backend implements the same public primitive ABI directly for
-    # bounded compiler-generation time; this is target capability selection,
-    # not compiler-program recognition.
-    source_bodies = ["read_text_file", "read_module_graph", "write_text_file", "lex", "program_has_function", "asm_writer_open", "asm_writer_append", "asm_writer_close", "asm_writer_bytes", "asm_writer_set_backend", "asm_writer_is_x86"]
+    # File reads use the canonical primitive ABI on every target. The old
+    # AArch64 source wrapper loses its owned result during self-hosting.
+    if source_name == "read_text_file":
+        return False
+    # Remaining seed-only source bodies are retired incrementally as their
+    # legacy AArch64 emitter gains canonical primitive dispatch. NativeIR and
+    # x86 already use the primitive ABI for all of them.
+    if host_target()["backend"] == "linux-x86_64":
+        return False
+    source_bodies = ["read_module_graph", "write_text_file", "lex", "program_has_function", "asm_writer_open", "asm_writer_append", "asm_writer_close", "asm_writer_bytes", "asm_writer_set_backend", "asm_writer_is_x86"]
     idx = 0
     while idx < len(source_bodies):
         if source_bodies[idx] == source_name:
-            if host_target()["backend"] == "linux-x86_64":
-                return False
             return True
         idx = idx + 1
     return False
