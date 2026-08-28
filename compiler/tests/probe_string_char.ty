@@ -1,0 +1,4 @@
+text = "tls"
+print(text[0] == "t")
+print(text[1] >= "a")
+print(text[2] <= "z")

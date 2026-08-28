@@ -1,0 +1,6 @@
+def make_module():
+    module = dict()
+    module["global_slots"] = []
+    print(len(module["global_slots"]))
+
+make_module()

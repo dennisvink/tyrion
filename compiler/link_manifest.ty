@@ -1,0 +1,120 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# Canonical linker-input manifest for the transitional whole-program object
+# lane. Object shards will replace the single program object without changing
+# this schema or the final response-file boundary.
+
+
+def link_manifest_safe_field(value, field):
+    value = str(value)
+    if contains_text(value, "\n") or contains_text(value, "\r") or contains_text(value, "\""):
+        fail("link-manifest rejected code=invalid-field;field=" + field)
+    return value
+
+
+def link_manifest_safe_items(items, field):
+    result = []
+    for item in items:
+        result = method_append(result, link_manifest_safe_field(item, field))
+    return result
+
+
+def link_manifest_unique_link_inputs(program_objects, runtime_inputs, extension_inputs):
+    # Repeating an object or source can turn into an opaque duplicate-symbol
+    # error from the system linker.  Reject it while the compiler can still
+    # identify the precise manifest field and path.
+    seen = []
+    groups = [["program-object", program_objects], ["runtime-input", runtime_inputs], ["extension-input", extension_inputs]]
+    for group in groups:
+        field = group[0]
+        for item in group[1]:
+            item = link_manifest_safe_field(item, field)
+            if list_contains_string(seen, item):
+                fail("link-manifest rejected code=duplicate-link-input;field=" + field + ";path=" + item)
+            seen = method_append(seen, item)
+    return True
+
+
+def link_manifest_append_field(text, key, value):
+    return text + key + "=" + link_manifest_safe_field(value, key) + "\n"
+
+
+def link_manifest_append_items(text, key, items):
+    index = 0
+    while index < len(items):
+        text = link_manifest_append_field(text, key + "." + str(index), items[index])
+        index = index + 1
+    return link_manifest_append_field(text, key + ".count", len(items))
+
+
+def link_manifest_create(target, output_path, entry_symbol, program_objects, runtime_inputs, extension_inputs, libraries, linker_flags, linker="cc"):
+    target = target_validate(target)
+    manifest = {"contract": "tyrion-link-manifest-v1"}
+    manifest["target_context"] = target_context_fingerprint(target)
+    manifest["target_id"] = target_id(target)
+    manifest["output_path"] = link_manifest_safe_field(output_path, "output-path")
+    manifest["entry_symbol"] = link_manifest_safe_field(entry_symbol, "entry-symbol")
+    manifest["linker"] = link_manifest_safe_field(linker, "linker")
+    manifest["program_objects"] = link_manifest_safe_items(program_objects, "program-object")
+    manifest["runtime_inputs"] = link_manifest_safe_items(runtime_inputs, "runtime-input")
+    manifest["extension_inputs"] = link_manifest_safe_items(extension_inputs, "extension-input")
+    manifest["libraries"] = link_manifest_safe_items(libraries, "library")
+    manifest["linker_flags"] = link_manifest_safe_items(linker_flags, "linker-flag")
+    return manifest
+
+
+def link_manifest_validate(manifest):
+    if manifest["contract"] != "tyrion-link-manifest-v1":
+        fail("link-manifest rejected code=invalid-contract")
+    if manifest["target_context"] == "" or manifest["target_id"] == "":
+        fail("link-manifest rejected code=missing-target")
+    if manifest["output_path"] == "" or manifest["entry_symbol"] == "":
+        fail("link-manifest rejected code=missing-output-or-entry")
+    # Validate every externally interpreted field before it reaches a response
+    # file. The compiler owns ordering, so list order is canonical as well.
+    link_manifest_safe_field(manifest["linker"], "linker")
+    link_manifest_safe_items(manifest["program_objects"], "program-object")
+    link_manifest_safe_items(manifest["runtime_inputs"], "runtime-input")
+    link_manifest_safe_items(manifest["extension_inputs"], "extension-input")
+    link_manifest_unique_link_inputs(manifest["program_objects"], manifest["runtime_inputs"], manifest["extension_inputs"])
+    link_manifest_safe_items(manifest["libraries"], "library")
+    link_manifest_safe_items(manifest["linker_flags"], "linker-flag")
+    return manifest
+
+
+def link_manifest_text(manifest):
+    manifest = link_manifest_validate(manifest)
+    text = "tyrion-link-manifest-v1\n"
+    text = link_manifest_append_field(text, "target-context", manifest["target_context"])
+    text = link_manifest_append_field(text, "target", manifest["target_id"])
+    text = link_manifest_append_field(text, "entry-symbol", manifest["entry_symbol"])
+    text = link_manifest_append_field(text, "linker", manifest["linker"])
+    text = link_manifest_append_items(text, "program-object", manifest["program_objects"])
+    text = link_manifest_append_items(text, "runtime-input", manifest["runtime_inputs"])
+    text = link_manifest_append_items(text, "extension-input", manifest["extension_inputs"])
+    text = link_manifest_append_items(text, "library", manifest["libraries"])
+    return link_manifest_append_items(text, "linker-flag", manifest["linker_flags"])
+
+
+def link_manifest_response_text(manifest):
+    manifest = link_manifest_validate(manifest)
+    text = ""
+    for object_path in manifest["program_objects"]:
+        text = text + "\"" + object_path + "\"\n"
+    for runtime_input in manifest["runtime_inputs"]:
+        text = text + "\"" + runtime_input + "\"\n"
+    for extension_input in manifest["extension_inputs"]:
+        text = text + "\"" + extension_input + "\"\n"
+    for library in manifest["libraries"]:
+        text = text + library + "\n"
+    for flag in manifest["linker_flags"]:
+        text = text + flag + "\n"
+    return text
+
+
+def link_manifest_write(manifest, path):
+    write_text_file(path, link_manifest_text(manifest))
+    return path

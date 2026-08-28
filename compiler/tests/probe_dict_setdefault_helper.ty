@@ -1,0 +1,4 @@
+values = {"a": 1}
+result = __tyrion_method_dict_setdefault(values, "b", 2)
+print(result)
+print(values)

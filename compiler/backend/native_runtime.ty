@@ -13495,7 +13495,9 @@ def emit_native_runtime_direct_data_core(out, target):
     text_suffix = text_suffix + "    str x9, [x0]\n    mov w10, #2\n    strb w10, [x0, #127]\n"
     text_suffix = text_suffix + "    bl __tyrion_app_print_value\n    ldr d0, [sp, #40]\n    ldr x9, [sp, #48]\n"
     text_suffix = text_suffix + "    scvtf d1, x9\n    fsub d0, d0, d1\n    fabs d0, d0\n"
-    text_suffix = text_suffix + "    fcmp d0, #0.0\n    b.eq __tyrion_app_print_done\n"
+    # A value tagged as float must retain its floating spelling even when its
+    # fractional component is zero: Python prints `7.0`, not `7`.
+    text_suffix = text_suffix + "    fcmp d0, #0.0\n    b.eq __tyrion_app_print_float_integral\n"
     text_suffix = text_suffix + "    movz x10, #16960\n    movk x10, #15, lsl #16\n    scvtf d2, x10\n    fmul d0, d0, d2\n"
     text_suffix = text_suffix + "    mov x10, #1\n    scvtf d1, x10\n    mov x10, #2\n    scvtf d2, x10\n"
     text_suffix = text_suffix + "    fdiv d1, d1, d2\n    fadd d0, d0, d1\n    fcvtzs x9, d0\n"
@@ -13511,6 +13513,9 @@ def emit_native_runtime_direct_data_core(out, target):
     text_suffix = text_suffix + "    adrp x0, L_tyrion_direct_dot@PAGE\n    add x0, x0, L_tyrion_direct_dot@PAGEOFF\n"
     text_suffix = text_suffix + "    mov x1, #1\n    bl __tyrion_app_write\n    mov x0, x10\n    sub x1, x11, x10\n"
     text_suffix = text_suffix + "    bl __tyrion_app_write\n    b __tyrion_app_print_done\n"
+    text_suffix = text_suffix + "__tyrion_app_print_float_integral:\n"
+    text_suffix = text_suffix + "    adrp x0, L_tyrion_direct_dot_zero@PAGE\n    add x0, x0, L_tyrion_direct_dot_zero@PAGEOFF\n"
+    text_suffix = text_suffix + "    mov x1, #2\n    bl __tyrion_app_write\n    b __tyrion_app_print_done\n"
     text_suffix = text_suffix + "__tyrion_app_print_list_marker:\n    ldrb w10, [x19, #126]\n    cbnz w10, __tyrion_app_print_tuple_dispatch\n__tyrion_app_print_list_dispatch:\n    mov x0, x19\n"
     text_suffix = text_suffix + "    bl __tyrion_app_print_list\n"
     text_suffix = text_suffix + "    b __tyrion_app_print_done\n"
@@ -13530,6 +13535,7 @@ def emit_native_runtime_direct_data_core(out, target):
     text_suffix = text_suffix + "L_tyrion_direct_none:\n    .ascii \"none\"\n"
     text_suffix = text_suffix + "L_tyrion_direct_minus:\n    .ascii \"-\"\n"
     text_suffix = text_suffix + "L_tyrion_direct_dot:\n    .ascii \".\"\n"
+    text_suffix = text_suffix + "L_tyrion_direct_dot_zero:\n    .ascii \".0\"\n"
     text_suffix = text_suffix + "L_tyrion_direct_lbracket:\n    .ascii \"[\"\n"
     text_suffix = text_suffix + "L_tyrion_direct_rbracket:\n    .ascii \"]\"\n"
     text_suffix = text_suffix + "L_tyrion_direct_lparen:\n    .ascii \"(\"\n"
@@ -13612,7 +13618,11 @@ def native_runtime_direct_shared_storage_text():
 def native_runtime_direct_lifecycle_text():
     extension_tag = str(generated_value_tag_extension_handle())
     iterator_tag = str(generated_value_tag_iterator())
-    text = ".globl __tyrion_app_slot_release\n"
+    # Function shards can allocate independently of the root runtime object.
+    # Export their common allocation-failure sink as well as slot release;
+    # otherwise ELF treats the root definition as local and cannot resolve a
+    # generator-shard branch at final link.
+    text = ".globl __tyrion_app_slot_release\n.globl __tyrion_app_oom\n"
     text = text + "__tyrion_app_zero_region:\n    mov x9, #0\n"
     text = text + "__tyrion_app_zero_region_loop:\n    cmp x9, x1\n"
     text = text + "    b.hs __tyrion_app_zero_region_done\n    str xzr, [x0, x9]\n"
@@ -13931,7 +13941,7 @@ def native_runtime_direct_strings_text():
     text = text + "    cmp w9, #2\n    b.ne __tyrion_app_add_fail\n    cmp w10, #2\n    b.ne __tyrion_app_add_fail\n"
     text = text + "    ldr x9, [x20]\n    ldr x10, [x21]\n    cmp x22, #0\n    b.eq __tyrion_app_numeric_int_add\n"
     text = text + "    cmp x22, #1\n    b.eq __tyrion_app_numeric_int_sub\n    cmp x22, #2\n    b.eq __tyrion_app_numeric_int_mul\n"
-    text = text + "    cmp x22, #3\n    b.eq __tyrion_app_numeric_int_div\n"
+    text = text + "    cmp x22, #3\n    b.eq __tyrion_app_numeric_int_true_div\n"
     text = text + "    cmp x22, #5\n    b.eq __tyrion_app_numeric_int_floor_div\n"
     text = text + "    cmp x22, #6\n    b.eq __tyrion_app_numeric_int_pow\n"
     text = text + "    cmp x22, #7\n    b.eq __tyrion_app_numeric_int_or\n"
@@ -13942,8 +13952,10 @@ def native_runtime_direct_strings_text():
     text = text + "    cmp x22, #4\n    b.ne __tyrion_app_add_fail\n    cbz x10, __tyrion_app_numeric_zero_division\n"
     text = text + "    sdiv x11, x9, x10\n    msub x9, x11, x10, x9\n"
     text = text + "    b __tyrion_app_numeric_int_store\n"
-    text = text + "__tyrion_app_numeric_int_div:\n    cbz x10, __tyrion_app_numeric_zero_division\n"
-    text = text + "    sdiv x9, x9, x10\n    b __tyrion_app_numeric_int_store\n"
+    # `/` always returns a float, including when both operands are integers.
+    # `//` remains on the integer floor-division path below.
+    text = text + "__tyrion_app_numeric_int_true_div:\n    cbz x10, __tyrion_app_numeric_zero_division\n"
+    text = text + "    scvtf d0, x9\n    scvtf d1, x10\n    fdiv d0, d0, d1\n    b __tyrion_app_numeric_float_store\n"
     text = text + "__tyrion_app_numeric_int_floor_div:\n    cbz x10, __tyrion_app_numeric_zero_division\n"
     text = text + "    sdiv x11, x9, x10\n    msub x12, x11, x10, x9\n    cbz x12, __tyrion_app_numeric_int_store\n"
     text = text + "    eor x12, x9, x10\n    tbnz x12, #63, __tyrion_app_numeric_int_floor_adjust\n"
@@ -13978,7 +13990,7 @@ def native_runtime_direct_strings_text():
     text = text + "    fdiv d0, d0, d1\n    cmp x22, #5\n    b.ne __tyrion_app_numeric_float_store\n    frintm d0, d0\n    b __tyrion_app_numeric_float_store\n"
     text = text + "__tyrion_app_numeric_float_add:\n    fadd d0, d0, d1\n    b __tyrion_app_numeric_float_store\n"
     text = text + "__tyrion_app_numeric_float_sub:\n    fsub d0, d0, d1\n    b __tyrion_app_numeric_float_store\n"
-    text = text + "__tyrion_app_numeric_float_mul:\n    fmul d0, d0, d1\n"
+    text = text + "__tyrion_app_numeric_float_mul:\n    fmul d0, d0, d1\n    b __tyrion_app_numeric_float_store\n"
     text = text + "__tyrion_app_numeric_float_pow:\n    bl pow\n    b __tyrion_app_numeric_float_store\n"
     text = text + "__tyrion_app_numeric_float_store:\n    str d0, [sp, #48]\n    mov x0, x19\n"
     text = text + "    bl __tyrion_app_slot_release\n    ldr d0, [sp, #48]\n    str d0, [x19]\n"

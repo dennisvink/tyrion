@@ -1,0 +1,3 @@
+values = {"a": 1}
+__tyrion_method_dict_update(values, {"b": 2}, {"c": 3})
+print(values)

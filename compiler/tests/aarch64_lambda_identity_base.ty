@@ -1,0 +1,4 @@
+def stable(values):
+    return filter(lambda item: item > 0, values)
+
+print(stable([0, 1]))

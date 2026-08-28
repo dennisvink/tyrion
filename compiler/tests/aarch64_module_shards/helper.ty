@@ -1,0 +1,2 @@
+def winter(name):
+    return "Hello " + name

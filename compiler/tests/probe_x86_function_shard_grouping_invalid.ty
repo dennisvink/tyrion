@@ -1,0 +1,5 @@
+import compiler.core
+import compiler.targets.linux_x86_64_native
+
+records = "module-a\tcompiler/a.ty\tcache-a1\t/a1.o\tunit_a1\tfunction-a1\tinterface-a\tdep-a\nmodule-a\tcompiler/a.ty\tcache-a2\t/a2.o\tunit_a2\tfunction-a2\tinterface-b\tdep-a"
+x86_native_group_function_shards(records)

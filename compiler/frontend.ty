@@ -282,12 +282,6 @@ def compiler_cli_parse_path_probe(path):
     return len(program["items"])
 
 
-def compiler_cli_plan_path_probe(path):
-    program = parse_program(lex(read_text_file(path)))
-    spec = collect_cli_spec(program)
-    return len(spec["lowered_functions"])
-
-
 def compiler_cli_build_plan_path_probe(path):
     program = parse_program(lex(read_text_file(path)))
     plan = collect_build_native_plan(program)
@@ -1681,17 +1675,184 @@ def parse_program(tokens):
     return ast_collection("program", items)
 
 
+def module_interface_parameter_record(parameter):
+    record = {"name": parameter["name"], "vararg": parameter["vararg"], "has_default": parameter["has_default"]}
+    if parameter["has_default"]:
+        record["default"] = parameter["default"]
+    return record
+
+
+def module_interface_statements_have_yield(items):
+    idx = 0
+    while idx < len(items):
+        statement = items[idx]
+        kind = statement["kind"]
+        if kind == "yield":
+            return True
+        if kind == "if":
+            if module_interface_statements_have_yield(statement["body"]):
+                return True
+            branch_idx = 0
+            while branch_idx < len(statement["elifs"]):
+                if module_interface_statements_have_yield(statement["elifs"][branch_idx]["body"]):
+                    return True
+                branch_idx = branch_idx + 1
+            if module_interface_statements_have_yield(statement["else_body"]):
+                return True
+        elif kind == "while" or kind == "for" or kind == "with":
+            if module_interface_statements_have_yield(statement["body"]):
+                return True
+        elif kind == "try":
+            if module_interface_statements_have_yield(statement["body"]) or module_interface_statements_have_yield(statement["except_body"]) or module_interface_statements_have_yield(statement["finally_body"]):
+                return True
+        idx = idx + 1
+    return False
+
+
+def module_interface_function_record(function):
+    parameters = []
+    parameter_idx = 0
+    while parameter_idx < len(function["params"]):
+        parameters = method_append(parameters, module_interface_parameter_record(function["params"][parameter_idx]))
+        parameter_idx = parameter_idx + 1
+    return {"kind": "function", "name": function["name"], "parameters": parameters, "generator": module_interface_statements_have_yield(function["body"])}
+
+
+def module_interface_class_record(class_node):
+    members = []
+    member_idx = 0
+    while member_idx < len(class_node["body"]):
+        member = class_node["body"][member_idx]
+        if member["kind"] == "function":
+            members = method_append(members, module_interface_function_record(member))
+        else:
+            # Class-body execution and class attributes are layout-visible.
+            # Preserve their complete canonical form while excluding ordinary
+            # method bodies from a class's public interface identity.
+            members = method_append(members, {"kind": "class-member", "record": member})
+        member_idx = member_idx + 1
+    return {"kind": "class", "name": class_node["name"], "members": members}
+
+
+def module_interface_record(unit, program):
+    declarations = []
+    item_idx = 0
+    while item_idx < len(program["items"]):
+        item = program["items"][item_idx]
+        if item["kind"] == "function":
+            declarations = method_append(declarations, module_interface_function_record(item))
+        elif item["kind"] == "class":
+            declarations = method_append(declarations, module_interface_class_record(item))
+        else:
+            # Top-level executable statements and global assignment values
+            # affect module initialization, not merely an implementation
+            # detail. Keep their exact AST in the interface contract.
+            declarations = method_append(declarations, {"kind": "module-init", "record": item})
+        item_idx = item_idx + 1
+    return {"contract": "tyrion-module-interface-v1", "path": unit["path"], "imports": unit["imports"], "declarations": declarations}
+
+
+def module_interface_find(records, path):
+    idx = 0
+    while idx < len(records):
+        if records[idx]["path"] == path:
+            return records[idx]
+        idx = idx + 1
+    return None
+
+
+def module_interface_fingerprint(unit, interface_record, completed_interfaces, context):
+    fingerprint = "tyrion-module-interface-v1\ncontext=" + context + "\npath=" + unit["path"] + "\nown=" + __tyrion_native_cache_encode(interface_record)
+    import_idx = 0
+    while import_idx < len(unit["imports"]):
+        dependency = module_interface_find(completed_interfaces, unit["imports"][import_idx])
+        if dependency == None:
+            fail("compiler interface rejected code=dependency-not-ready;path=" + unit["path"] + ";dependency=" + unit["imports"][import_idx])
+        fingerprint = fingerprint + "\ndependency=" + dependency["fingerprint"]
+        import_idx = import_idx + 1
+    return fingerprint
+
+
+def module_interface_digest(fingerprint):
+    # Sidecars must be line-safe and compact. Their cache records retain the
+    # complete interface fingerprint for exact comparison; this token makes
+    # the consumed interface visible in durable object metadata.
+    return "tyrion-interface-digest-v1-" + str(len(fingerprint)) + "-" + str(compiler_cache_path_hash(fingerprint)) + "-" + str(compiler_cache_bounded_text_hash(fingerprint))
+
+
+def module_interface_dependency_digests(unit, completed_interfaces):
+    digests = []
+    import_idx = 0
+    while import_idx < len(unit["imports"]):
+        dependency = module_interface_find(completed_interfaces, unit["imports"][import_idx])
+        if dependency == None:
+            fail("compiler interface rejected code=dependency-not-ready;path=" + unit["path"] + ";dependency=" + unit["imports"][import_idx])
+        digests = method_append(digests, module_interface_digest(dependency["fingerprint"]))
+        import_idx = import_idx + 1
+    return digests
+
+
+def module_implementation_fingerprint(unit, completed_interfaces, context):
+    # A module's own implementation must invalidate its own function shards,
+    # but imported implementation bytes do not affect this module unless the
+    # dependency's declared interface changes.
+    fingerprint = "tyrion-module-implementation-v2\ncontext=" + context + "\npath=" + unit["path"] + "\nsource=" + unit["source"]
+    import_idx = 0
+    while import_idx < len(unit["imports"]):
+        dependency = module_interface_find(completed_interfaces, unit["imports"][import_idx])
+        if dependency == None:
+            fail("compiler implementation rejected code=dependency-not-ready;path=" + unit["path"] + ";dependency=" + unit["imports"][import_idx])
+        fingerprint = fingerprint + "\ndependency-interface=" + dependency["fingerprint"]
+        import_idx = import_idx + 1
+    return fingerprint
+
+
+def module_function_implementation_fingerprint(interface_fingerprint, definition_path, function_node):
+    # A callable depends on its own exact declaration/body plus the module
+    # interface it consumes. This deliberately excludes sibling function
+    # bodies: changing one private function must not lower every other
+    # callable in that module again.
+    return "tyrion-module-function-implementation-v1\ninterface=" + interface_fingerprint + "\ndefinition=" + definition_path + "\nfunction=" + __tyrion_native_cache_encode(function_node)
+
+
+def module_function_fingerprint_records(program, module_path, range_start, interface_fingerprint, interface_dependencies):
+    records = []
+    interface_digest = module_interface_digest(interface_fingerprint)
+    item_idx = 0
+    while item_idx < len(program["items"]):
+        item = program["items"][item_idx]
+        definition_path = "program[" + str(range_start + item_idx) + "]"
+        if item["kind"] == "function":
+            fingerprint = module_function_implementation_fingerprint(interface_fingerprint, definition_path, item)
+            records = method_append(records, {"path": module_path, "definition_path": definition_path, "fingerprint": fingerprint, "interface_digest": interface_digest, "interface_dependencies": interface_dependencies})
+        elif item["kind"] == "class":
+            member_idx = 0
+            while member_idx < len(item["body"]):
+                member = item["body"][member_idx]
+                if member["kind"] == "function":
+                    member_path = definition_path + ".class[" + str(member_idx) + "]"
+                    fingerprint = module_function_implementation_fingerprint(interface_fingerprint, member_path, member)
+                    records = method_append(records, {"path": module_path, "definition_path": member_path, "fingerprint": fingerprint, "interface_digest": interface_digest, "interface_dependencies": interface_dependencies})
+                member_idx = member_idx + 1
+        item_idx = item_idx + 1
+    return records
+
+
 def parse_module_unit_cached(unit, units, cache_dir, context):
-    fingerprint = module_unit_fingerprint_with_dependencies(unit, units, context, [])
+    # Parsing a source unit is independent of imported bodies. Keep its cache
+    # identity local so a private edit in an imported module does not force a
+    # caller AST to be reparsed.
+    fingerprint = "tyrion-module-ast-v2\ncontext=" + context + "\npath=" + unit["path"] + "\nsource=" + unit["source"]
     cache_path = ""
     if cache_dir != "":
         cache_path = cache_dir + "/" + str(compiler_cache_path_hash(fingerprint)) + ".ast"
-        try:
-            cached = __tyrion_native_cache_decode(read_text_file(cache_path))
-            if cached["fingerprint"] == fingerprint:
-                return cached["program"]
-        except:
-            cached = None
+        if compiler_optional_file_exists(cache_path):
+            try:
+                cached = __tyrion_native_cache_decode(read_text_file(cache_path))
+                if cached["fingerprint"] == fingerprint:
+                    return cached["program"]
+            except:
+                cached = None
     parsed = parse_program(lex(unit["source"]))
     if cache_dir != "":
         record = {"fingerprint": fingerprint, "program": parsed}
@@ -1710,19 +1871,30 @@ def parse_module_unit_records(units, cache_dir="", context="compiler=1.0.0"):
     item_builder = parser_list_create()
     item_count = 0
     module_fingerprints = []
+    function_fingerprints = []
+    completed_interfaces = []
     module_ranges = []
     idx = 0
     while idx < len(units):
-        fingerprint = module_unit_fingerprint_with_dependencies(units[idx], units, context, [])
         parsed = parse_module_unit_cached(units[idx], units, cache_dir, context)
-        module_fingerprints.append({"path": units[idx]["path"], "fingerprint": fingerprint})
+        interface_record = module_interface_record(units[idx], parsed)
+        interface_fingerprint = module_interface_fingerprint(units[idx], interface_record, completed_interfaces, context)
+        interface_dependencies = module_interface_dependency_digests(units[idx], completed_interfaces)
+        implementation_fingerprint = module_implementation_fingerprint(units[idx], completed_interfaces, context)
         range_start = item_count
+        unit_function_fingerprints = module_function_fingerprint_records(parsed, units[idx]["path"], range_start, interface_fingerprint, interface_dependencies)
+        fingerprint_idx = 0
+        while fingerprint_idx < len(unit_function_fingerprints):
+            function_fingerprints = method_append(function_fingerprints, unit_function_fingerprints[fingerprint_idx])
+            fingerprint_idx = fingerprint_idx + 1
+        completed_interfaces = method_append(completed_interfaces, {"path": units[idx]["path"], "fingerprint": interface_fingerprint})
+        module_fingerprints.append({"path": units[idx]["path"], "fingerprint": implementation_fingerprint, "interface_fingerprint": interface_fingerprint, "interface_digest": module_interface_digest(interface_fingerprint), "interface_dependencies": interface_dependencies})
         for item in parsed["items"]:
             __tyrion_native_ast_builder_append(item_builder, 0, item)
             item_count = item_count + 1
         module_ranges.append({"start": range_start, "stop": item_count, "path": units[idx]["path"]})
         idx = idx + 1
-    return {"kind": "program", "items": parser_list_finish(item_builder), "module_fingerprints": module_fingerprints, "module_ranges": module_ranges}
+    return {"kind": "program", "items": parser_list_finish(item_builder), "module_fingerprints": module_fingerprints, "function_fingerprints": function_fingerprints, "module_ranges": module_ranges}
 
 
 def parse_module_units(path, cache_dir="", context="compiler=1.0.0"):

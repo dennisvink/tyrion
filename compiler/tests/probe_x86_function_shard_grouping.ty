@@ -1,0 +1,12 @@
+import compiler.core
+import compiler.targets.linux_x86_64_native
+
+records = "module-a\tcompiler/a.ty\tcache-a1\t/a1.o\tunit_a1\tfunction-a1\tinterface-a\tdep-a\nmodule-b\tcompiler/b.ty\tcache-b1\t/b1.o\tunit_b1\tfunction-b1\tinterface-b\t\nmodule-a\tcompiler/a.ty\tcache-a2\t/a2.o\tunit_a2\tfunction-a2\tinterface-a\tdep-a"
+grouped = x86_native_group_function_shards(records)
+
+print(len(grouped["order"]))
+print(grouped["order"][0])
+print(grouped["order"][1])
+print(grouped["groups"]["compiler/a.ty"]["cache_names"][0])
+print(grouped["groups"]["compiler/a.ty"]["cache_names"][1])
+print(grouped["groups"]["compiler/b.ty"]["symbols"][0])

@@ -2927,9 +2927,17 @@ def native_ir_v2_cfg_probe_module():
 
 
 def native_ir_v2_cfg_probe_summary():
-    module = verify_native_ir(native_ir_v2_cfg_probe_module())
-    function = module["functions"][0]
-    return module["contract"] + ":functions=" + str(len(module["functions"])) + ":blocks=" + str(len(function["blocks"])) + ":spills=" + str(function["frame"]["scalar_spills"])
+    # Direct-native lowering validates probe helpers too, even though this
+    # diagnostic helper is not part of the compiler's command path. Keep the
+    # probe result in an ordinary local rather than the compiler-reserved
+    # ``module`` analysis name: that name is intentionally read-only within
+    # native function lowering metadata and caused this diagnostic helper to
+    # look like a local read before assignment.
+    probe = native_ir_v2_cfg_probe_module()
+    verify_native_ir(probe)
+    function = {}
+    function = probe["functions"][0]
+    return probe["contract"] + ":functions=" + str(len(probe["functions"])) + ":blocks=" + str(len(function["blocks"])) + ":spills=" + str(function["frame"]["scalar_spills"])
 
 
 def native_ir_v2_probe_module(blocks, scalar_spills):
@@ -2992,15 +3000,15 @@ def native_ir_v2_missing_component_probe():
     instructions.append(native_ir_v2_const_int(2, 0, "i32"))
     blocks = []
     blocks.append(native_ir_v2_block(0, instructions, native_ir_v2_return(2)))
-    module = native_ir_v2_probe_module(blocks, 3)
-    function = module["functions"][0]
+    probe = native_ir_v2_probe_module(blocks, 3)
+    function = probe["functions"][0]
     effects = []
     effects.append("io")
     function["effects"] = effects
     functions = []
     functions.append(function)
-    module["functions"] = functions
-    return verify_native_ir(module)
+    probe["functions"] = functions
+    return verify_native_ir(probe)
 
 
 def native_ir_v2_missing_aggregate_component_probe():
@@ -3011,13 +3019,13 @@ def native_ir_v2_missing_aggregate_component_probe():
     instructions.append(native_ir_v2_const_int(3, 0, "i32"))
     blocks = []
     blocks.append(native_ir_v2_block(0, instructions, native_ir_v2_return(3)))
-    module = native_ir_v2_probe_module(blocks, 4)
-    functions = module["functions"]
+    probe = native_ir_v2_probe_module(blocks, 4)
+    functions = probe["functions"]
     function = functions[0]
     function["frame"] = native_ir_v2_frame(1, 0, 0, 4)
     functions[0] = function
-    module["functions"] = functions
-    return verify_native_ir(module)
+    probe["functions"] = functions
+    return verify_native_ir(probe)
 
 
 def native_ir_v2_released_slot_probe():
@@ -3030,18 +3038,18 @@ def native_ir_v2_released_slot_probe():
     instructions.append(native_ir_v2_instruction(5, "slot_get_int", "i32", {"args": [1]}))
     blocks = []
     blocks.append(native_ir_v2_block(0, instructions, native_ir_v2_return(5)))
-    module = native_ir_v2_probe_module(blocks, 6)
-    functions = module["functions"]
+    probe = native_ir_v2_probe_module(blocks, 6)
+    functions = probe["functions"]
     function = functions[0]
     function["frame"] = native_ir_v2_frame(1, 0, 0, 6)
     function["ownership"] = "owned-frame-cleanup"
     functions[0] = function
-    module["functions"] = functions
-    components = module["components"]
+    probe["functions"] = functions
+    components = probe["components"]
     components.append("aggregate-core")
-    module["components"] = components
-    module["ownership_manifest"] = "direct-owned-aggregate"
-    return verify_native_ir(module)
+    probe["components"] = components
+    probe["ownership_manifest"] = "direct-owned-aggregate"
+    return verify_native_ir(probe)
 
 
 def native_ir_v2_noncontiguous_cleanup_range_probe():
@@ -3056,18 +3064,18 @@ def native_ir_v2_noncontiguous_cleanup_range_probe():
     instructions.append(native_ir_v2_const_int(7, 0, "i32"))
     blocks = []
     blocks.append(native_ir_v2_block(0, instructions, native_ir_v2_return(7)))
-    module = native_ir_v2_probe_module(blocks, 8)
-    functions = module["functions"]
+    probe = native_ir_v2_probe_module(blocks, 8)
+    functions = probe["functions"]
     function = functions[0]
     function["frame"] = native_ir_v2_frame(3, 0, 0, 8)
     function["ownership"] = "owned-frame-cleanup"
     functions[0] = function
-    module["functions"] = functions
-    components = module["components"]
+    probe["functions"] = functions
+    components = probe["components"]
     components.append("aggregate-core")
-    module["components"] = components
-    module["ownership_manifest"] = "direct-owned-aggregate"
-    return verify_native_ir(module)
+    probe["components"] = components
+    probe["ownership_manifest"] = "direct-owned-aggregate"
+    return verify_native_ir(probe)
 
 
 def native_ir_v2_frame_slot_count_probe():
@@ -3084,8 +3092,8 @@ def native_ir_v2_frame_overflow_probe():
     instructions.append(native_ir_v2_const_int(0, 0, "i32"))
     blocks = []
     blocks.append(native_ir_v2_block(0, instructions, native_ir_v2_return(0)))
-    module = native_ir_v2_probe_module(blocks, 268435456)
-    return verify_native_ir(module)
+    probe = native_ir_v2_probe_module(blocks, 268435456)
+    return verify_native_ir(probe)
 
 
 def native_ir_v2_uninitialized_merge_probe():
@@ -3103,10 +3111,10 @@ def native_ir_v2_uninitialized_merge_probe():
     blocks.append(native_ir_v2_block(1, initialized, native_ir_v2_jump(3)))
     blocks.append(native_ir_v2_block(2, [], native_ir_v2_jump(3)))
     blocks.append(native_ir_v2_block(3, merge, native_ir_v2_return(5)))
-    module = native_ir_v2_probe_module(blocks, 6)
-    functions = module["functions"]
+    probe = native_ir_v2_probe_module(blocks, 6)
+    functions = probe["functions"]
     function = functions[0]
     function["frame"] = native_ir_v2_frame(1, 0, 0, 6)
     functions[0] = function
-    module["functions"] = functions
-    return verify_native_ir(module)
+    probe["functions"] = functions
+    return verify_native_ir(probe)

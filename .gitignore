@@ -1,3 +1,8 @@
 /build/
 /extensions/toolchain/build/
 /modules/tls/vendor/mbedtls/**/__pycache__/
+
+# One-off compiler experiments use a leading underscore.  Durable regression
+# fixtures and test scripts deliberately do not, so they remain reviewable.
+/_probe_*.ty
+/compiler/tests/_*.ty

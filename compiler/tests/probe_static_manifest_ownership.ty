@@ -1,0 +1,62 @@
+def owned_text(text):
+    result = ""
+    index = 0
+    while index < len(text):
+        result = result + text[index]
+        index = index + 1
+    return result
+
+
+def trim_spaces(text):
+    start = 0
+    text_len = len(text)
+    while start < text_len:
+        character = text[start]
+        if character != " " and character != "\t" and character != "\r" and character != "\n":
+            break
+        start = start + 1
+    end = text_len
+    while end > start:
+        character = text[end - 1]
+        if character != " " and character != "\t" and character != "\r" and character != "\n":
+            break
+        end = end - 1
+    return text[start:end]
+
+
+def split_lines(text):
+    lines = []
+    start = 0
+    index = 0
+    while index < len(text):
+        if text[index] == "\n":
+            lines = lines.append(text[start:index])
+            start = index + 1
+        index = index + 1
+    return lines.append(text[start:len(text)])
+
+
+def manifest_scalar(source, key):
+    prefix = key + " = \""
+    for line in split_lines(source):
+        line = trim_spaces(line)
+        if line.startswith(prefix) and line.endswith("\""):
+            return owned_text(line[len(prefix):len(line) - 1])
+    return ""
+
+
+manifest = open(argv()[0], "r")
+line = manifest.read()
+manifest.close()
+manifest_name = manifest_scalar(line, "name")
+source_name = owned_text("toolchain")
+names = []
+names = names.append(source_name)
+
+print(manifest_name)
+print(manifest_name == source_name)
+print(manifest_name == "toolchain")
+print(owned_text(manifest_name) == source_name)
+for retained_name in names:
+    print(manifest_name == retained_name)
+    print(owned_text(manifest_name) == owned_text(retained_name))

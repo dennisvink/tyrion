@@ -1,0 +1,2 @@
+extension = __tyrion_native_host_load("tls")
+print(extension)

@@ -26,6 +26,12 @@ build path.
   lowering units. A warm staged hit skips lowering, verification, and emission;
   the compiler still reconstructs the aggregate runtime inventory and performs
   the final native assembly and link.
+- Linux x86-64 also caches the generated root-runtime tail separately from the
+  diagnostic monolithic assembly record. Its identity covers the compiler
+  context plus the selected runtime components, operations, primitives,
+  classes, constants, and extension configuration. A staged warm rebuild can
+  therefore reuse both verified function units and this capability-selected
+  tail before the final assembly/link work.
 - Linux x86-64 runtime templates are canonical emitter source. Neither the C
   bootstrap writer nor a generated compiler performs late string surgery on
   the streamed assembly, so both paths publish the same template bytes.
@@ -66,13 +72,19 @@ each language capability.
 Run all compiler and fixture commands with an 8 GiB process-tree memory cap.
 
 ```sh
-make test
-bash tests/test_module_graph_cache.sh
-bash tests/test_ast_cache.sh
+# From the Tyrion repository, this is the focused bounded recovery gate. It
+# selects `taskpolicy` on macOS and a user-systemd memory scope on Linux.
+./scripts/verify_bounded.sh
+
+# The component commands remain available for a narrowed diagnosis:
+make -C ../tyrionc test
+make -C ../tyrionc test-cache
 # From the Tyrion repository on Linux x86-64:
 bash compiler/tests/test_x86_lexer_emitter.sh ../tyrionc/build/tyrionc
 bash compiler/tests/test_x86_module_graph_emitter.sh
 bash compiler/tests/test_x86_lowering_unit_cache.sh ../tyrionc/build/tyrionc
+# NativeIR and ownership boundary for the compiler-owned TLS resource:
+bash compiler/tests/test_tls_static_extension_native.sh ../tyrionc/build/tyrionc
 # Portable compiler-owned extension ABI boundary:
 bash compiler/tests/test_toolchain_dynamic_extension.sh
 ```
@@ -169,3 +181,18 @@ parser stores ordinary positional arguments and starred arguments as explicit
 records, so VM call scheduling no longer probes an integer node id as a
 dictionary under an exception boundary. This is verified on Linux ARM64,
 Linux x86-64, and macOS ARM64; no release or deployment was performed.
+
+### Evidence - 2026-08-24
+
+A clean remote Linux x86-64 c1-v18 was generated after checksum-verifying the
+x86 backend, NativeIR verifier, and static-extension planner source. Its
+binary contained no temporary stream diagnostics. The c1 completed the
+interpreter build under an enforced 8 GiB cgroup, including the large method
+dispatcher and built-in TLS extension metadata path, then linked and ran
+`examples/hello.ty` successfully. The interpreter gate consumed 9m48.843s CPU,
+peaked at 709.7 MiB, and used 0B swap. The local bounded recovery gate and the
+new TLS static-native regression fixture also pass. The synchronized remote
+Linux x86-64 source also passed the full object-shard regression (ELF/sidecar
+validation, manual link, and canonical manifest link) in 2m26.197s CPU at
+197.8 MiB peak and 0B swap. Its focused interface-aware invalidation fixture
+also passed in 51.859s CPU at 133.3 MiB peak and 0B swap.

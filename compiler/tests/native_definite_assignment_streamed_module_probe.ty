@@ -1,0 +1,27 @@
+def make_module():
+    return {"functions": []}
+
+
+def initialize(module):
+    module["streaming_verified"] = True
+    return module
+
+
+def streamed_from_parts(functions):
+    return {"functions": functions}
+
+
+def finalize_from_plan(plan):
+    return streamed_from_parts(plan["streaming_module"]["functions"])
+
+
+def build():
+    plan = {}
+    plan["streaming_module"] = initialize(make_module())
+    index = 0
+    while index < 1:
+        index = index + 1
+    return finalize_from_plan(plan)
+
+
+print(len(build()["functions"]))

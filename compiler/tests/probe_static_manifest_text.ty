@@ -1,0 +1,28 @@
+# Focused native-successor regression probe for manifest text.  Keep this
+# independent from the compiler's own helpers so a failed c1 can identify
+# whether the fault is file input, split, slicing, or string equality.
+arguments = argv()
+print(len(arguments))
+
+manifest = open(arguments[0], "r")
+source = manifest.read()
+manifest.close()
+
+print(len(source))
+lines = source.split("\n")
+print(len(lines))
+first = lines[0]
+print(first)
+print(first == "name = \"toolchain\"")
+print(first.startswith("name = \""))
+print(first.endswith("\""))
+name = first[len("name = \""):len(first) - 1]
+print(name)
+print(name == "toolchain")
+
+index = 0
+while index < len(source):
+    if source[index] == "\n":
+        print("newline")
+        break
+    index = index + 1

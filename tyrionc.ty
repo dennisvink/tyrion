@@ -21,6 +21,8 @@ import compiler.writer
 import compiler.lowering
 import compiler.evaluation
 import compiler.cache_runtime
+import compiler.link_manifest
+import compiler.object_model
 import compiler.runtime_plan
 import compiler.runtime_abi
 import compiler.static_extensions

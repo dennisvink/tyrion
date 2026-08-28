@@ -1540,7 +1540,7 @@ def runtime_native_direct_lower_map_filter_expr(out, expr, dst, temp, plan, stat
         else:
             iterable_args = method_append(iterable_args, argument)
         arg_idx = arg_idx + 1
-    item_name = "__tyrion_direct_item_" + str(state["frame"]["id"]) + "_" + str(dst) + "_" + callback_label
+    item_name = "__tyrion_direct_item_" + state["frame"]["label"] + "_" + str(dst) + "_" + callback_label
     # Keep the synthetic item outside the callback's normal temporary window;
     # filter must retain the item while evaluating its predicate.
     item_slot = temp + plan["temporary_slots"] + 4
@@ -1599,16 +1599,16 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
         out = asm_line(out, "mov w9, #2")
         return asm_line(out, "strb w9, " + value_tag_x13)
     if kind == "float":
-        literal_id = runtime_native_direct_literal_id(plan, "float", expr["value"])
+        literal_label = runtime_native_direct_literal_label(plan, "float", expr["value"])
         out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
-        out = asm_addr(out, state["target"], "x1", "__tyrion_app_lit_" + str(literal_id))
+        out = asm_addr(out, state["target"], "x1", literal_label)
         return asm_line(out, "bl __tyrion_app_float_from_text")
     if kind == "string":
-        literal_id = runtime_native_direct_literal_id(plan, "string", expr["value"])
+        literal_label = runtime_native_direct_literal_label(plan, "string", expr["value"])
         out = runtime_native_direct_slot_addr_v2(out, "x0", dst)
         out = asm_line(out, "bl __tyrion_app_slot_release")
         out = runtime_native_direct_slot_addr_v2(out, "x13", dst)
-        out = asm_addr(out, state["target"], "x9", "__tyrion_app_lit_" + str(literal_id))
+        out = asm_addr(out, state["target"], "x9", literal_label)
         out = asm_line(out, "str x9, [x13]")
         out = asm_line(out, "mov x9, #" + str(len(expr["value"])))
         out = asm_line(out, "str x9, [x13, #8]")
@@ -1690,9 +1690,9 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
     if kind == "comprehension":
         # State is passed as value records, so mutable counters do not survive
         # sibling expressions. Parser source positions are stable per call.
-        expr_id = str(state["frame"]["id"]) + "_" + str(dst) + "_" + expr["target"]
+        expr_id = state["frame"]["label"] + "_" + str(dst) + "_" + expr["target"]
         if "source_pos" in expr:
-            expr_id = str(state["frame"]["id"]) + "_" + str(expr["source_pos"])
+            expr_id = state["frame"]["label"] + "_" + str(expr["source_pos"])
         fingerprint = runtime_native_direct_expr_fingerprint(expr["iterable"])
         if fingerprint < 0:
             fingerprint = 0 - fingerprint
@@ -1969,9 +1969,9 @@ def emit_runtime_native_direct_expr(out, expr, dst, temp, plan, state):
                 out = asm_line(out, "strb w9, " + generated_value_tag_mem("x13"))
                 return out
         out = emit_runtime_native_direct_expr(out, expr["receiver"], temp, temp + 2, plan, state)
-        literal_id = runtime_native_direct_literal_id(plan, "string", expr["name"])
+        literal_label = runtime_native_direct_literal_label(plan, "string", expr["name"])
         out = runtime_native_direct_slot_addr_v2(out, "x13", temp + 1)
-        out = asm_addr(out, state["target"], "x9", "__tyrion_app_lit_" + str(literal_id))
+        out = asm_addr(out, state["target"], "x9", literal_label)
         out = asm_line(out, "str x9, [x13]")
         out = asm_line(out, "mov x9, #" + str(len(expr["name"])))
         out = asm_line(out, "str x9, [x13, #8]")
@@ -3119,9 +3119,9 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
             return asm_line(out, "bl __tyrion_app_set_index")
         if target["kind"] == "attr":
             out = emit_runtime_native_direct_expr(out, target["receiver"], temp, temp + 3, plan, state)
-            literal_id = runtime_native_direct_literal_id(plan, "string", target["name"])
+            literal_label = runtime_native_direct_literal_label(plan, "string", target["name"])
             out = runtime_native_direct_slot_addr_v2(out, "x13", temp + 1)
-            out = asm_addr(out, state["target"], "x9", "__tyrion_app_lit_" + str(literal_id))
+            out = asm_addr(out, state["target"], "x9", literal_label)
             out = asm_line(out, "str x9, [x13]")
             out = asm_line(out, "mov x9, #" + str(len(target["name"])))
             out = asm_line(out, "str x9, [x13, #8]")
@@ -3333,9 +3333,9 @@ def emit_runtime_native_direct_statement(out, stmt, plan, state, path):
             out = asm_line(out, "b " + propagate_label)
         else:
             if stmt["except_name"] != "":
-                literal_id = runtime_native_direct_literal_id(plan, "string", stmt["except_name"])
+                literal_label = runtime_native_direct_literal_label(plan, "string", stmt["except_name"])
                 out = runtime_native_direct_slot_addr_v2(out, "x13", temp + 1)
-                out = asm_addr(out, state["target"], "x9", "__tyrion_app_lit_" + str(literal_id))
+                out = asm_addr(out, state["target"], "x9", literal_label)
                 out = asm_line(out, "str x9, [x13]")
                 out = asm_line(out, "mov x9, #" + str(len(stmt["except_name"])))
                 out = asm_line(out, "str x9, [x13, #8]")
@@ -5492,7 +5492,8 @@ def emit_runtime_native_direct_runtime(out, target, plan):
     out = asm_line(out, "fsub d0, d0, d1")
     out = asm_line(out, "fabs d0, d0")
     out = asm_line(out, "fcmp d0, #0.0")
-    out = asm_line(out, "b.eq __tyrion_app_print_done")
+    # Floats retain their type in text form: `7.0` must not become `7`.
+    out = asm_line(out, "b.eq __tyrion_app_print_float_integral")
     out = emit_runtime_native_immediate(out, "x10", 1000000, target)
     out = asm_line(out, "scvtf d2, x10")
     out = asm_line(out, "fmul d0, d0, d2")
@@ -5533,6 +5534,15 @@ def emit_runtime_native_direct_runtime(out, target, plan):
     out = asm_line(out, "mov x0, x10")
     out = asm_line(out, "sub x1, x11, x10")
     out = asm_line(out, "bl __tyrion_app_write")
+    out = asm_line(out, "b __tyrion_app_print_done")
+    out = asm_label(out, "__tyrion_app_print_float_integral")
+    out = asm_line(out, "add x0, sp, #224")
+    out = asm_line(out, "mov w9, #46")
+    out = asm_line(out, "strb w9, [x0]")
+    out = asm_line(out, "mov w9, #48")
+    out = asm_line(out, "strb w9, [x0, #1]")
+    out = asm_line(out, "mov x1, #2")
+    out = asm_line(out, "bl __tyrion_app_write")
     out = asm_label(out, "__tyrion_app_print_done")
     out = asm_line(out, "ldr x19, [sp, #16]")
     out = asm_line(out, "ldp x29, x30, [sp], #256")
@@ -5550,6 +5560,7 @@ def emit_runtime_native_direct_generator_function(out, program, plan, fn_plan, t
     resume_label = fn_plan["label"] + "_resume"
     body_label = fn_plan["label"] + "_resume_body"
     done_label = fn_plan["label"] + "_resume_done"
+    allocation_ready_label = fn_plan["label"] + "_allocation_ready"
     frame_slot_count = frame_bytes / generated_value_slot_size()
     heap_size = (frame_slot_count + 2) * generated_value_slot_size()
     out = asm_label(out, fn_plan["label"])
@@ -5562,7 +5573,13 @@ def emit_runtime_native_direct_generator_function(out, program, plan, fn_plan, t
     out = asm_line(out, "mov x21, x2")
     out = emit_runtime_native_immediate(out, "x0", heap_size, target)
     out = asm_line(out, "bl " + asm_call_name(target, "malloc"))
-    out = asm_line(out, "cbz x0, __tyrion_app_oom")
+    # AArch64 conditional branch relocations cannot cross ELF object
+    # boundaries. Generator functions are emitted in module shards whereas
+    # the OOM handler belongs to the root runtime object, so branch locally
+    # on success and use an ordinary long-range branch on failure.
+    out = asm_line(out, "cbnz x0, " + allocation_ready_label)
+    out = asm_line(out, "b __tyrion_app_oom")
+    out = asm_label(out, allocation_ready_label)
     out = asm_line(out, "mov x22, x0")
     out = emit_runtime_native_immediate(out, "x1", heap_size, target)
     out = asm_line(out, "bl __tyrion_app_zero_region")
@@ -5613,7 +5630,7 @@ def emit_runtime_native_direct_generator_function(out, program, plan, fn_plan, t
         local_idx = local_idx + 1
     out = asm_line(out, "ldr x9, [x20, #8]")
     out = asm_line(out, "cbz x9, " + body_label)
-    yield_paths = runtime_native_direct_yield_paths(fn["body"], "_generator_" + str(fn_plan["id"]), [])
+    yield_paths = runtime_native_direct_yield_paths(fn["body"], "_generator_" + fn_plan["label"], [])
     yield_idx = 1
     while yield_idx <= len(yield_paths):
         out = asm_line(out, "cmp x9, #" + str(yield_idx))
@@ -5623,7 +5640,7 @@ def emit_runtime_native_direct_generator_function(out, program, plan, fn_plan, t
     out = asm_label(out, body_label)
     branch_ids = __tyrion_native_ast_builder_create()
     state = {"target": target, "frame": fn_plan, "frame_bytes": frame_bytes, "branch_ids": branch_ids, "break_label": "", "continue_label": "", "return_label": done_label, "raise_label": "", "exception_slot": 0, "temp_base": len(fn_plan["locals"]), "lambda_index": 0, "generator": True, "generator_label": resume_label, "yield_paths": yield_paths, "finally_label": "", "finally_pending_slot": 0, "finally_scope_path": "", "synthetic_slots": [], "comprehension_index": 0, "range_names": [], "range_descriptors": []}
-    out = emit_runtime_native_direct_statements(out, fn["body"], plan, state, "_generator_" + str(fn_plan["id"]))
+    out = emit_runtime_native_direct_statements(out, fn["body"], plan, state, "_generator_" + fn_plan["label"])
     out = asm_label(out, done_label)
     out = asm_line(out, "str xzr, [x19]")
     out = asm_line(out, "strb wzr, " + value_tag_x19)
@@ -5708,7 +5725,7 @@ def emit_runtime_native_direct_function_v2(out, program, plan, fn_plan, target):
         out = asm_line(out, "bl __tyrion_app_slot_move")
         out = asm_line(out, "b " + return_label)
     else:
-        out = emit_runtime_native_direct_statements(out, fn["body"], plan, state, "_fn_" + str(fn_plan["id"]))
+        out = emit_runtime_native_direct_statements(out, fn["body"], plan, state, "_fn_" + fn_plan["label"])
     out = asm_line(out, "b " + return_label)
     out = asm_label(out, exception_label)
     out = asm_line(out, "mov x0, x21")

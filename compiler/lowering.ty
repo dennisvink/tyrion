@@ -39,7 +39,6 @@ def collect_lowered_function_table_plan_payload_seed(program, build_plan):
     names = lowered_function_append_name(names, "asm_writer_set_backend")
     names = lowered_function_append_name(names, "asm_writer_is_x86")
     names = lowered_function_append_name(names, "runtime_native_linux_aarch64_asm_text")
-    names = lowered_function_append_target_sources(program, names)
     if program_has_function(program, "usage"):
         names = lowered_function_append_name(names, "usage")
     if program_has_function(program, "version"):
@@ -49,7 +48,6 @@ def collect_lowered_function_table_plan_payload_seed(program, build_plan):
     # reduced compiler fixture omits the documenting Tyrion helper.
     names = lowered_function_append_name(names, "method_append")
     names = lowered_function_append_name(names, "build_native")
-    names = lowered_function_append_source_if_present(program, names, "build_compiler_cli_native")
     if build_plan["shape_ok"] and build_plan["diagnostic"] != "":
         names = lowered_function_append_known_direct_calls(program, names, "build_native")
     names = lowered_function_append_name(names, "read_text_file")
@@ -1677,7 +1675,10 @@ def lowered_function_known_direct_calls(name):
     if name == "render_compiler_cli_artifact":
         return []
     if name == "build_native":
-        return ["build_compiler_cli_native", "build_runtime_native_program_if_needed", "fail", "lex", "parse_program", "program_has_function", "read_module_graph"]
+        # The compiler is an ordinary application. Its native build entry
+        # reaches the shared application builder directly; the historical
+        # compiler-CLI route parser/emitter must not reach descendants.
+        return ["build_runtime_native_program_if_needed", "fail", "lex", "parse_program", "program_has_function", "read_module_graph"]
     if name == "lex":
         return ["char_is_backslash", "char_is_dot", "char_is_double_quote", "char_is_hash", "char_is_newline", "char_is_single_quote", "char_is_tab", "char_is_underscore", "fail", "is_alpha", "is_digit", "is_ident_continue", "is_ident_start", "is_lower", "is_space", "is_upper", "keyword_kind", "method_append", "simple_token_kind", "token", "two_char_token_kind"]
     if name == "is_alpha":
@@ -1923,7 +1924,6 @@ def collect_lowered_function_table_plan(program, build_plan):
     names = lowered_function_append_name(names, "asm_writer_set_backend")
     names = lowered_function_append_name(names, "asm_writer_is_x86")
     names = lowered_function_append_name(names, "runtime_native_linux_aarch64_asm_text")
-    names = lowered_function_append_target_sources(program, names)
     if program_has_function(program, "usage"):
         names = lowered_function_append_name(names, "usage")
     if program_has_function(program, "version"):
@@ -1933,7 +1933,6 @@ def collect_lowered_function_table_plan(program, build_plan):
     # reduced compiler fixture omits the documenting Tyrion helper.
     names = lowered_function_append_name(names, "method_append")
     names = lowered_function_append_name(names, "build_native")
-    names = lowered_function_append_source_if_present(program, names, "build_compiler_cli_native")
     if build_plan["shape_ok"] and build_plan["diagnostic"] != "":
         names = lowered_function_append_known_direct_calls(program, names, "build_native")
     names = lowered_function_append_name(names, "read_text_file")

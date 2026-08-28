@@ -1,0 +1,10 @@
+def inserted(value):
+    return value - 1
+
+
+def stable(value):
+    return value + 1
+
+
+print(inserted(2))
+print(stable(1))

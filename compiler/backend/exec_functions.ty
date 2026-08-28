@@ -2399,6 +2399,15 @@ def emit_exec_fn_host_target(out, target, name):
     target_text = target_text + "|asm_syntax=" + target["asm_syntax"]
     target_text = target_text + "|capabilities=" + target["capabilities"]
     target_text = target_text + "|operations=" + target["operations"]
+    # Keep native compiler descendants in lockstep with the source target
+    # contract.  The compact host-target return ABI is a serialized record, so
+    # every v2 policy field must cross this boundary as well.
+    target_text = target_text + "|target_id=" + target["target_id"]
+    target_text = target_text + "|compile_capability=" + target["compile_capability"]
+    target_text = target_text + "|assembly_capability=" + target["assembly_capability"]
+    target_text = target_text + "|object_capability=" + target["object_capability"]
+    target_text = target_text + "|link_capability=" + target["link_capability"]
+    target_text = target_text + "|run_capability=" + target["run_capability"]
     target_text_len = len(target_text)
     target_text_len_text = decimal_text(target_text_len)
     target_alloc_len_text = decimal_text(target_text_len + 1)

@@ -10,8 +10,19 @@ def read_text_file(path):
         data = f.read()
     return data
 
+def compiler_optional_file_exists(path):
+    # Native file reads report their own diagnostic before raising. Cache probes
+    # are expected to miss on a cold build, so test their presence first and
+    # reserve read-failed diagnostics for required compiler inputs.
+    return __tyrion_run_tool("test", ["-f", path])["ok"]
+
 def write_text_file(path, text):
     with open(path, "w") as f:
+        f.write(text)
+
+
+def append_text_file(path, text):
+    with open(path, "a") as f:
         f.write(text)
 
 
@@ -52,6 +63,15 @@ def make_asm_path(output_path):
 def run_tool(cmd, arg0, arg1, arg2):
     result = __tyrion_run_tool(cmd, [arg0, arg1, arg2])
     return result["ok"]
+
+
+def run_tool_args(cmd, args):
+    result = __tyrion_run_tool(cmd, args)
+    return result["ok"]
+
+
+def run_tool_capture(cmd, args):
+    return __tyrion_run_tool(cmd, args)
 
 def trim_spaces(text):
     start = 0

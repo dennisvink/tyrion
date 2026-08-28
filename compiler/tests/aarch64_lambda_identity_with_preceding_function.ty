@@ -1,0 +1,8 @@
+def inserted(value):
+    return value - 1
+
+def stable(values):
+    return filter(lambda item: item > 0, values)
+
+print(inserted(2))
+print(stable([0, 1]))

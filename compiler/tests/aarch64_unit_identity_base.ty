@@ -1,0 +1,5 @@
+def stable(value):
+    return value + 1
+
+
+print(stable(1))

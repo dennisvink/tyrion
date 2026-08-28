@@ -1,0 +1,64 @@
+# A local aggregate may be initialized and then rebound before indexed
+# mutation.  Native definite-assignment tracking must retain the binding
+# across both assignments.
+
+def native_ir_v2_module(functions, constants, externals, components, strict):
+    return {}
+
+
+def native_direct_components_from_functions(plan, functions, primitive_manifest):
+    return ["scalar-core"]
+
+
+def native_direct_name_in_list(names, name):
+    return False
+
+
+def native_direct_module_apply_metadata(module, plan, primitive_manifest, streamed):
+    module["global_slots"] = plan["global_names"]
+    module["root_manifest"] = plan["root_manifest"]
+    module["class_descriptors"] = plan["classes"]
+    module["attribute_names"] = plan["attribute_names"]
+    if native_direct_name_in_list(plan["application_components"], "exceptions"):
+        module["exception_abi"] = "caller-owned-slot-status-v1"
+    if native_direct_name_in_list(plan["application_components"], "generator"):
+        module["generator_abi"] = "owned-state-resume-status-v1"
+    if plan["aggregate_core"]:
+        module["ownership_manifest"] = "direct-owned-aggregate"
+    module["primitive_implementations"] = primitive_manifest["implementations"]
+    module["primitive_capabilities"] = primitive_manifest["capabilities"]
+    module["extensions"] = plan["extensions"]
+    module["dynamic_extension_mode"] = plan["dynamic_extension_mode"]
+    module["dynamic_extension_root"] = plan["dynamic_extension_root"]
+    if streamed:
+        module["streaming_verified"] = True
+        module["constant_count"] = 0
+    return module
+
+
+def native_direct_module_from_parts(plan, functions, constants, primitive_manifest):
+    externals = []
+    externals.append({"name": "write", "parameters": ["i32", "ptr", "usize"], "result_type": "isize", "effect": "io"})
+    components = native_direct_components_from_functions(plan, functions, primitive_manifest)
+    root_manifest = plan["root_manifest"]
+    root_manifest["primitive_roots"] = primitive_manifest["implementations"]
+    root_manifest["runtime_roots"] = components
+    plan["root_manifest"] = root_manifest
+    module = native_ir_v2_module(functions, constants, externals, components, True)
+    return native_direct_module_apply_metadata(module, plan, primitive_manifest, False)
+
+
+def native_direct_source_summary_from_module(module):
+    function = module["functions"][0]
+    return module["contract"] + ":functions=" + str(len(module["functions"])) + ":blocks=" + str(len(function["blocks"])) + ":constants=" + str(len(module["constants"]))
+
+
+def native_direct_source_summary():
+    return native_direct_source_summary_from_module({"contract": "summary", "functions": [{"blocks": []}], "constants": []})
+
+
+plan = {"global_names": ["value"], "root_manifest": {"target": "linux-x86_64"}, "classes": [], "attribute_names": [], "application_components": [], "aggregate_core": True, "extensions": [], "dynamic_extension_mode": "off", "dynamic_extension_root": ""}
+module = native_direct_module_from_parts(plan, [], [], {"implementations": [], "capabilities": []})
+print(module["global_slots"][0])
+print(module["root_manifest"]["target"])
+print(native_direct_source_summary())

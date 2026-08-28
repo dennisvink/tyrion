@@ -909,6 +909,28 @@ def compiler_cache_short_text_hash(text):
     return value
 
 
+def compiler_cache_bounded_text_hash(text):
+    # This is the second filename discriminator for records which may be much
+    # larger than a function or module name. Lowering fingerprints carry their
+    # shared layout first and their unit kind/id/source at the end, so hash the
+    # complete bounded tail rather than interior samples which can collide for
+    # every function in one module. Cache readers still compare the complete
+    # record, while the C bootstrap avoids a multi-megabyte byte-at-a-time
+    # scan.
+    modulus = 2147483587
+    length = len(text)
+    value = (length * 17 + 97) % modulus
+    sample_count = length
+    if sample_count > 256:
+        sample_count = 256
+    start = length - sample_count
+    index = 0
+    while index < sample_count:
+        value = (value * 149 + compiler_cache_char_code(text[start + index]) + 1) % modulus
+        index = index + 1
+    return value
+
+
 def application_name_index(names):
     heads = range(4096)
     head_idx = 0
@@ -1085,6 +1107,49 @@ def application_lambda_capture_name(expr, params, function_names):
             nested_params = application_append_unique(nested_params, param)
         return application_lambda_capture_name(expr["body"], nested_params, function_names)
     return ""
+
+
+def application_method_keyword_supported(object_method, method_name, keyword_name):
+    if object_method:
+        return True
+    if method_name == "update":
+        return True
+    if method_name == "sort":
+        return keyword_name == "key" or keyword_name == "reverse"
+    return False
+
+
+def application_method_arity_valid(method_name, argc, positional_argc):
+    if method_name == "read":
+        return argc == 0 or argc == 1
+    if method_name == "write" or method_name == "append" or method_name == "extend" or method_name == "remove" or method_name == "add" or method_name == "join" or method_name == "startswith" or method_name == "endswith":
+        return argc == 1
+    if method_name == "flush" or method_name == "close" or method_name == "reverse" or method_name == "clear" or method_name == "copy" or method_name == "keys" or method_name == "items" or method_name == "values" or method_name == "lower" or method_name == "upper" or method_name == "popitem":
+        return argc == 0
+    if method_name == "seek" or method_name == "get" or method_name == "setdefault" or method_name == "fromkeys" or method_name == "pop":
+        return argc >= 1 and argc <= 2
+    if method_name == "insert":
+        return argc == 2
+    if method_name == "sort":
+        return argc <= 2
+    if method_name == "update":
+        return positional_argc <= 1
+    if method_name == "strip" or method_name == "lstrip" or method_name == "rstrip" or method_name == "splitlines":
+        return argc <= 1
+    if method_name == "split" or method_name == "rsplit" or method_name == "pop":
+        return argc <= 2
+    if method_name == "replace":
+        return argc >= 2 and argc <= 3
+    if method_name == "find" or method_name == "count" or method_name == "index":
+        return argc >= 1 and argc <= 3
+    if method_name == "removeprefix" or method_name == "removesuffix" or method_name == "partition" or method_name == "rpartition":
+        return argc == 1
+    return True
+
+
+def application_collection_method(method_name):
+    methods = ["append", "extend", "insert", "clear", "copy", "reverse", "sort", "remove", "add", "keys", "items", "get", "values", "update", "setdefault", "popitem", "fromkeys", "strip", "split", "rsplit", "splitlines", "pop", "startswith", "endswith", "join", "replace", "lower", "upper", "find", "count", "index", "removeprefix", "removesuffix", "partition", "rpartition", "lstrip", "rstrip"]
+    return application_name_present(methods, method_name)
 
 
 def analyze_application_expr(expr, function_names, path):
@@ -1286,9 +1351,8 @@ def analyze_application_expr(expr, function_names, path):
         arg_idx = 0
         for arg in expr["args"]:
             if arg["kind"] == "kwarg":
-                if not object_method:
-                    if method_name != "sort" and method_name != "update" or (method_name == "sort" and arg["name"] != "key" and arg["name"] != "reverse"):
-                        return application_analysis_fail(operation_id, "unsupported-keyword", "kwarg", path + ".arg" + str(arg_idx), arg["name"])
+                if not application_method_keyword_supported(object_method, method_name, arg["name"]):
+                    return application_analysis_fail(operation_id, "unsupported-keyword", "kwarg", path + ".arg" + str(arg_idx), arg["name"])
                 analysis = application_analysis_merge(analysis, analyze_application_expr(arg["value"], function_names, path + ".arg" + str(arg_idx)))
             else:
                 analysis = application_analysis_merge(analysis, analyze_application_expr(arg, function_names, path + ".arg" + str(arg_idx)))
@@ -1298,69 +1362,11 @@ def analyze_application_expr(expr, function_names, path):
         for candidate in expr["args"]:
             if candidate["kind"] != "kwarg":
                 positional_argc = positional_argc + 1
-        if not object_method and method_name == "read" and argc != 0 and argc != 1:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "write" and argc != 1:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "flush" and argc != 0:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "seek" and argc != 1 and argc != 2:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "close" and argc != 0:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and (method_name == "append" or method_name == "extend") and argc != 1:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "insert" and argc != 2:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "reverse" and argc != 0:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "sort" and (argc < 0 or argc > 2):
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "get" and (argc < 1 or argc > 2):
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and (method_name == "clear" or method_name == "copy") and argc != 0:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "remove" and argc != 1:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "add" and argc != 1:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and (method_name == "keys" or method_name == "items") and argc != 0:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "values" and argc != 0:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "update" and positional_argc > 1:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "setdefault" and (argc < 1 or argc > 2):
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "popitem" and argc != 0:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "fromkeys" and (argc < 1 or argc > 2):
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "strip" and (argc < 0 or argc > 1):
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and (method_name == "split" or method_name == "rsplit") and (argc < 0 or argc > 2):
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "splitlines" and (argc < 0 or argc > 1):
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "pop" and (argc < 1 or argc > 2):
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and (method_name == "startswith" or method_name == "endswith") and argc != 1:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "join" and argc != 1:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and method_name == "replace" and (argc < 2 or argc > 3):
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and (method_name == "lower" or method_name == "upper") and argc != 0:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and (method_name == "find" or method_name == "count" or method_name == "index") and (argc < 1 or argc > 3):
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and (method_name == "removeprefix" or method_name == "removesuffix" or method_name == "partition" or method_name == "rpartition") and argc != 1:
-            return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
-        if not object_method and (method_name == "lstrip" or method_name == "rstrip") and (argc < 0 or argc > 1):
+        if not object_method and not application_method_arity_valid(method_name, argc, positional_argc):
             return application_analysis_fail(operation_id, "method-arity", kind, path, method_name)
         if object_method:
             analysis = application_analysis_require_component(analysis, "objects")
-        elif method_name == "append" or method_name == "extend" or method_name == "insert" or method_name == "clear" or method_name == "copy" or method_name == "reverse" or method_name == "sort" or method_name == "remove" or method_name == "add" or method_name == "keys" or method_name == "items" or method_name == "get" or method_name == "values" or method_name == "update" or method_name == "setdefault" or method_name == "popitem" or method_name == "fromkeys" or method_name == "strip" or method_name == "split" or method_name == "rsplit" or method_name == "splitlines" or method_name == "pop" or method_name == "startswith" or method_name == "endswith" or method_name == "join" or method_name == "replace" or method_name == "lower" or method_name == "upper" or method_name == "find" or method_name == "count" or method_name == "index" or method_name == "removeprefix" or method_name == "removesuffix" or method_name == "partition" or method_name == "rpartition" or method_name == "lstrip" or method_name == "rstrip":
+        elif application_collection_method(method_name):
             analysis = application_analysis_require_component(analysis, "collections")
         else:
             analysis = application_analysis_require_component(analysis, "file")

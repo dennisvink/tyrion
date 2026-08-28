@@ -1,0 +1,25 @@
+def lower(ch):
+    return ch >= "a" and ch <= "z"
+
+def digit(ch):
+    return ch >= "0" and ch <= "9"
+
+def ident_start(ch):
+    return ch == "_" or lower(ch) or (ch >= "A" and ch <= "Z")
+
+def ident_continue(value):
+    idx = 0
+    while idx < len(value):
+        if not (ident_start(value[idx]) or digit(value[idx])):
+            return False
+        idx = idx + 1
+    return True
+
+print(ident_continue("tls"))
+print(lower("t"))
+print("t" >= "a")
+print("t" <= "z")
+print(ident_start("t"))
+print(lower("l"))
+print(lower("a"))
+print(lower("z"))

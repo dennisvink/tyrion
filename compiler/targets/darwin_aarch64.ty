@@ -1077,6 +1077,31 @@ def emit_aarch64_runtime_process_argv(out, target):
     return asm_line(out, "ret")
 
 
+def darwin_aarch64_runtime_native_root_export_symbols(plan):
+    # Function shard objects call this small, explicit root-runtime ABI. Keep
+    # the list at the boundary rather than globally exporting every internal
+    # assembler label. Additional entries are added only when a cross-object
+    # fixture demonstrates that they form part of the callable/runtime ABI.
+    # Compiler successors use the whole compiler surface, including the
+    # builder, cache, file, extension, and tool primitives. Function/module
+    # shards can call these root-owned implementations directly, so this is
+    # the complete cross-object runtime ABI - not just the small user-program
+    # subset exercised by the original AArch64 object fixtures.  A root
+    # object owns these implementations, while every callable may be emitted
+    # into a separate object.  Therefore every direct-lowering call target
+    # must be globally visible here even when the current source does not
+    # directly spell that method (the compiler itself can generate it).
+    symbols = ["__tyrion_app_cleanup_region", "__tyrion_app_zero_region", "__tyrion_app_slot_copy", "__tyrion_app_slot_move", "__tyrion_app_slot_release", "__tyrion_app_object_attr_set", "__tyrion_app_object_attr_get", "__tyrion_app_object_new", "__tyrion_app_print_value", "__tyrion_app_print_dict", "__tyrion_app_print_list", "__tyrion_app_print_set", "__tyrion_app_write", "__tyrion_app_space", "__tyrion_app_newline", "__tyrion_app_add", "__tyrion_app_numeric_binary", "__tyrion_app_equal", "__tyrion_app_value_equal", "__tyrion_app_value_compare", "__tyrion_app_index", "__tyrion_app_len", "__tyrion_app_list_append", "__tyrion_app_list_appended", "__tyrion_app_list_extend", "__tyrion_app_list_insert", "__tyrion_app_list_removed", "__tyrion_app_list_reverse", "__tyrion_app_list_new", "__tyrion_app_list_set", "__tyrion_app_tuple_new", "__tyrion_app_slice", "__tyrion_app_truthy", "__tyrion_app_iter_at", "__tyrion_app_iter_has_next", "__tyrion_app_iter_len", "__tyrion_app_iter_new", "__tyrion_app_next", "__tyrion_app_enumerate", "__tyrion_app_unpack_star", "__tyrion_app_unpack_tail", "__tyrion_app_ansi_escape", "__tyrion_app_contains", "__tyrion_app_int", "__tyrion_app_float", "__tyrion_app_float_from_text", "__tyrion_app_ascii_text", "__tyrion_app_str", "__tyrion_app_range", "__tyrion_app_range_full", "__tyrion_app_set_added", "__tyrion_app_set_index", "__tyrion_app_set_insert", "__tyrion_app_set_new", "__tyrion_app_dict_get", "__tyrion_app_dict_items", "__tyrion_app_dict_keys", "__tyrion_app_dict_new", "__tyrion_app_dict_set", "__tyrion_app_dict_update", "__tyrion_app_dict_values", "__tyrion_app_pop", "__tyrion_app_copy", "__tyrion_app_builtin_all", "__tyrion_app_builtin_any", "__tyrion_app_builtin_max", "__tyrion_app_builtin_min", "__tyrion_app_builtin_sorted", "__tyrion_app_builtin_sum", "__tyrion_app_builtin_zip", "__tyrion_app_input", "__tyrion_app_ast_builder_create", "__tyrion_app_ast_builder_len", "__tyrion_app_ast_builder_append", "__tyrion_app_ast_builder_finish", "__tyrion_app_ast_builder_get", "__tyrion_app_builder_lane", "__tyrion_app_token_builder_count", "__tyrion_app_token_builder_append", "__tyrion_app_token_builder_field", "__tyrion_app_file_open", "__tyrion_app_file_close", "__tyrion_app_file_read", "__tyrion_app_file_write", "__tyrion_app_file_flush", "__tyrion_app_file_seek", "__tyrion_app_host_load", "__tyrion_app_host_load_static", "__tyrion_app_host_call", "__tyrion_app_host_unload", "__tyrion_app_extension_string_cstr", "__tyrion_app_mode_r", "__tyrion_app_run_tool", "__tyrion_app_run_tool_capture", "__tyrion_app_process_argv", "__tyrion_app_process_dict_set", "__tyrion_app_process_read_stream_all", "__tyrion_app_process_string_cstr", "__tyrion_app_string_split", "__tyrion_app_string_strip", "__tyrion_app_string_startswith", "__tyrion_app_string_endswith", "__tyrion_app_tcp_close", "__tyrion_app_tcp_connect", "__tyrion_app_tcp_read", "__tyrion_app_tcp_write", "__tyrion_app_terminal_read_key", "__tyrion_app_unhandled_exception"]
+    for literal in plan["literals"]:
+        if literal["kind"] == "string" or literal["kind"] == "float":
+            symbols = method_append(symbols, runtime_native_literal_label(literal))
+    return symbols
+
+def emit_darwin_aarch64_runtime_native_root_exports(out, plan):
+    for symbol in darwin_aarch64_runtime_native_root_export_symbols(plan):
+        out = asm_line(out, ".globl " + symbol)
+    return out
+
 def emit_darwin_aarch64_runtime_native_program_asm_into(out, target, program, plan):
     frame_bytes = 65536
     branch_ids = __tyrion_native_ast_builder_create()
@@ -1088,8 +1113,10 @@ def emit_darwin_aarch64_runtime_native_program_asm_into(out, target, program, pl
     state = runtime_native_direct_collect_range_descriptors(runtime_native_top_level_items(program), state)
     out = asm_raw(out, "# tyrion-runtime-native-asm v1 target=" + target["triple"] + "\n")
     out = asm_section(out, target["text_section"])
-    for fn_plan in plan["functions"]:
-        out = emit_runtime_native_direct_function_v2(out, program, plan, fn_plan, target)
+    out = emit_darwin_aarch64_runtime_native_root_exports(out, plan)
+    if not plan["emit_root_only"]:
+        for fn_plan in plan["functions"]:
+            out = emit_runtime_native_direct_function_v2(out, program, plan, fn_plan, target)
     out = asm_global_c_main(out, target)
     out = asm_addr(out, target, "x9", "__tyrion_app_process_argc")
     out = asm_line(out, "str x0, [x9]")
@@ -1134,15 +1161,27 @@ def emit_darwin_aarch64_runtime_native_program_asm_into(out, target, program, pl
     out = asm_cstr(out, "L_tyrion_direct_colon_space", ": ")
     for literal in plan["literals"]:
         if literal["kind"] == "string":
-            out = asm_cstr(out, "__tyrion_app_lit_" + str(literal["id"]), literal["value"])
+            out = asm_cstr(out, runtime_native_literal_label(literal), literal["value"])
         if literal["kind"] == "float":
-            out = asm_cstr(out, "__tyrion_app_lit_" + str(literal["id"]), str(literal["value"]))
+            out = asm_cstr(out, runtime_native_literal_label(literal), str(literal["value"]))
     out = asm_section(out, target["data_section"])
     out = asm_label(out, "__tyrion_app_process_argc")
     out = asm_dir(out, ".quad 0")
     out = asm_label(out, "__tyrion_app_process_argv_native")
     out = asm_dir(out, ".quad 0")
     return out
+
+
+def emit_darwin_aarch64_runtime_native_function_object_asm(out, target, program, plan, function_plan):
+    # A function shard intentionally contains no runtime or literal pool. It
+    # exposes its entry symbol and leaves runtime/literal references for the
+    # root object to resolve at the final link. This is the first AArch64
+    # object-shard boundary; the aggregate emitter remains the link authority
+    # until all root exports and relocation classes are migrated.
+    out = asm_raw(out, "# tyrion-runtime-native-function-object-v1 target=" + target["triple"] + "\n")
+    out = asm_section(out, target["text_section"])
+    out = asm_line(out, ".globl " + function_plan["label"])
+    return emit_runtime_native_direct_function_v2(out, program, plan, function_plan, target)
 
 def emit_darwin_aarch64_constant_asm(payload, target):
     payload_len = len(payload)

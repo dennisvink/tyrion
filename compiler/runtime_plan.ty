@@ -44,6 +44,30 @@ def runtime_native_append_literal(literals, kind, value):
     literal = {"id": len(literals), "kind": kind, "value": value}
     return method_append(literals, literal)
 
+def runtime_native_literal_identity(literal):
+    return "tyrion-runtime-native-literal-v1\nkind=" + literal["kind"] + "\nvalue=" + __tyrion_native_cache_encode(literal["value"])
+
+def runtime_native_literal_label(literal):
+    identity = runtime_native_literal_identity(literal)
+    return "__tyrion_app_lit_u_" + str(compiler_cache_path_hash(identity)) + "_" + str(compiler_cache_short_text_hash(identity))
+
+def runtime_native_validate_literal_labels(literals):
+    # Two bounded label hashes are only a legal assembler spelling; reject a
+    # collision unless the literal identity is exact-byte identical. This keeps
+    # source-stable labels deterministic without silently aliasing values.
+    idx = 0
+    while idx < len(literals):
+        candidate = literals[idx]
+        candidate_label = runtime_native_literal_label(candidate)
+        prior = 0
+        while prior < idx:
+            existing = literals[prior]
+            if candidate_label == runtime_native_literal_label(existing) and runtime_native_literal_identity(candidate) != runtime_native_literal_identity(existing):
+                fail("runtime-native literal label collision")
+            prior = prior + 1
+        idx = idx + 1
+    return literals
+
 def runtime_native_expr_metadata(expr, metadata):
     kind = expr["kind"]
     if kind == "string" or kind == "int" or kind == "float":
@@ -270,7 +294,93 @@ def runtime_native_statement_list_yield_count(items):
             count = count + runtime_native_statement_list_yield_count(stmt["finally_body"])
     return count
 
-def runtime_native_function_plan(fn, function_id):
+def runtime_native_unit_identity(target, kind, name, source):
+    # This key is intentionally independent of source traversal position. A
+    # preceding declaration may be added without invalidating an unchanged
+    # function's future AArch64 object shard. The target contract is part of
+    # the identity because Mach-O and ELF assembly/relocation rules differ.
+    return "tyrion-runtime-native-unit-v1\ntarget=" + target_context_fingerprint(target) + "\nkind=" + kind + "\nname=" + name + "\nsource=" + __tyrion_native_cache_encode(source)
+
+def runtime_native_unit_label(identity):
+    # Assembly identifiers must be legal on both Mach-O and ELF.  Keep the
+    # identity-derived parts decimal and underscore-separated: a hyphen would
+    # be parsed as an expression operator by the assembler.  Unlike ordinal
+    # function ids, this name survives an unrelated preceding declaration.
+    return "__tyrion_app_fn_u_" + str(compiler_cache_path_hash(identity)) + "_" + str(compiler_cache_short_text_hash(identity))
+
+def runtime_native_callable_module_identity(module_record):
+    if module_record != None and "identity" in module_record:
+        return module_record["identity"]
+    return "<module>"
+
+def runtime_native_callable_abi_identity(target, kind, module_identity, name, params):
+    # A callable's linker-visible symbol is an ABI name, not a body-cache
+    # name. Callers in another module may remain valid after a private body
+    # edit, so their cached objects must continue to reference the same
+    # exported definition. Function implementation identity below still
+    # contains the complete source and therefore rebuilds the changed object.
+    return "tyrion-runtime-native-callable-abi-v1\ntarget=" + target_context_fingerprint(target) + "\nkind=" + kind + "\nmodule=" + __tyrion_native_cache_encode(module_identity) + "\nname=" + __tyrion_native_cache_encode(name) + "\nparams=" + __tyrion_native_cache_encode(params)
+
+def runtime_native_path_directory(path):
+    index = len(path)
+    while index > 0:
+        index = index - 1
+        if path[index] == "/":
+            if index == 0:
+                return "/"
+            return path[0:index]
+    return "."
+
+def runtime_native_module_logical_path(program, path):
+    # Physical module paths are useful while parsing, but must never become a
+    # shard identity: a checkout move must not invalidate an otherwise exact
+    # module object.  Module graph order is dependency-first, making the last
+    # range the requested root.  Imported paths are therefore normalized
+    # relative to that root directory; built-ins retain their @tyrion name.
+    if path.startswith("@"):
+        return path
+    if "module_ranges" in program:
+        if len(program["module_ranges"]) > 0:
+            root_path = program["module_ranges"][len(program["module_ranges"]) - 1]["path"]
+            root_directory = runtime_native_path_directory(root_path)
+            prefix = root_directory + "/"
+            if root_directory == "/":
+                prefix = "/"
+            if path.startswith(prefix):
+                return path[len(prefix):]
+            return path
+    return "<module>"
+
+def runtime_native_module_record_for_path(program, path):
+    record = {"path": path, "identity": runtime_native_module_logical_path(program, path), "interface_digest": "", "interface_dependencies": []}
+    if "module_fingerprints" in program:
+        for candidate in program["module_fingerprints"]:
+            if candidate["path"] == path:
+                record["interface_digest"] = candidate["interface_digest"]
+                record["interface_dependencies"] = candidate["interface_dependencies"]
+                return record
+    return record
+
+def runtime_native_program_item_module_record(program, item_index):
+    # Pruning changes item indices. Preserve the source record in a parallel
+    # sequence so later planning does not attempt to rediscover provenance by
+    # name or traversal order.
+    if "item_module_records" in program:
+        if item_index < len(program["item_module_records"]):
+            return program["item_module_records"][item_index]
+    if "module_ranges" in program:
+        for module_range in program["module_ranges"]:
+            if item_index >= module_range["start"] and item_index < module_range["stop"]:
+                return runtime_native_module_record_for_path(program, module_range["path"])
+    return {"path": "<module>", "identity": "<module>", "interface_digest": "", "interface_dependencies": []}
+
+def runtime_native_attach_module_record(plan, module_record):
+    plan["module_path"] = module_record["identity"]
+    plan["module_interface_digest"] = module_record["interface_digest"]
+    plan["module_interface_dependencies"] = module_record["interface_dependencies"]
+    return plan
+
+def runtime_native_function_plan(fn, function_id, target, module_record=None):
     params = runtime_native_function_params(fn)
     locals = runtime_native_collect_statement_names(fn["body"], params)
     metadata = runtime_native_statement_list_metadata(fn["body"], {"calls": [], "literals": []})
@@ -278,15 +388,25 @@ def runtime_native_function_plan(fn, function_id):
         if "has_default" in param and param["has_default"]:
             metadata = runtime_native_expr_metadata(param["default"], metadata)
     yield_count = runtime_native_statement_list_yield_count(fn["body"])
-    return {"id": function_id, "name": fn["name"], "label": "__tyrion_app_fn_" + str(function_id), "params": params, "parameter_records": fn["params"], "locals": locals, "local_count": len(locals), "calls": metadata["calls"], "literals": metadata["literals"], "generator": yield_count > 0, "yield_count": yield_count}
+    module_identity = runtime_native_callable_module_identity(module_record)
+    identity = runtime_native_unit_identity(target, "function", module_identity + ":" + fn["name"], fn)
+    abi_identity = runtime_native_callable_abi_identity(target, "function", module_identity, fn["name"], fn["params"])
+    plan = {"id": function_id, "name": fn["name"], "label": runtime_native_unit_label(abi_identity), "identity": identity, "abi_identity": abi_identity, "params": params, "parameter_records": fn["params"], "locals": locals, "local_count": len(locals), "calls": metadata["calls"], "literals": metadata["literals"], "generator": yield_count > 0, "yield_count": yield_count}
+    if module_record != None:
+        plan = runtime_native_attach_module_record(plan, module_record)
+    return plan
 
-def runtime_native_class_method_plan(fn, function_id, class_name, class_id):
-    plan = runtime_native_function_plan(fn, function_id)
+def runtime_native_class_method_plan(fn, function_id, class_name, class_id, target, module_record=None):
+    plan = runtime_native_function_plan(fn, function_id, target, module_record)
     plan["source_name"] = fn["name"]
     plan["name"] = class_name + "." + fn["name"]
     plan["class_name"] = class_name
     plan["class_id"] = class_id
     plan["method_name"] = fn["name"]
+    module_identity = runtime_native_callable_module_identity(module_record)
+    plan["identity"] = runtime_native_unit_identity(target, "method", module_identity + ":" + plan["name"], fn)
+    plan["abi_identity"] = runtime_native_callable_abi_identity(target, "method", module_identity, plan["name"], fn["params"])
+    plan["label"] = runtime_native_unit_label(plan["abi_identity"])
     return plan
 
 def runtime_native_class_plans(program):
@@ -322,19 +442,42 @@ def runtime_native_class_method_function_plan(plan, class_name, method_name):
             return fn_plan
     fail("runtime-native direct class method not found: " + qualified)
 
-def runtime_native_lambda_function_plan(expr, name, function_id, anonymous, owner):
+def runtime_native_lambda_function_plan(expr, name, function_id, anonymous, owner, target, identity_name="", module_record=None):
     params = expr["params"]
     parameter_records = []
     for param in params:
         parameter_records = method_append(parameter_records, {"name": param, "has_default": False, "default": {"kind": "none", "items": [], "value": none}})
     metadata = runtime_native_expr_metadata(expr["body"], {"calls": [], "literals": []})
-    return {"id": function_id, "name": name, "label": "__tyrion_app_fn_" + str(function_id), "params": params, "parameter_records": parameter_records, "locals": params, "local_count": len(params), "calls": metadata["calls"], "literals": metadata["literals"], "lambda": True, "anonymous": anonymous, "owner": owner, "body_expr": expr["body"]}
+    if identity_name == "":
+        identity_name = owner + ":" + name
+    module_identity = runtime_native_callable_module_identity(module_record)
+    identity_base = runtime_native_unit_identity(target, "lambda", module_identity + ":" + owner + ":<anonymous>", expr)
+    identity = runtime_native_unit_identity(target, "lambda", module_identity + ":" + identity_name, expr)
+    label_identity = identity
+    abi_identity = ""
+    if not anonymous:
+        abi_identity = runtime_native_callable_abi_identity(target, "lambda-binding", module_identity, name, parameter_records)
+        label_identity = abi_identity
+    plan = {"id": function_id, "name": name, "label": runtime_native_unit_label(label_identity), "identity": identity, "abi_identity": abi_identity, "identity_base": identity_base, "params": params, "parameter_records": parameter_records, "locals": params, "local_count": len(params), "calls": metadata["calls"], "literals": metadata["literals"], "lambda": True, "anonymous": anonymous, "owner": owner, "body_expr": expr["body"]}
+    if module_record != None:
+        plan = runtime_native_attach_module_record(plan, module_record)
+    return plan
+
+def runtime_native_anonymous_lambda_occurrence(plans, identity_base):
+    occurrence = 0
+    for plan in plans:
+        if "anonymous" in plan and plan["anonymous"] and "identity_base" in plan and plan["identity_base"] == identity_base:
+            occurrence = occurrence + 1
+    return occurrence
 
 def runtime_native_register_lambda_expr(expr, state):
     kind = expr["kind"]
     if kind == "lambda":
         name = "__tyrion_lambda_" + str(state["next_id"])
-        state["plans"] = method_append(state["plans"], runtime_native_lambda_function_plan(expr, name, state["next_id"], True, state["owner"]))
+        identity_base = runtime_native_unit_identity(state["target"], "lambda", state["owner"] + ":<anonymous>", expr)
+        occurrence = runtime_native_anonymous_lambda_occurrence(state["plans"], identity_base)
+        identity_name = state["owner"] + ":<anonymous:" + str(occurrence) + ">"
+        state["plans"] = method_append(state["plans"], runtime_native_lambda_function_plan(expr, name, state["next_id"], True, state["owner"], state["target"], identity_name, state["module_record"]))
         state["next_id"] = state["next_id"] + 1
         state = runtime_native_register_lambda_expr(expr["body"], state)
         return state
@@ -419,28 +562,40 @@ def runtime_native_register_lambda_statements(items, state):
             state["owner"] = old_owner
     return state
 
-def runtime_native_function_plans(program):
+def runtime_native_function_plans(program, target):
     plans = []
     function_id = 1
-    for stmt in program["items"]:
+    item_index = 0
+    while item_index < len(program["items"]):
+        stmt = program["items"][item_index]
+        module_record = runtime_native_program_item_module_record(program, item_index)
         if stmt["kind"] == "function":
-            plans = method_append(plans, runtime_native_function_plan(stmt, function_id))
+            plans = method_append(plans, runtime_native_function_plan(stmt, function_id, target, module_record))
             function_id = function_id + 1
         elif stmt["kind"] == "assign" and stmt["target"]["kind"] == "var" and stmt["value"]["kind"] == "lambda":
             lambda_expr = stmt["value"]
             name = stmt["target"]["value"]
-            plans = method_append(plans, runtime_native_lambda_function_plan(lambda_expr, name, function_id, False, "<module>"))
+            plans = method_append(plans, runtime_native_lambda_function_plan(lambda_expr, name, function_id, False, "<module>", target, "", module_record))
             function_id = function_id + 1
+        item_index = item_index + 1
     class_id = 1
-    for stmt in program["items"]:
+    item_index = 0
+    while item_index < len(program["items"]):
+        stmt = program["items"][item_index]
+        module_record = runtime_native_program_item_module_record(program, item_index)
         if stmt["kind"] == "class":
             for member in stmt["body"]:
                 if member["kind"] == "function":
-                    plans = method_append(plans, runtime_native_class_method_plan(member, function_id, stmt["name"], class_id))
+                    plans = method_append(plans, runtime_native_class_method_plan(member, function_id, stmt["name"], class_id, target, module_record))
                     function_id = function_id + 1
             class_id = class_id + 1
-    state = {"plans": plans, "next_id": function_id, "owner": "<module>"}
-    state = runtime_native_register_lambda_statements(program["items"], state)
+        item_index = item_index + 1
+    state = {"plans": plans, "next_id": function_id, "owner": "<module>", "target": target, "module_record": {"path": "<module>", "identity": "<module>", "interface_digest": "", "interface_dependencies": []}}
+    item_index = 0
+    while item_index < len(program["items"]):
+        state["module_record"] = runtime_native_program_item_module_record(program, item_index)
+        state = runtime_native_register_lambda_statements([program["items"][item_index]], state)
+        item_index = item_index + 1
     return state["plans"]
 
 def runtime_native_lambda_expr_count(expr):
@@ -566,7 +721,7 @@ def runtime_native_program_literals(program, top_items):
             source_metadata = runtime_native_expr_metadata(source_stmt["value"], source_metadata)
         for source_literal in source_metadata["literals"]:
             literals = runtime_native_append_literal(literals, source_literal["kind"], source_literal["value"])
-    return literals
+    return runtime_native_validate_literal_labels(literals)
 
 def runtime_native_reachable_plan(program, target):
     native_functions = native_direct_function_plans(program)
@@ -606,7 +761,9 @@ def runtime_native_class_id_reachable(reachable, class_id):
 
 def runtime_native_prune_program(program, reachable):
     items = []
+    item_module_records = []
     class_id = 1
+    source_index = 0
     for statement in program["items"]:
         keep = True
         if statement["kind"] == "function":
@@ -624,7 +781,20 @@ def runtime_native_prune_program(program, reachable):
             class_id = class_id + 1
         if keep:
             items = method_append(items, statement)
-    return {"kind": "program", "items": items}
+            item_module_records = method_append(item_module_records, runtime_native_program_item_module_record(program, source_index))
+        source_index = source_index + 1
+    # Keep the frontend's source-level provenance after reachability pruning.
+    # The item-aligned records above remain authoritative for the compact
+    # program; the full module inventory is retained for root/module identity
+    # normalization and later bundle manifests.
+    result = {"kind": "program", "items": items, "item_module_records": item_module_records}
+    if "module_ranges" in program:
+        result["module_ranges"] = program["module_ranges"]
+    if "module_fingerprints" in program:
+        result["module_fingerprints"] = program["module_fingerprints"]
+    if "function_fingerprints" in program:
+        result["function_fingerprints"] = program["function_fingerprints"]
+    return result
 
 def runtime_native_reachable_literals(top_items, function_plans):
     top_metadata = runtime_native_statement_list_metadata(top_items, {"calls": [], "literals": []})
@@ -632,7 +802,7 @@ def runtime_native_reachable_literals(top_items, function_plans):
     for function_plan in function_plans:
         for literal in function_plan["literals"]:
             literals = runtime_native_append_literal(literals, literal["kind"], literal["value"])
-    return literals
+    return runtime_native_validate_literal_labels(literals)
 
 def collect_runtime_native_program_plan_with_extension_config(program, target, extensions, dynamic_extension_mode, dynamic_extension_root):
     function_names = runtime_native_function_names(program)
@@ -644,8 +814,8 @@ def collect_runtime_native_program_plan_with_extension_config(program, target, e
     top_items = runtime_native_top_level_items(program)
     top_locals = runtime_native_collect_statement_names(top_items, [])
     top_metadata = runtime_native_statement_list_metadata(top_items, {"calls": [], "literals": []})
-    top_plan = {"id": 0, "name": "<module>", "label": "__tyrion_app_main", "params": [], "locals": top_locals, "local_count": len(top_locals), "calls": top_metadata["calls"], "literals": top_metadata["literals"]}
-    function_plans = runtime_native_function_plans(program)
+    top_plan = {"id": 0, "name": "<module>", "label": "__tyrion_app_main", "identity": runtime_native_unit_identity(target, "module", "<module>", top_items), "params": [], "locals": top_locals, "local_count": len(top_locals), "calls": top_metadata["calls"], "literals": top_metadata["literals"]}
+    function_plans = runtime_native_function_plans(program, target)
     class_plans = runtime_native_class_plans(program)
     literals = runtime_native_reachable_literals(top_items, function_plans)
     plan = {}
@@ -678,7 +848,11 @@ def collect_runtime_native_program_plan_with_extension_config(program, target, e
     plan["literal_count"] = len(literals)
     plan["slot_size"] = 128
     plan["tag_offset"] = 127
-    plan["plan_version"] = "runtime-native-program-v3"
+    plan["plan_version"] = "runtime-native-program-v4"
+    # Normal assembly is monolithic. The AArch64 object lane explicitly flips
+    # this only for its root object, so function bodies live in identity-keyed
+    # shard objects rather than being emitted twice.
+    plan["emit_root_only"] = False
     plan["program"] = program
     return plan
 
@@ -891,6 +1065,15 @@ def runtime_native_direct_literal_id(plan, kind, value):
         idx = idx + 1
     fail("runtime-native direct literal not found")
 
+def runtime_native_direct_literal_label(plan, kind, value):
+    idx = 0
+    while idx < len(plan["literals"]):
+        literal = plan["literals"][idx]
+        if literal["kind"] == kind and literal["value"] == value:
+            return runtime_native_literal_label(literal)
+        idx = idx + 1
+    fail("runtime-native direct literal not found")
+
 def runtime_native_direct_function_plan(plan, name):
     for fn_plan in plan["functions"]:
         if fn_plan["name"] == name:
@@ -931,22 +1114,17 @@ def runtime_native_direct_source_function(program, name):
                     return member
     fail("runtime-native direct source function not found: " + name)
 
-def link_runtime_native_direct_program(target, asm_path, output_path, plan):
+def runtime_native_link_manifest_inputs(target, output_path, plan):
     dynamic_extension_mode = "off"
     if "dynamic_extension_mode" in plan:
         dynamic_extension_mode = plan["dynamic_extension_mode"]
     requires_cache_codec = runtime_native_name_in_list(plan["operations"], "__tyrion_native_cache_encode") or runtime_native_name_in_list(plan["operations"], "__tyrion_native_cache_decode")
-    if plan["extension_count"] == 0 and dynamic_extension_mode == "off" and not requires_cache_codec:
-        return link_executable(target, asm_path, output_path)
-    object_path = output_path + ".o"
-    if not run_tool("cc", "-c", asm_path, "-o" + object_path):
-        fail("native-tool rejected code=assemble-failed;path=" + asm_path + ";output=" + object_path)
-    response_path = output_path + ".extlink.rsp"
-    response = "\"" + object_path + "\"\n"
+    runtime_inputs = []
     if requires_cache_codec:
         cache_source_path = output_path + ".cache-codec.c"
         write_text_file(cache_source_path, compiler_cache_runtime_c_source())
-        response = response + "\"" + cache_source_path + "\"\n"
+        runtime_inputs = method_append(runtime_inputs, cache_source_path)
+    extension_inputs = []
     for extension in plan["extensions"]:
         embedded_resource = ""
         if "embedded_resource" in extension:
@@ -954,29 +1132,424 @@ def link_runtime_native_direct_program(target, asm_path, output_path, plan):
         if embedded_resource != "":
             archive_path = output_path + ".native-" + extension["name"] + ".a"
             native_package_write_embedded(embedded_resource, archive_path)
-            response = response + "\"" + archive_path + "\"\n"
+            extension_inputs = method_append(extension_inputs, archive_path)
         else:
             for source_path in extension["sources"]:
                 if contains_text(source_path, "\"") or contains_text(source_path, "\n"):
                     fail("invalid static extension linker source path")
-                response = response + "\"" + source_path + "\"\n"
+                extension_inputs = method_append(extension_inputs, source_path)
+    libraries = []
     if dynamic_extension_mode == "allowed" and target["os"] == "linux":
-        response = response + "-ldl\n"
-    # Keep the extension link lane aligned with ordinary native links.  The
-    # response file is also used because run_tool has a bounded argument ABI.
-    response = response + "-lm\n"
-    write_text_file(response_path, response)
-    if not run_tool("cc", "@" + response_path, "-o", output_path):
-        fail("native-tool rejected code=link-failed;path=" + object_path + ";output=" + output_path)
+        libraries = method_append(libraries, "-ldl")
+    libraries = method_append(libraries, "-lm")
+    return {"runtime_inputs": runtime_inputs, "extension_inputs": extension_inputs, "libraries": libraries}
+
+def runtime_native_plan_identity_token(plan):
+    text = plan["top_level"]["identity"]
+    for function in plan["functions"]:
+        text = text + "\n" + function["identity"]
+    return "tyrion-runtime-native-units-v1-" + str(compiler_cache_path_hash(text)) + "-" + str(compiler_cache_short_text_hash(text))
+
+def runtime_native_unit_identity_token(identity):
+    return str(compiler_cache_path_hash(identity)) + "-" + str(compiler_cache_short_text_hash(identity))
+
+def runtime_native_plan_identity_manifest_text(plan):
+    out = "tyrion-runtime-native-units-v1\n"
+    out = out + "target=" + plan["target"] + "\n"
+    out = out + "module.token=" + runtime_native_unit_identity_token(plan["top_level"]["identity"]) + "\n"
+    out = out + "function.count=" + str(len(plan["functions"])) + "\n"
+    index = 0
+    while index < len(plan["functions"]):
+        function = plan["functions"][index]
+        out = out + "function." + str(index) + ".name=" + function["name"] + "\n"
+        out = out + "function." + str(index) + ".token=" + runtime_native_unit_identity_token(function["identity"]) + "\n"
+        index = index + 1
+    return out
+
+def runtime_native_plan_identity_artifact_fields(plan):
+    return "function-unit-identity-count=" + str(len(plan["functions"])) + "\nfunction-unit-identity-token=" + runtime_native_plan_identity_token(plan) + "\n"
+
+
+def runtime_native_object_toolchain_id(target):
+    target = target_require_object_emission(target)
+    host = host_target()
+    if target_can_link_on_host(target, host):
+        return "cc-host"
+    if target["os"] == "linux":
+        return "clang-target-" + target["arch"] + "-unknown-linux-gnu"
+    fail("target-capability rejected code=host-assemble-mismatch;target=" + target_id(target) + ";operation=object;host=" + target_id(host))
+
+
+def assemble_runtime_native_object(target, asm_path, object_path):
+    target = target_require_object_emission(target)
+    toolchain_id = runtime_native_object_toolchain_id(target)
+    if toolchain_id == "cc-host":
+        if not run_tool("cc", "-c", asm_path, "-o" + object_path):
+            fail("native-tool rejected code=assemble-failed;path=" + asm_path + ";output=" + object_path)
+        return object_path
+    # Clang can assemble Linux ELF objects for either Tier 1 Linux target from
+    # a non-Linux host without needing a libc/sysroot. Linking is deliberately
+    # still target-native because startup objects and system libraries are not
+    # portable assembler inputs.
+    if target["os"] == "linux":
+        toolchain_target = target["arch"] + "-unknown-linux-gnu"
+        if not run_tool_args("clang", ["-target", toolchain_target, "-c", asm_path, "-o", object_path]):
+            fail("native-tool rejected code=cross-assemble-failed;target=" + target_id(target) + ";path=" + asm_path + ";output=" + object_path)
+        return object_path
+    fail("target-capability rejected code=toolchain-unavailable;target=" + target_id(target) + ";operation=object")
+
+
+def runtime_native_object_cache_note(cache_dir, event, enabled=False):
+    if cache_dir == "" or not enabled:
+        return
+    stats_path = cache_dir + "/.generated-object-cache-events"
+    previous = ""
+    if compiler_optional_file_exists(stats_path):
+        try:
+            previous = read_text_file(stats_path)
+        except:
+            previous = ""
+    write_text_file(stats_path, previous + event + "\n")
+
+
+def runtime_native_object_description(path):
+    result = run_tool_capture("file", ["-b", path])
+    if not result["ok"]:
+        return ""
+    return result["stdout"]
+
+
+def runtime_native_linux_object_metadata_valid(path, required_symbols=[]):
+    # Cross-object production on macOS intentionally does not require a Linux
+    # binutils installation. When readelf/nm are available (on every native
+    # Linux target), inspect the ordinary object metadata before accepting it.
+    # The `file` checks below remain the portable minimum.
+    sections = run_tool_capture("readelf", ["-S", path])
+    if sections["ok"]:
+        if not contains_text(sections["stdout"], ".text"):
+            return False
+    symbols = run_tool_capture("nm", ["-g", path])
+    if symbols["ok"]:
+        for symbol in required_symbols:
+            if not contains_text(symbols["stdout"], symbol + "\n"):
+                return False
     return True
 
-def build_runtime_native_direct_program(program, plan, input_path, output_path, cache_dir="", cache_fingerprint="", cache_stats=False):
+
+def runtime_native_object_valid_for_target(target, path, required_symbols=[]):
+    description = runtime_native_object_description(path)
+    if target["os"] == "linux":
+        if not contains_text(description, "ELF 64-bit"):
+            return False
+        if target["arch"] == "x86_64":
+            return contains_text(description, "x86-64") and runtime_native_linux_object_metadata_valid(path, required_symbols)
+        if target["arch"] == "aarch64":
+            return (contains_text(description, "ARM aarch64") or contains_text(description, "ARM64")) and runtime_native_linux_object_metadata_valid(path, required_symbols)
+        return False
+    if target["os"] == "darwin":
+        if not contains_text(description, "Mach-O 64-bit object"):
+            return False
+        if target["arch"] == "aarch64":
+            return contains_text(description, "arm64")
+        return False
+    return False
+
+
+def restore_runtime_native_object_cache(target, object_path, cache_dir="", cache_fingerprint="", cache_stats=False, required_symbols=[]):
+    toolchain_id = runtime_native_object_toolchain_id(target)
+    if cache_dir == "" or cache_fingerprint == "":
+        return False
+    fingerprint = cache_fingerprint + "\nobject-toolchain=" + toolchain_id
+    cache_base = cache_dir + "/" + str(compiler_cache_path_hash(fingerprint)) + ".objectcache"
+    object_cache_path = cache_base + ".o"
+    metadata_cache_path = cache_base + ".meta"
+    marker = generated_asm_cache_load(metadata_cache_path, fingerprint)
+    if marker == "object-v1\n":
+        if __tyrion_run_tool("cp", [object_cache_path, object_path])["ok"]:
+            if runtime_native_object_valid_for_target(target, object_path, required_symbols):
+                runtime_native_object_cache_note(cache_dir, "hit", cache_stats)
+                return True
+            runtime_native_object_cache_note(cache_dir, "corrupt", cache_stats)
+    return False
+
+
+def assemble_runtime_native_object_cached(target, asm_path, object_path, cache_dir="", cache_fingerprint="", cache_stats=False, cache_checked=False, required_symbols=[]):
+    toolchain_id = runtime_native_object_toolchain_id(target)
+    if cache_dir == "" or cache_fingerprint == "":
+        runtime_native_object_cache_note(cache_dir, "disabled", cache_stats)
+        return assemble_runtime_native_object(target, asm_path, object_path)
+    if not cache_checked and restore_runtime_native_object_cache(target, object_path, cache_dir, cache_fingerprint, cache_stats, required_symbols):
+        return object_path
+    fingerprint = cache_fingerprint + "\nobject-toolchain=" + toolchain_id
+    cache_base = cache_dir + "/" + str(compiler_cache_path_hash(fingerprint)) + ".objectcache"
+    object_cache_path = cache_base + ".o"
+    metadata_cache_path = cache_base + ".meta"
+    runtime_native_object_cache_note(cache_dir, "miss", cache_stats)
+    assemble_runtime_native_object(target, asm_path, object_path)
+    if not runtime_native_object_valid_for_target(target, object_path, required_symbols):
+        fail("compiler object rejected code=target-validation-failed;target=" + target_id(target) + ";path=" + object_path)
+    temporary_object_path = object_cache_path + ".tmp"
+    if not __tyrion_run_tool("cp", [object_path, temporary_object_path])["ok"]:
+        fail("compiler object cache rejected code=copy-failed;path=" + temporary_object_path)
+    if not __tyrion_run_tool("mv", [temporary_object_path, object_cache_path])["ok"]:
+        fail("compiler object cache rejected code=publish-failed;path=" + object_cache_path)
+    generated_asm_cache_store(metadata_cache_path, fingerprint, "object-v1\n")
+    return object_path
+
+
+def combine_runtime_native_objects_cached(target, input_objects, object_path, cache_dir="", cache_fingerprint="", cache_stats=False, required_symbols=[]):
+    # A module shard is a relocatable object assembled from independently
+    # cached function objects.  It has the same target/toolchain validation and
+    # atomic cache-publication contract as an assembly-produced object, but
+    # deliberately performs no final executable link or sysroot-dependent
+    # startup selection.
+    if len(input_objects) == 0:
+        fail("compiler object shard rejected code=empty-module-input")
+    target = target_require_object_emission(target)
+    if cache_dir != "" and cache_fingerprint != "":
+        if restore_runtime_native_object_cache(target, object_path, cache_dir, cache_fingerprint, cache_stats, required_symbols):
+            return object_path
+    toolchain_id = runtime_native_object_toolchain_id(target)
+    args = ["-r", "-o", object_path]
+    for input_object in input_objects:
+        args = method_append(args, input_object)
+    ok = False
+    if toolchain_id == "cc-host":
+        ok = run_tool_args("cc", args)
+    elif target["os"] == "linux":
+        cross_args = ["-target", target["arch"] + "-unknown-linux-gnu"]
+        for arg in args:
+            cross_args = method_append(cross_args, arg)
+        ok = run_tool_args("clang", cross_args)
+    if not ok:
+        fail("native-tool rejected code=relocatable-link-failed;target=" + target_id(target) + ";output=" + object_path)
+    if not runtime_native_object_valid_for_target(target, object_path, required_symbols):
+        fail("compiler object shard rejected code=target-validation-failed;target=" + target_id(target) + ";path=" + object_path)
+    if cache_dir == "" or cache_fingerprint == "":
+        runtime_native_object_cache_note(cache_dir, "disabled", cache_stats)
+        return object_path
+    fingerprint = cache_fingerprint + "\nobject-toolchain=" + toolchain_id
+    cache_base = cache_dir + "/" + str(compiler_cache_path_hash(fingerprint)) + ".objectcache"
+    object_cache_path = cache_base + ".o"
+    metadata_cache_path = cache_base + ".meta"
+    runtime_native_object_cache_note(cache_dir, "miss", cache_stats)
+    temporary_object_path = object_cache_path + ".tmp"
+    if not __tyrion_run_tool("cp", [object_path, temporary_object_path])["ok"]:
+        fail("compiler object cache rejected code=copy-failed;path=" + temporary_object_path)
+    if not __tyrion_run_tool("mv", [temporary_object_path, object_cache_path])["ok"]:
+        fail("compiler object cache rejected code=publish-failed;path=" + object_cache_path)
+    generated_asm_cache_store(metadata_cache_path, fingerprint, "object-v1\n")
+    return object_path
+
+
+def runtime_native_tool_failure_diagnostic(result):
+    # Linker diagnostics distinguish an object-boundary contract failure
+    # (undefined/duplicate symbol, relocation, or library) from a toolchain
+    # configuration error. Bound the payload so one failed link cannot emit an
+    # unbounded compiler diagnostic.
+    diagnostic = trim_spaces(result["stderr"])
+    if diagnostic == "":
+        diagnostic = trim_spaces(result["stdout"])
+    if len(diagnostic) > 1024:
+        diagnostic = diagnostic[0:1024]
+    return diagnostic
+
+
+def link_runtime_native_objects(target, program_objects, output_path, plan):
+    target = backend_require_operation(target, "link")
+    target = backend_require_host_link_compatible(target, host_target())
+    inputs = runtime_native_link_manifest_inputs(target, output_path, plan)
+    manifest = link_manifest_create(target, output_path, target["entry_symbol"], program_objects, inputs["runtime_inputs"], inputs["extension_inputs"], inputs["libraries"], [])
+    manifest_path = output_path + ".link-manifest"
+    link_manifest_write(manifest, manifest_path)
+    response_path = output_path + ".link.rsp"
+    response = link_manifest_response_text(manifest)
+    write_text_file(response_path, response)
+    result = run_tool_capture(manifest["linker"], ["@" + response_path, "-o", output_path])
+    if not result["ok"]:
+        fail("native-tool rejected code=link-failed;output=" + output_path + ";status=" + str(result["status"]) + ";diagnostic=" + runtime_native_tool_failure_diagnostic(result))
+    return True
+
+
+def link_runtime_native_direct_program(target, asm_path, output_path, plan, cache_dir="", cache_fingerprint="", cache_stats=False):
+    object_path = output_path + ".o"
+    assemble_runtime_native_object_cached(target, asm_path, object_path, cache_dir, cache_fingerprint, cache_stats)
+    return link_runtime_native_objects(target, [object_path], output_path, plan)
+
+def runtime_native_aarch64_emit_function_object_shards(program, plan, output_path, cache_dir="", cache_fingerprint="", cache_stats=False, target=None):
+    if target == None:
+        target = host_target()
+    if target["backend"] != "darwin-aarch64" and target["backend"] != "linux-aarch64":
+        return []
+    shard_dir = output_path + ".shards"
+    if not __tyrion_run_tool("mkdir", ["-p", shard_dir])["ok"]:
+        fail("compiler shard rejected code=create-failed;path=" + shard_dir)
+    entries = []
+    list_path = shard_dir + "/objects.list"
+    function_list_path = shard_dir + "/function-objects.list"
+    write_text_file(list_path, "")
+    write_text_file(function_list_path, "")
+    index = 0
+    while index < len(plan["functions"]):
+        function = plan["functions"][index]
+        # Imports of an idempotent built-in module can present the same stable
+        # callable identity more than once in the flattened program.  Publish
+        # that exact function object once, for both the portable inventory and
+        # the target-native module compaction input.  A different symbol for
+        # the same identity would be a broken identity contract, not a valid
+        # duplicate to collapse.
+        duplicate_index = 0
+        while duplicate_index < len(entries) and entries[duplicate_index]["function_identity"] != function["identity"]:
+            duplicate_index = duplicate_index + 1
+        if duplicate_index < len(entries):
+            if entries[duplicate_index]["symbol"] != function["label"]:
+                fail("compiler shard rejected code=inconsistent-function-identity;module=" + function["module_path"])
+            index = index + 1
+            continue
+        token = runtime_native_unit_identity_token(function["identity"])
+        asm_path = shard_dir + "/function-" + token + ".s"
+        object_path = shard_dir + "/function-" + token + ".o"
+        out = ""
+        out = emit_darwin_aarch64_runtime_native_function_object_asm(out, target, program, plan, function)
+        write_text_file(asm_path, out)
+        # Cache exactly the assembler text this object represents, rather
+        # than the concatenated program graph.  This captures every true
+        # dependency (labels, literal references, target syntax, and runtime
+        # calls) while leaving an unchanged function reusable when an
+        # unrelated declaration is inserted elsewhere in the module.
+        fingerprint = "tyrion-aarch64-function-object-v2\ntarget=" + target_context_fingerprint(target) + "\nsource=" + out
+        assemble_runtime_native_object_cached(target, asm_path, object_path, cache_dir, fingerprint, cache_stats, False, [function["label"]])
+        object_shard_write(object_shard_create(target, "function", "aarch64-" + token, str(compiler_cache_path_hash(fingerprint)), [function["label"]]), object_path + ".tyobj")
+        # `objects.list` remains the portable fine-grained inventory for
+        # cross-host --emit=objects. Native executable builds compact these
+        # entries into module objects below, without changing the validated
+        # function cache boundary.
+        append_text_file(list_path, object_path + "\n")
+        append_text_file(function_list_path, object_path + "\n")
+        module_identity = "<module>"
+        if "module_path" in function:
+            module_identity = function["module_path"]
+        interface_digest = ""
+        if "module_interface_digest" in function:
+            interface_digest = function["module_interface_digest"]
+        interface_dependencies = []
+        if "module_interface_dependencies" in function:
+            interface_dependencies = function["module_interface_dependencies"]
+        entries = method_append(entries, {"object_path": object_path, "function_identity": function["identity"], "symbol": function["label"], "module_identity": module_identity, "interface_digest": interface_digest, "interface_dependencies": interface_dependencies})
+        index = index + 1
+    return entries
+
+def runtime_native_aarch64_module_partition_count(function_count):
+    # Use the same bounded fan-in as Linux x86-64. Function objects are the
+    # precise rebuild cache; module objects are the native final-link unit.
+    functions_per_partition = 96
+    if function_count <= functions_per_partition:
+        return 1
+    return int((function_count + functions_per_partition - 1) / functions_per_partition)
+
+def runtime_native_aarch64_module_partition_index(function_identity, partition_count):
+    if partition_count < 1:
+        fail("compiler shard rejected code=invalid-partition-count")
+    return compiler_cache_short_text_hash(function_identity) % partition_count
+
+def runtime_native_aarch64_compact_function_object_shards(target, shard_dir, entries, cache_dir="", cache_stats=False):
+    # This intentionally consumes the source-stable provenance carried by the
+    # AArch64 plan, rather than grouping by temporary function order or a
+    # checkout path. An unrelated function can therefore leave an existing
+    # module partition and its final-link identity untouched.
+    write_text_file(shard_dir + "/objects.list", "")
+    groups = []
+    for entry in entries:
+        group_index = -1
+        index = 0
+        while index < len(groups):
+            if groups[index]["module_identity"] == entry["module_identity"]:
+                group_index = index
+                break
+            index = index + 1
+        if group_index < 0:
+            groups = method_append(groups, {"module_identity": entry["module_identity"], "objects": [], "function_identities": [], "symbols": [], "interface_digest": entry["interface_digest"], "interface_dependencies": entry["interface_dependencies"]})
+            group_index = len(groups) - 1
+        group = groups[group_index]
+        if group["interface_digest"] != entry["interface_digest"] or group["interface_dependencies"] != entry["interface_dependencies"]:
+            fail("compiler shard rejected code=inconsistent-module-interface;module=" + group["module_identity"])
+        # A module graph can include an idempotent built-in import explicitly
+        # as well as through the implicit core prelude.  Both occurrences have
+        # the same stable function identity and therefore the exact same
+        # cached object path.  A relocatable linker must receive that object
+        # once, not twice.  Do not silently deduplicate a mismatched record:
+        # that would hide an identity/caching defect instead of preserving the
+        # one-object-per-stable-function contract.
+        duplicate_index = 0
+        while duplicate_index < len(group["function_identities"]) and group["function_identities"][duplicate_index] != entry["function_identity"]:
+            duplicate_index = duplicate_index + 1
+        if duplicate_index < len(group["function_identities"]):
+            if group["objects"][duplicate_index] != entry["object_path"] or group["symbols"][duplicate_index] != entry["symbol"]:
+                fail("compiler shard rejected code=inconsistent-function-identity;module=" + group["module_identity"])
+        else:
+            group["objects"] = method_append(group["objects"], entry["object_path"])
+            group["function_identities"] = method_append(group["function_identities"], entry["function_identity"])
+            group["symbols"] = method_append(group["symbols"], entry["symbol"])
+        groups[group_index] = group
+    module_objects = []
+    for group in groups:
+        partition_count = runtime_native_aarch64_module_partition_count(len(group["objects"]))
+        partition_index = 0
+        while partition_index < partition_count:
+            partition_objects = []
+            partition_symbols = []
+            partition_identities = []
+            function_index = 0
+            while function_index < len(group["objects"]):
+                if runtime_native_aarch64_module_partition_index(group["function_identities"][function_index], partition_count) == partition_index:
+                    partition_objects = method_append(partition_objects, group["objects"][function_index])
+                    partition_symbols = method_append(partition_symbols, group["symbols"][function_index])
+                    partition_identities = method_append(partition_identities, group["function_identities"][function_index])
+                function_index = function_index + 1
+            if len(partition_objects) > 0:
+                fingerprint = "tyrion-aarch64-module-shard-v1\ntarget=" + target_context_fingerprint(target) + "\nmodule=" + group["module_identity"] + "\npartition-count=" + str(partition_count) + "\npartition-index=" + str(partition_index) + "\n"
+                for function_identity in partition_identities:
+                    fingerprint = fingerprint + "unit=" + runtime_native_unit_identity_token(function_identity) + "\n"
+                module_token = runtime_native_unit_identity_token("module=" + group["module_identity"])
+                module_id = "module-" + module_token + "-p" + str(partition_index + 1) + "of" + str(partition_count)
+                module_object_path = shard_dir + "/" + module_id + ".o"
+                combine_runtime_native_objects_cached(target, partition_objects, module_object_path, cache_dir, fingerprint, cache_stats, partition_symbols)
+                object_shard_write(object_shard_create(target, "module", module_id, str(compiler_cache_path_hash(fingerprint)), partition_symbols, group["interface_digest"], group["interface_dependencies"]), module_object_path + ".tyobj")
+                append_text_file(shard_dir + "/objects.list", module_object_path + "\n")
+                module_objects = method_append(module_objects, module_object_path)
+            partition_index = partition_index + 1
+    return module_objects
+
+def build_runtime_native_direct_program(program, plan, input_path, output_path, cache_dir="", cache_fingerprint="", cache_stats=False, emit_mode="executable", target=None):
     asm_path = output_path + ".runtime.s"
     artifact_path = output_path + ".tyn"
-    target = host_target()
+    unit_manifest_path = output_path + ".units"
+    # Direct-native verification is deliberately conservative about values
+    # assigned within a target-specific branch. Keep the artifact inputs
+    # defined for every backend; only AArch64 root-only builds populate them.
+    function_entries = []
+    module_objects = []
+    if target == None:
+        target = host_target()
+    target = target_require_assembly_emission(target)
+    aarch64_function_shards = target["backend"] == "darwin-aarch64" or target["backend"] == "linux-aarch64"
+    aarch64_object_shard_build = aarch64_function_shards and (emit_mode == "objects" or emit_mode == "executable")
+    # Keep the root's runtime/literal ownership separate from callable bodies
+    # on the shared AArch64 backends. The cache identity must include this
+    # emission shape; otherwise an earlier monolithic assembly cache entry can
+    # silently reintroduce duplicate function definitions.
+    if aarch64_object_shard_build:
+        plan["emit_root_only"] = True
+    assembly_cache_fingerprint = cache_fingerprint
+    if plan["emit_root_only"]:
+        assembly_cache_fingerprint = cache_fingerprint + "\nemit-root-only=v1"
+    write_text_file(unit_manifest_path, runtime_native_plan_identity_manifest_text(plan))
     cached_assembly = ""
-    if cache_dir != "":
-        cached_assembly = generated_asm_cache_load(cache_dir + "/" + str(compiler_cache_path_hash(cache_fingerprint)) + ".asmcache", cache_fingerprint)
+    # Object-shard builds intentionally regenerate the small root source and
+    # validate its exact root object instead of restoring a whole-program
+    # assembly cache. Assembly-only remains the diagnostic monolithic mode.
+    if cache_dir != "" and not aarch64_object_shard_build:
+        cached_assembly = generated_asm_cache_load(cache_dir + "/" + str(compiler_cache_path_hash(assembly_cache_fingerprint)) + ".asmcache", assembly_cache_fingerprint)
     if cached_assembly != "":
         generated_asm_cache_note(cache_dir, "hit", cache_stats)
         write_text_file(asm_path, cached_assembly)
@@ -986,16 +1559,75 @@ def build_runtime_native_direct_program(program, plan, input_path, output_path, 
         writer = asm_writer_open(asm_path)
         writer = emit_object_source(writer, lowered)
         asm_writer_close(writer)
-        if cache_dir != "":
-            generated_asm_cache_store(cache_dir + "/" + str(compiler_cache_path_hash(cache_fingerprint)) + ".asmcache", cache_fingerprint, read_text_file(asm_path))
-    if not link_runtime_native_direct_program(target, asm_path, output_path, plan):
+        if cache_dir != "" and not aarch64_object_shard_build:
+            generated_asm_cache_store(cache_dir + "/" + str(compiler_cache_path_hash(assembly_cache_fingerprint)) + ".asmcache", assembly_cache_fingerprint, read_text_file(asm_path))
+    if emit_mode == "assembly":
+        artifact = "tyrion-bootstrap-native v0\n"
+        artifact = artifact + "entry=" + input_path + "\n"
+        artifact = artifact + "target=" + target_id(target) + "\n"
+        artifact = artifact + "target-context=" + target_context_fingerprint(target) + "\n"
+        artifact = artifact + runtime_native_plan_identity_artifact_fields(plan)
+        artifact = artifact + "native-build-target-kind=user-program\n"
+        artifact = artifact + "native-lowering-plan=runtime-native-direct-v1\n"
+        artifact = artifact + "native-exec-mode=user-program-native-runtime\n"
+        artifact = artifact + "native-link-mode=assembly-only\n"
+        write_text_file(artifact_path, artifact)
+        return True
+    if emit_mode == "objects":
+        root_object_fingerprint = "tyrion-aarch64-root-runtime-v2\ntarget=" + target_context_fingerprint(target) + "\nsource=" + read_text_file(asm_path)
+        root_symbols = []
+        if plan["emit_root_only"]:
+            root_symbols = darwin_aarch64_runtime_native_root_export_symbols(plan)
+        object_path = assemble_runtime_native_object_cached(target, asm_path, output_path + ".o", cache_dir, root_object_fingerprint, cache_stats, False, root_symbols)
+        if plan["emit_root_only"]:
+            object_shard_write(object_shard_create(target, "root-runtime", "root", str(compiler_cache_path_hash(root_object_fingerprint)), root_symbols), object_path + ".tyobj")
+        aarch64_function_entries = runtime_native_aarch64_emit_function_object_shards(program, plan, output_path, cache_dir, cache_fingerprint, cache_stats, target)
+        artifact = "tyrion-bootstrap-native v0\n"
+        artifact = artifact + "entry=" + input_path + "\n"
+        artifact = artifact + "target=" + target_id(target) + "\n"
+        artifact = artifact + "target-context=" + target_context_fingerprint(target) + "\n"
+        artifact = artifact + runtime_native_plan_identity_artifact_fields(plan)
+        artifact = artifact + "program-object=" + object_path + "\n"
+        artifact = artifact + "function-object-shard-count=" + str(len(aarch64_function_entries)) + "\n"
+        if len(aarch64_function_entries) > 0:
+            artifact = artifact + "function-object-shard-list=" + output_path + ".shards/objects.list\n"
+        artifact = artifact + "object-toolchain=" + runtime_native_object_toolchain_id(target) + "\n"
+        artifact = artifact + "native-build-target-kind=user-program\n"
+        artifact = artifact + "native-lowering-plan=runtime-native-direct-v1\n"
+        artifact = artifact + "native-exec-mode=user-program-native-runtime\n"
+        artifact = artifact + "native-link-mode=object-only\n"
+        write_text_file(artifact_path, artifact)
+        return True
+    if emit_mode != "executable":
+        fail("invalid native emit mode: " + emit_mode)
+    if plan["emit_root_only"]:
+        root_object_fingerprint = "tyrion-aarch64-root-runtime-v2\ntarget=" + target_context_fingerprint(target) + "\nsource=" + read_text_file(asm_path)
+        root_symbols = darwin_aarch64_runtime_native_root_export_symbols(plan)
+        object_path = assemble_runtime_native_object_cached(target, asm_path, output_path + ".o", cache_dir, root_object_fingerprint, cache_stats, False, root_symbols)
+        object_shard_write(object_shard_create(target, "root-runtime", "root", str(compiler_cache_path_hash(root_object_fingerprint)), root_symbols), object_path + ".tyobj")
+        function_entries = runtime_native_aarch64_emit_function_object_shards(program, plan, output_path, cache_dir, cache_fingerprint, cache_stats, target)
+        module_objects = runtime_native_aarch64_compact_function_object_shards(target, output_path + ".shards", function_entries, cache_dir, cache_stats)
+        program_objects = [object_path]
+        for module_object in module_objects:
+            program_objects = method_append(program_objects, module_object)
+        linked = link_runtime_native_objects(target, program_objects, output_path, plan)
+    else:
+        linked = link_runtime_native_direct_program(target, asm_path, output_path, plan, cache_dir, cache_fingerprint, cache_stats)
+    if not linked:
         fail("native-link rejected code=link-failed;path=" + asm_path + ";output=" + output_path)
     artifact = "tyrion-bootstrap-native v0\n"
     artifact = artifact + "entry=" + input_path + "\n"
+    artifact = artifact + "target=" + target_id(target) + "\n"
+    artifact = artifact + "target-context=" + target_context_fingerprint(target) + "\n"
+    artifact = artifact + runtime_native_plan_identity_artifact_fields(plan)
     artifact = artifact + "native-build-target-kind=user-program\n"
     artifact = artifact + "native-lowering-plan=runtime-native-direct-v1\n"
     artifact = artifact + "native-exec-mode=user-program-native-runtime\n"
     artifact = artifact + "native-link-mode=asm-object-link\n"
+    if plan["emit_root_only"]:
+        artifact = artifact + "function-object-shard-count=" + str(len(function_entries)) + "\n"
+        artifact = artifact + "object-module-count=" + str(len(module_objects)) + "\n"
+        artifact = artifact + "object-shard-list=" + output_path + ".shards/objects.list\n"
     if plan["extension_count"] > 0:
         artifact = artifact + "native-static-extension-count=" + str(plan["extension_count"]) + "\n"
     if plan["dynamic_extension_mode"] == "allowed":
@@ -1003,8 +1635,10 @@ def build_runtime_native_direct_program(program, plan, input_path, output_path, 
     write_text_file(artifact_path, artifact)
     return True
 
-def build_runtime_native_direct_program_if_supported_with_program(program, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir="", cache_fingerprint="", cache_stats=False):
-    target = host_target()
+def build_runtime_native_direct_program_if_supported_with_program(program, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir="", cache_fingerprint="", cache_stats=False, target=None, emit_mode="executable"):
+    if target == None:
+        target = host_target()
+    target = target_require_assembly_emission(target)
     if not backend_has_operation(target, "runtime-object"):
         return False
     parsed = {"contract": "tyrion-parse-v1", "target": target, "program": program}
@@ -1014,12 +1648,14 @@ def build_runtime_native_direct_program_if_supported_with_program(program, input
     extensions = static_extension_build_plan_configured(analyzed_program, extension_mode, extension_root, dynamic_extension_mode)
     plan_record = plan_runtime_with_extension_config(analysis, extensions, dynamic_extension_mode, extension_root)
     plan = plan_record["runtime"]
-    return build_runtime_native_direct_program(plan["program"], plan, input_path, output_path, cache_dir, cache_fingerprint, cache_stats)
+    return build_runtime_native_direct_program(plan["program"], plan, input_path, output_path, cache_dir, cache_fingerprint, cache_stats, emit_mode, target)
 
-def build_runtime_native_direct_program_if_supported_with_extension_config(raw_source, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir="", cache_fingerprint=""):
-    target = host_target()
+def build_runtime_native_direct_program_if_supported_with_extension_config(raw_source, input_path, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir="", cache_fingerprint="", target=None, emit_mode="executable"):
+    if target == None:
+        target = host_target()
+    target = target_require_assembly_emission(target)
     parsed = parse_source(raw_source, target)
-    return build_runtime_native_direct_program_if_supported_with_program(parsed["program"], input_path, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir, cache_fingerprint)
+    return build_runtime_native_direct_program_if_supported_with_program(parsed["program"], input_path, output_path, extension_mode, extension_root, dynamic_extension_mode, cache_dir, cache_fingerprint, False, target, emit_mode)
 
 def build_runtime_native_direct_program_if_supported_configured(raw_source, input_path, output_path, extension_mode, extension_root):
     return build_runtime_native_direct_program_if_supported_with_extension_config(raw_source, input_path, output_path, extension_mode, extension_root, "off")

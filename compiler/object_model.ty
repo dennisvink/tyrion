@@ -1,0 +1,159 @@
+# Tyrion Compiler
+# (c) 2026 Dennis Vink — https://drvink.com/
+# Project: https://github.com/dennisvink/
+# SPDX-License-Identifier: MIT
+#
+# Object-shard records are target-neutral metadata for independently assembled
+# program units. The record deliberately identifies an object by its content
+# and exported symbols, never by a checkout-specific source path.
+
+
+def object_shard_safe_field(value, field):
+    value = str(value)
+    if contains_text(value, "\n") or contains_text(value, "\r") or contains_text(value, "="):
+        fail("object-shard rejected code=invalid-field;field=" + field)
+    return value
+
+
+def object_shard_safe_symbols(symbols):
+    result = []
+    for symbol in symbols:
+        result = method_append(result, object_shard_safe_field(symbol, "symbol"))
+    return result
+
+
+def object_shard_create(target, kind, shard_id, content_fingerprint, symbols, interface_digest="", interface_dependencies=[]):
+    target = target_validate(target)
+    kind = object_shard_safe_field(kind, "kind")
+    if kind != "function" and kind != "module" and kind != "program-entry" and kind != "program-metadata" and kind != "root-runtime":
+        fail("object-shard rejected code=invalid-kind;kind=" + kind)
+    # v2 adds a distinct program-metadata input. Keep the reader compatible
+    # with v1 records rather than silently broadening that published schema.
+    record = {"contract": "tyrion-object-shard-v2"}
+    record["target_context"] = target_context_fingerprint(target)
+    record["target_id"] = target_id(target)
+    record["kind"] = kind
+    record["shard_id"] = object_shard_safe_field(shard_id, "shard-id")
+    record["content_fingerprint"] = object_shard_safe_field(content_fingerprint, "content-fingerprint")
+    record["symbols"] = object_shard_safe_symbols(symbols)
+    if interface_digest != "":
+        record["interface_digest"] = object_shard_safe_field(interface_digest, "interface-digest")
+    if len(interface_dependencies) > 0:
+        record["interface_dependencies"] = object_shard_safe_symbols(interface_dependencies)
+    if record["shard_id"] == "" or record["content_fingerprint"] == "":
+        fail("object-shard rejected code=missing-identity")
+    return record
+
+
+def object_shard_validate(record):
+    if record["contract"] != "tyrion-object-shard-v1" and record["contract"] != "tyrion-object-shard-v2":
+        fail("object-shard rejected code=invalid-contract")
+    if record["target_context"] == "" or record["target_id"] == "":
+        fail("object-shard rejected code=missing-target")
+    if record["kind"] != "function" and record["kind"] != "module" and record["kind"] != "program-entry" and record["kind"] != "root-runtime" and not (record["contract"] == "tyrion-object-shard-v2" and record["kind"] == "program-metadata"):
+        fail("object-shard rejected code=invalid-kind")
+    object_shard_safe_field(record["shard_id"], "shard-id")
+    object_shard_safe_field(record["content_fingerprint"], "content-fingerprint")
+    object_shard_safe_symbols(record["symbols"])
+    if "interface_digest" in record:
+        object_shard_safe_field(record["interface_digest"], "interface-digest")
+    if "interface_dependencies" in record:
+        object_shard_safe_symbols(record["interface_dependencies"])
+    return record
+def object_shard_manifest_text(record):
+    record = object_shard_validate(record)
+    text = record["contract"] + "\n"
+    text = text + "target-context=" + record["target_context"] + "\n"
+    text = text + "target=" + record["target_id"] + "\n"
+    text = text + "kind=" + record["kind"] + "\n"
+    text = text + "shard-id=" + record["shard_id"] + "\n"
+    text = text + "content-fingerprint=" + record["content_fingerprint"] + "\n"
+    if "interface_digest" in record:
+        text = text + "interface-digest=" + record["interface_digest"] + "\n"
+    if "interface_dependencies" in record:
+        index = 0
+        while index < len(record["interface_dependencies"]):
+            text = text + "interface-dependency." + str(index) + "=" + record["interface_dependencies"][index] + "\n"
+            index = index + 1
+        text = text + "interface-dependency.count=" + str(len(record["interface_dependencies"])) + "\n"
+    index = 0
+    while index < len(record["symbols"]):
+        text = text + "symbol." + str(index) + "=" + record["symbols"][index] + "\n"
+        index = index + 1
+    return text + "symbol.count=" + str(len(record["symbols"])) + "\n"
+
+
+def object_shard_write(record, path):
+    write_text_file(path, object_shard_manifest_text(record))
+    return path
+
+
+def object_shard_text_field(lines, field):
+    prefix = field + "="
+    value = none
+    for line in lines:
+        if line.startswith(prefix):
+            if value != none:
+                fail("object-shard rejected code=duplicate-field;field=" + field)
+            value = line[len(prefix):]
+    if value == none:
+        fail("object-shard rejected code=missing-field;field=" + field)
+    return value
+
+
+def object_shard_text_optional_field(lines, field):
+    prefix = field + "="
+    value = none
+    for line in lines:
+        if line.startswith(prefix):
+            if value != none:
+                fail("object-shard rejected code=duplicate-field;field=" + field)
+            value = line[len(prefix):]
+    return value
+
+
+def object_shard_read_text(text):
+    lines = split_inventory_text(text, "\n")
+    if len(lines) == 0 or (lines[0] != "tyrion-object-shard-v1" and lines[0] != "tyrion-object-shard-v2"):
+        fail("object-shard rejected code=invalid-contract")
+    symbol_count = int(object_shard_text_field(lines, "symbol.count"))
+    if symbol_count < 0:
+        fail("object-shard rejected code=invalid-symbol-count")
+    symbols = []
+    index = 0
+    while index < symbol_count:
+        symbols = method_append(symbols, object_shard_text_field(lines, "symbol." + str(index)))
+        index = index + 1
+    record = {"contract": lines[0], "target_context": object_shard_text_field(lines, "target-context"), "target_id": object_shard_text_field(lines, "target"), "kind": object_shard_text_field(lines, "kind"), "shard_id": object_shard_text_field(lines, "shard-id"), "content_fingerprint": object_shard_text_field(lines, "content-fingerprint"), "symbols": symbols}
+    interface_digest = object_shard_text_optional_field(lines, "interface-digest")
+    if interface_digest != none:
+        record["interface_digest"] = interface_digest
+    dependency_count_text = object_shard_text_optional_field(lines, "interface-dependency.count")
+    if dependency_count_text != none:
+        dependency_count = int(dependency_count_text)
+        if dependency_count < 1:
+            fail("object-shard rejected code=invalid-interface-dependency-count")
+        dependencies = []
+        dependency_idx = 0
+        while dependency_idx < dependency_count:
+            dependencies = method_append(dependencies, object_shard_text_field(lines, "interface-dependency." + str(dependency_idx)))
+            dependency_idx = dependency_idx + 1
+        record["interface_dependencies"] = dependencies
+    return object_shard_validate(record)
+
+
+def object_shard_read(path):
+    return object_shard_read_text(read_text_file(path))
+
+
+def object_shard_matches_target(record, target, allowed_kinds=[]):
+    record = object_shard_validate(record)
+    target = target_validate(target)
+    if record["target_context"] != target_context_fingerprint(target) or record["target_id"] != target_id(target):
+        return False
+    if len(allowed_kinds) == 0:
+        return True
+    for kind in allowed_kinds:
+        if record["kind"] == kind:
+            return True
+    return False

@@ -7,7 +7,7 @@
 
 
 
-def target_spec(os_name, arch):
+def target_spec_v1(os_name, arch):
     backend = ""
     entry = "_start"
     text_section = ".text"
@@ -80,10 +80,33 @@ def target_spec(os_name, arch):
     return {"contract": "tyrion-target-v1", "backend": backend, "backend_status": backend_status, "arch": arch, "os": os_name, "triple": arch + "-" + os_name, "object_format": object_format, "assembler_dialect": assembler_dialect, "calling_convention": calling_convention, "symbol_prefix": symbol_prefix, "linker": linker, "entry_symbol": entry, "text_section": text_section, "rodata_section": rodata_section, "data_section": data_section, "const_data_section": const_data_section, "asm_syntax": asm_syntax, "capabilities": capabilities, "operations": operations}
 
 
-def target_validate(target):
-    if target["contract"] != "tyrion-target-v1":
-        fail("invalid target contract version")
-    expected = target_spec(target["os"], target["arch"])
+def target_spec(os_name, arch):
+    # v2 retains the target's ABI description while making the stage policy
+    # explicit. Toolchain and sysroot selections are build-context inputs, not
+    # mutable target properties, so cached target identity stays portable.
+    target = target_spec_v1(os_name, arch)
+    target["contract"] = "tyrion-target-v2"
+    target["target_id"] = target["backend"]
+    if target["backend_status"] == "implemented":
+        target["compile_capability"] = "supported"
+        target["assembly_capability"] = "supported"
+        # The initial object lane uses the host system assembler. Cross-target
+        # object production becomes available only after a matching declared
+        # toolchain is introduced, but native object emission is real now.
+        target["object_capability"] = "system-or-configured-cross"
+        target["link_capability"] = "native-host"
+        target["run_capability"] = "native-host"
+    else:
+        target["compile_capability"] = "unsupported"
+        target["assembly_capability"] = "unsupported"
+        target["object_capability"] = "unsupported"
+        target["link_capability"] = "unsupported"
+        target["run_capability"] = "unsupported"
+    return target
+
+
+def target_validate_v1(target):
+    expected = target_spec_v1(target["os"], target["arch"])
     fields = ["backend", "backend_status", "triple", "object_format", "assembler_dialect", "calling_convention", "symbol_prefix", "linker", "entry_symbol", "text_section", "rodata_section", "data_section", "const_data_section", "asm_syntax", "capabilities", "operations"]
     idx = 0
     while idx < len(fields):
@@ -94,8 +117,102 @@ def target_validate(target):
     return target
 
 
+def target_v2_from_v1(target):
+    target_validate_v1(target)
+    return target_spec(target["os"], target["arch"])
+
+
+def target_validate(target):
+    # Old native successors can still materialize v1 records. Accept and
+    # normalize them at the boundary while all newly selected targets are v2.
+    if target["contract"] == "tyrion-target-v1":
+        return target_v2_from_v1(target)
+    if target["contract"] != "tyrion-target-v2":
+        fail("invalid target contract version")
+    expected = target_spec(target["os"], target["arch"])
+    fields = ["backend", "backend_status", "triple", "object_format", "assembler_dialect", "calling_convention", "symbol_prefix", "linker", "entry_symbol", "text_section", "rodata_section", "data_section", "const_data_section", "asm_syntax", "capabilities", "operations", "target_id", "compile_capability", "assembly_capability", "object_capability", "link_capability", "run_capability"]
+    idx = 0
+    while idx < len(fields):
+        field = fields[idx]
+        if target[field] != expected[field]:
+            fail("invalid target contract field: " + field)
+        idx = idx + 1
+    return target
+
+
+def target_from_id(target_id):
+    # Host discovery is only the default.  Every explicit target is resolved to
+    # the same validated contract before it reaches frontend or backend code.
+    if target_id == "host":
+        return host_target()
+    if target_id == "darwin-aarch64":
+        return target_validate(target_spec("darwin", "aarch64"))
+    if target_id == "linux-aarch64":
+        return target_validate(target_spec("linux", "aarch64"))
+    if target_id == "linux-x86_64":
+        return target_validate(target_spec("linux", "x86_64"))
+    if target_id == "windows-aarch64":
+        return target_validate(target_spec("windows", "aarch64"))
+    if target_id == "windows-x86_64":
+        return target_validate(target_spec("windows", "x86_64"))
+    fail("target-capability rejected code=unknown-target-id;target=" + target_id)
+
+
+def target_id(target):
+    return target_validate(target)["target_id"]
+
+
+def target_context(target, toolchain_id="host-default", sysroot_id="default"):
+    target = target_validate(target)
+    if toolchain_id == "":
+        fail("target-capability rejected code=missing-toolchain-id;target=" + target["target_id"])
+    if sysroot_id == "":
+        sysroot_id = "default"
+    return {"contract": "tyrion-target-context-v1", "target": target, "target_id": target["target_id"], "toolchain_id": toolchain_id, "sysroot_id": sysroot_id, "fingerprint": target["contract"] + ":" + target["target_id"] + ":toolchain=" + toolchain_id + ":sysroot=" + sysroot_id}
+
+
+def target_context_fingerprint(target, toolchain_id="host-default", sysroot_id="default"):
+    return target_context(target, toolchain_id, sysroot_id)["fingerprint"]
+
+
+def target_can_link_on_host(target, host):
+    target = target_validate(target)
+    host = target_validate(host)
+    return target["link_capability"] == "native-host" and target["backend"] == host["backend"]
+
+
+def target_can_run_on_host(target, host):
+    target = target_validate(target)
+    host = target_validate(host)
+    return target["run_capability"] == "native-host" and target["backend"] == host["backend"]
+
+
+def target_require_compilation(target):
+    target = backend_require_implemented(target)
+    if target["compile_capability"] != "supported":
+        fail("target-capability rejected code=compile-not-supported;target=" + target["target_id"] + ";operation=compile")
+    return target
+
+
+def target_require_assembly_emission(target):
+    # Assembly emission is a target-backend capability; it does not imply that
+    # this host owns a compatible linker, sysroot, or execution environment.
+    target = target_require_compilation(target)
+    target = backend_require_operation(target, "runtime-object")
+    if target["assembly_capability"] != "supported":
+        fail("target-capability rejected code=assembly-not-supported;target=" + target["target_id"] + ";operation=assembly")
+    return target
+
+
+def target_require_object_emission(target):
+    target = target_require_assembly_emission(target)
+    if target["object_capability"] != "system-or-configured-cross":
+        fail("target-capability rejected code=object-not-supported;target=" + target["target_id"] + ";operation=object")
+    return target
+
+
 def target_has_capability(target, capability):
-    target_validate(target)
+    target = target_validate(target)
     entries = split_inventory_text(target["capabilities"], ",")
     idx = 0
     while idx < len(entries):
@@ -106,14 +223,14 @@ def target_has_capability(target, capability):
 
 
 def backend_require_implemented(target):
-    target_validate(target)
+    target = target_validate(target)
     if target["backend_status"] != "implemented":
         fail("target-capability rejected code=backend-not-implemented;target=" + target["backend"] + ";operation=*")
     return target
 
 
 def backend_has_operation(target, operation):
-    target_validate(target)
+    target = target_validate(target)
     entries = split_inventory_text(target["operations"], ",")
     idx = 0
     while idx < len(entries):
@@ -131,15 +248,23 @@ def backend_require_operation(target, operation):
 
 
 def backend_require_host_link_compatible(target, host):
-    target_validate(target)
-    target_validate(host)
-    if target["backend"] != host["backend"]:
+    target = target_validate(target)
+    host = target_validate(host)
+    if not target_can_link_on_host(target, host):
         fail("target-capability rejected code=host-link-mismatch;target=" + target["backend"] + ";operation=link;host=" + host["backend"])
     return target
 
 
+def backend_require_host_run_compatible(target, host):
+    target = target_validate(target)
+    host = target_validate(host)
+    if not target_can_run_on_host(target, host):
+        fail("target-capability rejected code=host-run-mismatch;target=" + target["backend"] + ";operation=run;host=" + host["backend"])
+    return target
+
+
 def target_tcp_addrinfo_addr_offset(target):
-    target_validate(target)
+    target = target_validate(target)
     if target["os"] == "darwin":
         return 32
     if target["os"] == "linux":
@@ -148,7 +273,7 @@ def target_tcp_addrinfo_addr_offset(target):
 
 
 def target_tcp_socket_level(target):
-    target_validate(target)
+    target = target_validate(target)
     if target["os"] == "darwin":
         return 65535
     if target["os"] == "linux":
@@ -157,7 +282,7 @@ def target_tcp_socket_level(target):
 
 
 def target_tcp_send_timeout_option(target):
-    target_validate(target)
+    target = target_validate(target)
     if target["os"] == "darwin":
         return 4101
     if target["os"] == "linux":
@@ -166,7 +291,7 @@ def target_tcp_send_timeout_option(target):
 
 
 def target_tcp_recv_timeout_option(target):
-    target_validate(target)
+    target = target_validate(target)
     if target["os"] == "darwin":
         return 4102
     if target["os"] == "linux":
@@ -175,7 +300,7 @@ def target_tcp_recv_timeout_option(target):
 
 
 def target_contract_text(target):
-    target_validate(target)
+    target = target_validate(target)
     return target["contract"] + ":" + target["backend"] + ":" + target["backend_status"] + ":" + target["object_format"] + ":" + target["assembler_dialect"] + ":" + target["calling_convention"] + ":" + target["symbol_prefix"] + ":" + target["linker"] + ":" + target["capabilities"] + ":" + target["operations"]
 
 

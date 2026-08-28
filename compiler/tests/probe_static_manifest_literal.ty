@@ -1,0 +1,9 @@
+# A short direct-native regression for the predicate dispatch used by static
+# extension manifest parsing.  The two matching cases exercise opposite ends
+# of the receiver, and the two non-matching cases reject a plausible prefix or
+# suffix at the wrong end.
+line = "name = \"toolchain\""
+print(line.startswith("name = \""))
+print(line.endswith("\""))
+print(line.startswith("toolchain"))
+print(line.endswith("toolchain"))

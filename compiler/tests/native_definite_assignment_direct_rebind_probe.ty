@@ -1,0 +1,10 @@
+def make_module():
+    return {"value": "ok"}
+
+
+def rebind_and_read():
+    module = make_module()
+    return module["value"]
+
+
+print(rebind_and_read())

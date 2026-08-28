@@ -1,0 +1,31 @@
+def load_one():
+    return __tyrion_native_host_load("tls")
+
+def load_two():
+    return __tyrion_native_host_load("tls")
+
+def load_three():
+    return __tyrion_native_host_load("tls")
+
+def load_four():
+    return __tyrion_native_host_load("tls")
+
+def load_five():
+    return __tyrion_native_host_load("tls")
+
+def load_six():
+    return __tyrion_native_host_load("tls")
+
+def load_seven():
+    return __tyrion_native_host_load("tls")
+
+def load_eight():
+    return __tyrion_native_host_load("tls")
+
+def load_nine():
+    return __tyrion_native_host_load("tls")
+
+def load_ten():
+    return __tyrion_native_host_load("tls")
+
+print(True)

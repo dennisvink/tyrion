@@ -4,11 +4,16 @@ set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(cd -- "$script_dir/.." && pwd)
 mbedtls_dir="$repo_dir/modules/tls/vendor/mbedtls"
-package_build_dir="$repo_dir/build/native-packages"
+# Native TLS archives and the assembler payload which embeds them are target
+# artifacts.  Callers that build more than one target from one checkout must
+# place both under an isolated target root; otherwise a Darwin payload can be
+# handed to an ELF assembler (or vice versa).
+package_build_dir="${TYRION_NATIVE_PACKAGE_BUILD_DIR:-$repo_dir/build/native-packages}"
 mbedtls_build_dir="$package_build_dir/mbedtls"
 archive_path="$package_build_dir/libtyrion_tls.a"
 bridge_object="$package_build_dir/tyrion_tls.o"
-payload_dir="$repo_dir/extensions/toolchain/build"
+extension_root="${TYRION_EXTENSION_ROOT:-$repo_dir/extensions}"
+payload_dir="$extension_root/toolchain/build"
 payload_path="$payload_dir/payload.S"
 
 if [[ ! -f "$mbedtls_dir/LICENSE" ]]; then

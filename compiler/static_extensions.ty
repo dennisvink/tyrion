@@ -27,12 +27,23 @@ def static_extension_builtin(name):
         return {"present": True, "name": "tls", "call_symbol": "tyext_tls_call_v1", "resource": "tls"}
     return {"present": False, "name": "", "call_symbol": "", "resource": ""}
 
+def static_extension_owned_text(text):
+    # A no-op-looking concatenation can preserve the same borrowed backing
+    # storage in the self-hosted runtime. Build an independent character
+    # sequence so manifest and AST slices survive later parser/cache work.
+    result = ""
+    index = 0
+    while index < len(text):
+        result = result + text[index]
+        index = index + 1
+    return result
+
 def static_extension_manifest_scalar(source, key):
     prefix = key + " = \""
     for line in split_inventory_text(source, "\n"):
         line = trim_spaces(line)
         if line.startswith(prefix) and line.endswith("\""):
-            return line[len(prefix):len(line) - 1]
+            return static_extension_owned_text(line[len(prefix):len(line) - 1])
     return ""
 
 def static_extension_manifest_sources(source):
@@ -48,7 +59,7 @@ def static_extension_manifest_sources(source):
                 item = trim_spaces(item)
                 if len(item) < 2 or not item.startswith("\"") or not item.endswith("\""):
                     fail("invalid static extension sources list")
-                value = item[1:len(item) - 1]
+                value = static_extension_owned_text(item[1:len(item) - 1])
                 if contains_text(value, "\""):
                     fail("invalid static extension source path: " + value)
                 sources = method_append(sources, value)
@@ -58,19 +69,40 @@ def static_extension_manifest_sources(source):
 def static_extension_identifier_valid(value):
     if value == "":
         return False
+    # The compiler runtime must be able to retain source-token slices after
+    # parsing has moved on.  Do not use ordering operations on an indexed
+    # slice here: native object shards can represent that one-character value
+    # as a borrowed view, while the generic string-ordering operation expects
+    # an owned string.  Materialize the character and use exact equality-only
+    # membership, which has the same ASCII identifier policy without crossing
+    # that representation boundary.
+    alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
     idx = 0
     while idx < len(value):
-        valid = is_ident_continue(value[idx])
+        character = static_extension_owned_text(value[idx])
+        candidate_idx = 0
+        valid = False
+        while candidate_idx < len(alphabet):
+            if character == alphabet[candidate_idx]:
+                valid = True
+                break
+            candidate_idx = candidate_idx + 1
         if valid != True:
             return False
         idx = idx + 1
     return True
 
+
 def static_extension_append_unique(names, name):
-    # AST string fields can be borrowed views in the C-seed compiler.  Own the
-    # extension name before retaining it in the application plan; otherwise a
-    # later parser/compiler allocation can invalidate the view.
-    name = "" + name
+    # AST string fields can be borrowed views in either the C seed or a native
+    # successor.  Materialize the name before *any* character-level work: a
+    # view may print correctly as a whole while indexed characters no longer
+    # carry the canonical string representation used by the lexer helpers.
+    # The owned value is then safe for validation, deduplication, and later
+    # retention in the application plan.
+    name = static_extension_owned_text(name)
+    if static_extension_identifier_valid(name) != True:
+        fail("invalid static extension name: " + name)
     present = list_contains_string(names, name)
     if present != True:
         names = method_append(names, name)
@@ -83,8 +115,7 @@ def static_extension_expr_names_configured(expr, names, dynamic_allowed):
             if len(expr["args"]) != 1:
                 fail("host extension load requires one extension name")
             if expr["args"][0]["kind"] == "string":
-                extension_name = "" + expr["args"][0]["value"]
-                names = static_extension_append_unique(names, extension_name)
+                names = static_extension_append_unique(names, expr["args"][0]["value"])
             elif not dynamic_allowed:
                 fail("non-literal host load requires --ext-dynamic=allowed")
         names = static_extension_expr_names_configured(expr["callee"], names, dynamic_allowed)
@@ -185,11 +216,12 @@ def static_extension_plan_configured(program, extension_root, dynamic_mode):
         # validation path.
         builtin = static_extension_builtin(name)
         if builtin["present"]:
-            extensions = method_append(extensions, {"id": len(extensions), "name": name, "call_symbol": builtin["call_symbol"], "sources": [], "source_count": 0, "source_path": "", "embedded_resource": builtin["resource"]})
+            # Retain the canonical compiler-owned literals rather than the
+            # source-token view that selected the built-in. Later staged
+            # lowering releases the input AST deliberately, and extension
+            # metadata must remain valid independently of that graph.
+            extensions = method_append(extensions, {"id": len(extensions), "name": builtin["name"], "call_symbol": builtin["call_symbol"], "sources": [], "source_count": 0, "source_path": "", "embedded_resource": builtin["resource"]})
             continue
-        name_valid = static_extension_identifier_valid(name)
-        if name_valid != True:
-            fail("invalid static extension name: " + name)
         root = extension_root + "/" + name
         manifest_path = root + "/ext.toml"
         manifest = read_text_file(manifest_path)
@@ -197,6 +229,10 @@ def static_extension_plan_configured(program, extension_root, dynamic_mode):
         abi = static_extension_manifest_scalar(manifest, "abi")
         call_symbol = static_extension_manifest_scalar(manifest, "call_symbol")
         sources = static_extension_manifest_sources(manifest)
+        # These values were materialized by static_extension_manifest_scalar
+        # and static_extension_append_unique.  Compare the complete owned
+        # strings: indexing can produce a borrowed one-character view in a
+        # native successor after the parser has released its source buffer.
         if manifest_name != name:
             fail("static extension manifest name mismatch: " + name)
         if abi != "tyrion-host-ext/v1":

@@ -1,0 +1,9 @@
+# Regression probe: escaped one-byte string literals and indexed characters
+# must share the same canonical representation in a native successor.
+text = "a\nb"
+print(len(text))
+print(text[0] == "a")
+print(text[1] == "\n")
+print(text[1] == "\\")
+print(text[1] == "n")
+print(text[2] == "b")

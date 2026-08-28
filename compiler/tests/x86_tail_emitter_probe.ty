@@ -1,0 +1,22 @@
+import compiler.generated_abi
+import compiler.native_ir_verify
+import compiler.writer
+import compiler.targets.linux_x86_64_native
+
+
+def main(path):
+    out = asm_writer_open(path)
+    out = asm_writer_set_backend(out, "linux-x86_64")
+    module = {}
+    module["primitive_implementations"] = ["writer_open", "tcp_connect", "tls_write", "ascii_text", "ansi_escape", "input", "cache_encode", "cache_decode"]
+    module["functions"] = []
+    module["constants"] = []
+    module["streaming_verified"] = True
+    module["stream_operation_inventory"] = ["print_int", "print_bool", "direct_slot_release", "direct_slot_set_string", "direct_slot_dict_new", "direct_iterator_new", "direct_file_open", "direct_process_argv", "direct_primitive_call"]
+    module["extensions"] = []
+    module["dynamic_extension_mode"] = "off"
+    module["dynamic_extension_root"] = ""
+    out = emit_linux_x86_64_native_v2_tail_asm_into(out, module)
+    size = asm_writer_bytes(out)
+    asm_writer_close(out)
+    return size

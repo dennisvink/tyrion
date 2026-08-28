@@ -1689,6 +1689,15 @@ def x86_native_module_has_operation(module, op):
     return False
 
 
+def x86_native_module_has_any_operation(module, operations):
+    operation_idx = 0
+    while operation_idx < len(operations):
+        if x86_native_module_has_operation(module, operations[operation_idx]):
+            return True
+        operation_idx = operation_idx + 1
+    return False
+
+
 def x86_native_module_has_primitive_implementation(module, implementation):
     if "primitive_implementations" in module:
         implementation_idx = 0
@@ -1716,16 +1725,25 @@ def x86_native_module_has_primitive_implementation(module, implementation):
     return False
 
 
+def x86_native_module_has_any_primitive_implementation(module, implementations):
+    implementation_idx = 0
+    while implementation_idx < len(implementations):
+        if x86_native_module_has_primitive_implementation(module, implementations[implementation_idx]):
+            return True
+        implementation_idx = implementation_idx + 1
+    return False
+
+
 def x86_native_module_has_writer_primitive(module):
-    return x86_native_module_has_primitive_implementation(module, "writer_open") or x86_native_module_has_primitive_implementation(module, "writer_append") or x86_native_module_has_primitive_implementation(module, "writer_close") or x86_native_module_has_primitive_implementation(module, "writer_bytes") or x86_native_module_has_primitive_implementation(module, "writer_set_backend") or x86_native_module_has_primitive_implementation(module, "writer_is_x86")
+    return x86_native_module_has_any_primitive_implementation(module, ["writer_open", "writer_append", "writer_close", "writer_bytes", "writer_set_backend", "writer_is_x86"])
 
 
 def x86_native_module_has_ast_builder_primitive(module):
-    return x86_native_module_has_primitive_implementation(module, "ast_builder_create") or x86_native_module_has_primitive_implementation(module, "ast_builder_len") or x86_native_module_has_primitive_implementation(module, "ast_builder_append") or x86_native_module_has_primitive_implementation(module, "ast_builder_finish") or x86_native_module_has_primitive_implementation(module, "ast_builder_get") or x86_native_module_has_primitive_implementation(module, "token_builder_count") or x86_native_module_has_primitive_implementation(module, "token_builder_append") or x86_native_module_has_primitive_implementation(module, "token_builder_field") or x86_native_module_has_primitive_implementation(module, "lex")
+    return x86_native_module_has_any_primitive_implementation(module, ["ast_builder_create", "ast_builder_len", "ast_builder_append", "ast_builder_finish", "ast_builder_get", "token_builder_count", "token_builder_append", "token_builder_field", "lex"])
 
 
 def x86_native_module_has_extension_primitive(module):
-    return x86_native_module_has_primitive_implementation(module, "host_load") or x86_native_module_has_primitive_implementation(module, "host_call") or x86_native_module_has_primitive_implementation(module, "host_unload")
+    return x86_native_module_has_any_primitive_implementation(module, ["host_load", "host_call", "host_unload"])
 
 
 def x86_native_v2_primitive_implementation_supported(implementation):
@@ -23035,7 +23053,12 @@ def x86_native_emit_v2_value_expression_runtime(out):
     out = x86_native_line(out, "cmpq 8(%rsp), %r15")
     out = x86_native_line(out, "ja .L_tyrion_direct_method_predicate_false")
     out = x86_native_line(out, "movq 0(%rsp), %rdi")
-    out = x86_native_line(out, "cmpl $8, %r14d")
+    # Method id 8 is startswith and 9 is endswith.  The prior comparison
+    # inverted those two cases, so both predicates compared against the wrong
+    # end of the receiver.  Compiler manifest parsing relies on these exact
+    # checks, which made a self-hosted x86 successor reject every static
+    # extension as a name mismatch.
+    out = x86_native_line(out, "cmpl $9, %r14d")
     out = x86_native_line(out, "jne .L_tyrion_direct_method_predicate_compare")
     out = x86_native_line(out, "addq 8(%rsp), %rdi")
     out = x86_native_line(out, "subq %r15, %rdi")
@@ -23389,7 +23412,7 @@ def x86_native_emit_v2_value_expression_runtime(out):
 
 
 def x86_native_emit_v2_aggregate_runtime(out, include_string_print, include_writer, include_ast_builder, module):
-    include_file = x86_native_module_has_operation(module, "direct_file_open") or x86_native_module_has_operation(module, "direct_file_method") or x86_native_module_has_operation(module, "direct_file_close")
+    include_file = x86_native_module_has_any_operation(module, ["direct_file_open", "direct_file_method", "direct_file_close"])
     include_tcp = x86_native_module_has_primitive_implementation(module, "tcp_connect") or x86_native_module_has_primitive_implementation(module, "tcp_write") or x86_native_module_has_primitive_implementation(module, "tcp_read") or x86_native_module_has_primitive_implementation(module, "tcp_close")
     out = x86_native_emit_v2_value_expression_runtime(out)
     out = asm_writer_append(out, ".globl __tyrion_direct_slot_release\n")
@@ -25209,13 +25232,57 @@ def x86_native_emit_v2_aggregate_runtime(out, include_string_print, include_writ
 
 
 def emit_linux_x86_64_native_v2_header_asm_into(out):
-    out = asm_writer_append(out, "# tyrion-native-ir-v2 target=x86_64-linux execution=direct\n")
-    out = asm_writer_append(out, ".section .note.GNU-stack,\"\",@progbits\n")
-    out = asm_writer_append(out, ".bss\n")
-    out = asm_writer_append(out, ".p2align 3\n")
-    out = asm_writer_append(out, "__tyrion_native_process_argc:\n.quad 0\n")
-    out = asm_writer_append(out, "__tyrion_native_process_argv:\n.quad 0\n")
-    return asm_writer_append(out, ".text\n")
+    return asm_writer_append(out, x86_native_program_metadata_asm_text())
+
+def x86_native_program_metadata_asm_text():
+    # This is the isolated program-metadata object shared by every direct
+    # x86 build for a target contract. Keep it as plain text so the object
+    # cache can derive and validate its exact key before creating a temporary
+    # assembly file on a warm hit.
+    return "# tyrion-native-ir-v2 target=x86_64-linux execution=direct\n.section .note.GNU-stack,\"\",@progbits\n.bss\n.p2align 3\n__tyrion_native_process_argc:\n.quad 0\n__tyrion_native_process_argv:\n.quad 0\n.text\n"
+
+
+def x86_native_tail_cache_fingerprint(module, cache_context):
+    # Function fragments own their local constants.  The root tail depends
+    # only on this compact runtime-facing record, not on every function body.
+    # The complete compiler context remains part of the identity so any emitter
+    # or ABI source edit invalidates the cache safely.
+    # Build the record incrementally: the C seed evaluator intentionally keeps
+    # call/assignment expressions small when fields originate in streamed
+    # records, while the native successors accept either representation.
+    tail_record = {}
+    tail_record["contract"] = "tyrion-x86-root-tail-v1"
+    tail_record["components"] = module["components"]
+    tail_record["operations"] = module["stream_operation_inventory"]
+    tail_record["primitive_implementations"] = module["primitive_implementations"]
+    tail_record["primitive_capabilities"] = module["primitive_capabilities"]
+    tail_record["constants"] = module["constants"]
+    tail_record["classes"] = module["class_descriptors"]
+    tail_record["extensions"] = module["extensions"]
+    tail_record["dynamic_extension_mode"] = module["dynamic_extension_mode"]
+    tail_record["dynamic_extension_root"] = module["dynamic_extension_root"]
+    return cache_context + "\ntail-runtime=" + __tyrion_native_cache_encode(tail_record)
+
+
+def x86_native_emit_cached_tail(out, module, cache_dir="", cache_context="", cache_stats=False):
+    if cache_dir == "":
+        return emit_linux_x86_64_native_v2_tail_asm_into(out, module)
+    fingerprint = x86_native_tail_cache_fingerprint(module, cache_context)
+    cache_path = cache_dir + "/" + str(compiler_cache_path_hash(fingerprint)) + ".tailcache"
+    cached_tail = generated_asm_cache_load(cache_path, fingerprint)
+    if cached_tail != "":
+        generated_asm_cache_note(cache_dir, "tail-hit", cache_stats)
+        return asm_writer_append(out, cached_tail)
+    generated_asm_cache_note(cache_dir, "tail-miss", cache_stats)
+    temporary_path = cache_path + ".source.tmp"
+    tail_writer = asm_writer_open(temporary_path)
+    tail_writer = emit_linux_x86_64_native_v2_tail_asm_into(tail_writer, module)
+    asm_writer_close(tail_writer)
+    tail_source = read_text_file(temporary_path)
+    if not __tyrion_run_tool("rm", ["-f", temporary_path])["ok"]:
+        fail("compiler cache rejected code=cleanup-failed;path=" + temporary_path)
+    generated_asm_cache_store(cache_path, fingerprint, tail_source)
+    return asm_writer_append(out, tail_source)
 
 
 def emit_linux_x86_64_native_v2_tail_asm_into(out, module):
@@ -25229,25 +25296,31 @@ def emit_linux_x86_64_native_v2_tail_asm_into(out, module):
     has_ast_builder_primitive = x86_native_module_has_ast_builder_primitive(module)
     has_extension_primitive = x86_native_module_has_extension_primitive(module)
     has_process_capture_primitive = x86_native_module_has_primitive_implementation(module, "run_tool_capture")
-    has_tcp_primitive = x86_native_module_has_primitive_implementation(module, "tcp_connect") or x86_native_module_has_primitive_implementation(module, "tcp_write") or x86_native_module_has_primitive_implementation(module, "tcp_read") or x86_native_module_has_primitive_implementation(module, "tcp_close")
-    has_tls_primitive = x86_native_module_has_primitive_implementation(module, "tls_write") or x86_native_module_has_primitive_implementation(module, "tls_read")
+    has_tcp_primitive = x86_native_module_has_any_primitive_implementation(module, ["tcp_connect", "tcp_write", "tcp_read", "tcp_close"])
+    has_tls_primitive = x86_native_module_has_any_primitive_implementation(module, ["tls_write", "tls_read"])
     has_ascii_text_primitive = x86_native_module_has_primitive_implementation(module, "ascii_text")
-    has_terminal_primitive = x86_native_module_has_primitive_implementation(module, "terminal_read_key") or x86_native_module_has_primitive_implementation(module, "ansi_escape")
+    has_terminal_primitive = x86_native_module_has_any_primitive_implementation(module, ["terminal_read_key", "ansi_escape"])
     has_input_primitive = x86_native_module_has_primitive_implementation(module, "input")
-    if x86_native_module_has_operation(module, "print_int") or x86_native_module_has_operation(module, "direct_print_string_slot") or has_input_primitive:
+    has_string_slots = x86_native_module_has_operation(module, "direct_print_string_slot")
+    has_print_int = x86_native_module_has_operation(module, "print_int")
+    has_print_bool = x86_native_module_has_operation(module, "print_bool")
+    has_aggregate_runtime = x86_native_module_has_any_operation(module, ["direct_slot_release", "direct_slots_release_contiguous", "direct_slot_set_bool_owned", "direct_slot_set_none_owned", "direct_slot_set_float_text", "direct_slot_set_string", "direct_slot_set_collection", "direct_slot_collection_new", "direct_collection_append_owned", "direct_slot_dict_new", "direct_dict_put_owned", "direct_slot_copy_owned", "direct_iterator_new", "direct_iterator_next", "direct_iterable_prepare", "direct_iterable_item_copy", "direct_print_string_slot", "direct_generator_new", "direct_generator_saved_slot", "direct_object_new", "direct_object_class_id", "direct_object_attr_get", "direct_object_attr_set", "direct_file_open", "direct_file_method", "direct_file_close", "direct_process_argv", "direct_primitive_call"])
+    has_file_runtime = x86_native_module_has_any_operation(module, ["direct_file_open", "direct_file_method", "direct_file_close"])
+    has_iterator_runtime = x86_native_module_has_any_operation(module, ["direct_iterator_new", "direct_iterator_next"])
+    if has_print_int or has_string_slots or has_input_primitive:
         out = x86_native_emit_v2_print_runtime(out)
-    if x86_native_module_has_operation(module, "direct_print_string_slot") or has_input_primitive:
+    if has_string_slots or has_input_primitive:
         out = x86_native_emit_v2_print_float_runtime(out)
-    if x86_native_module_has_operation(module, "print_bool") or x86_native_module_has_operation(module, "direct_print_string_slot") or has_input_primitive:
+    if has_print_bool or has_string_slots or has_input_primitive:
         out = x86_native_emit_v2_print_bool_runtime(out)
-    if x86_native_module_has_operation(module, "direct_slot_release") or x86_native_module_has_operation(module, "direct_slots_release_contiguous") or x86_native_module_has_operation(module, "direct_slot_set_bool_owned") or x86_native_module_has_operation(module, "direct_slot_set_none_owned") or x86_native_module_has_operation(module, "direct_slot_set_float_text") or x86_native_module_has_operation(module, "direct_slot_set_string") or x86_native_module_has_operation(module, "direct_slot_set_collection") or x86_native_module_has_operation(module, "direct_slot_collection_new") or x86_native_module_has_operation(module, "direct_collection_append_owned") or x86_native_module_has_operation(module, "direct_slot_dict_new") or x86_native_module_has_operation(module, "direct_dict_put_owned") or x86_native_module_has_operation(module, "direct_slot_copy_owned") or x86_native_module_has_operation(module, "direct_iterator_new") or x86_native_module_has_operation(module, "direct_iterator_next") or x86_native_module_has_operation(module, "direct_iterable_prepare") or x86_native_module_has_operation(module, "direct_iterable_item_copy") or x86_native_module_has_operation(module, "direct_print_string_slot") or x86_native_module_has_operation(module, "direct_generator_new") or x86_native_module_has_operation(module, "direct_generator_saved_slot") or x86_native_module_has_operation(module, "direct_object_new") or x86_native_module_has_operation(module, "direct_object_class_id") or x86_native_module_has_operation(module, "direct_object_attr_get") or x86_native_module_has_operation(module, "direct_object_attr_set") or x86_native_module_has_operation(module, "direct_file_open") or x86_native_module_has_operation(module, "direct_file_method") or x86_native_module_has_operation(module, "direct_file_close") or x86_native_module_has_operation(module, "direct_process_argv") or x86_native_module_has_operation(module, "direct_primitive_call"):
+    if has_aggregate_runtime:
         # The aggregate runtime's primitive paths (notably input()) can call
         # the canonical string printer even when the operation inventory does
         # not retain a direct_print_string_slot entry.  Keep that dependency
         # in the same emitted component so native programs never end up with
         # a dangling __tyrion_direct_print_string reference.
         out = x86_native_emit_v2_aggregate_runtime(out, True, has_writer_primitive, has_ast_builder_primitive, module)
-    if x86_native_module_has_operation(module, "direct_file_open") or x86_native_module_has_operation(module, "direct_file_method") or x86_native_module_has_operation(module, "direct_file_close"):
+    if has_file_runtime:
         out = x86_native_emit_v2_file_runtime(out)
     if x86_native_module_has_operation(module, "direct_process_argv"):
         out = x86_native_emit_v2_process_runtime(out)
@@ -25294,9 +25367,14 @@ def emit_linux_x86_64_native_v2_tail_asm_into(out, module):
         out = x86_native_emit_byte_span(out, constant["value"])
         out = asm_writer_append(out, ".byte 0\n")
         constant_idx = constant_idx + 1
-    if x86_native_module_has_operation(module, "print_int") or x86_native_module_has_operation(module, "direct_print_string_slot"):
+    # The aggregate runtime is emitted with the canonical string printer even
+    # when its operation inventory does not retain a direct string-print slot.
+    # Keep the printer's format and representation literals in that same
+    # ownership boundary so a capability-only aggregate cannot leave temporary
+    # local labels unresolved in its object.
+    if has_print_int or has_string_slots or has_aggregate_runtime:
         out = asm_writer_append(out, ".L_tyrion_direct_int_format:\n.asciz \"%lld\"\n")
-    if x86_native_module_has_operation(module, "direct_print_string_slot"):
+    if has_string_slots or has_aggregate_runtime:
         out = asm_writer_append(out, ".L_tyrion_direct_float_format:\n.asciz \"%.15g\"\n")
         out = asm_writer_append(out, ".L_tyrion_direct_lbracket:\n.ascii \"[\"\n")
         out = asm_writer_append(out, ".L_tyrion_direct_rbracket:\n.ascii \"]\"\n")
@@ -25306,10 +25384,10 @@ def emit_linux_x86_64_native_v2_tail_asm_into(out, module):
         out = asm_writer_append(out, ".L_tyrion_direct_rbrace:\n.ascii \"}\"\n")
         out = asm_writer_append(out, ".L_tyrion_direct_comma_space:\n.ascii \", \"\n")
         out = asm_writer_append(out, ".L_tyrion_direct_colon_space:\n.ascii \": \"\n")
-    if x86_native_module_has_operation(module, "print_bool") or x86_native_module_has_operation(module, "direct_print_string_slot"):
+    if has_print_bool or has_string_slots or has_aggregate_runtime:
         out = asm_writer_append(out, ".L_tyrion_direct_bool_true:\n.ascii \"True\"\n")
         out = asm_writer_append(out, ".L_tyrion_direct_bool_false:\n.ascii \"False\"\n")
-    if x86_native_module_has_operation(module, "direct_print_string_slot"):
+    if has_string_slots or has_aggregate_runtime:
         out = asm_writer_append(out, ".L_tyrion_direct_none_text:\n.ascii \"none\"\n")
         out = asm_writer_append(out, ".L_tyrion_direct_generator_text:\n.ascii \"<generator object>\"\n")
         if "class_descriptors" in module:
@@ -25337,7 +25415,7 @@ def emit_linux_x86_64_native_v2_tail_asm_into(out, module):
             terminal_key = terminal_keys[terminal_key_idx]
             out = asm_writer_append(out, ".L_tyrion_native_key_" + terminal_key + ":\n.ascii \"" + terminal_key + "\"\n")
             terminal_key_idx = terminal_key_idx + 1
-    if x86_native_module_has_operation(module, "direct_iterator_new") or x86_native_module_has_operation(module, "direct_iterator_next"):
+    if has_iterator_runtime:
         out = asm_writer_append(out, ".text\n")
         out = x86_native_emit_v2_iterable_runtime(out)
         out = x86_native_emit_dispatch_runtime(out, {"id": 999999})
@@ -25345,8 +25423,51 @@ def emit_linux_x86_64_native_v2_tail_asm_into(out, module):
     return out
 
 
-def x86_native_emit_cached_function(out, function, cache_dir, cache_context, cache_stats=False, trusted_fingerprint=""):
-    if cache_dir == "":
+def x86_native_emit_function_shard(out, function_name, fragment, cache_name, cache_dir, cache_stats, shard_dir, shard_kind="function", module_identity="", function_identity="", interface_digest="", interface_dependencies=[]):
+    if shard_dir == "":
+        return asm_writer_append(out, fragment)
+    asm_path = shard_dir + "/" + cache_name + ".s"
+    object_path = shard_dir + "/" + cache_name + ".o"
+    # A function can call another generated function from a different object
+    # shard.  Keep the old visibility for the monolithic assembly path, but
+    # export every shard entry point for the object-link path.
+    # Keep an explicit non-executable-stack marker in every independently
+    # assembled function object. A relocatable module link otherwise drops
+    # the root translation unit's note and makes the final ELF linker infer an
+    # executable stack from the compacted module object.
+    shard_fingerprint = "tyrion-x86-object-shard-v2\n" + cache_name + "\n" + fragment
+    shard_target = target_spec("linux", "x86_64")
+    # A warm object hit is already a validated target-native function body.
+    # Do not reconstruct its standalone assembly source merely to let the
+    # generic assembler cache discover the same hit a second time.
+    if not restore_runtime_native_object_cache(shard_target, object_path, cache_dir, shard_fingerprint, cache_stats, [function_name]):
+        write_text_file(asm_path, ".text\n.globl " + function_name + "\n" + fragment + "\n.section .note.GNU-stack,\"\",@progbits\n")
+        assemble_runtime_native_object_cached(shard_target, asm_path, object_path, cache_dir, shard_fingerprint, cache_stats, True, [function_name])
+    object_shard_write(object_shard_create(target_spec("linux", "x86_64"), shard_kind, cache_name, str(compiler_cache_path_hash(shard_fingerprint)), [function_name], interface_digest, interface_dependencies), object_path + ".tyobj")
+    list_path = shard_dir + "/objects.list"
+    append_text_file(list_path, object_path + "\n")
+    if shard_kind == "function":
+        # Preserve independently cached function inputs, but record their
+        # stable module membership so a native builder can compact them into
+        # one final-link object per ordinary module. This is an internal
+        # staging index only; portable sidecars expose the path-free module
+        # shard id written by x86_native_compact_function_shards below.
+        if contains_text(module_identity, "\t") or contains_text(module_identity, "\n") or contains_text(module_identity, "\r"):
+            fail("compiler shard rejected code=invalid-module-identity")
+        if function_identity == "" or contains_text(function_identity, "\t") or contains_text(function_identity, "\n") or contains_text(function_identity, "\r"):
+            fail("compiler shard rejected code=invalid-function-identity")
+        if contains_text(interface_digest, "\t") or contains_text(interface_digest, "\n") or contains_text(interface_digest, "\r"):
+            fail("compiler shard rejected code=invalid-interface-digest")
+        interface_dependency_text = x86_native_interface_dependency_text(interface_dependencies)
+        module_id = str(len(module_identity)) + "-" + str(compiler_cache_short_text_hash(module_identity))
+        append_text_file(shard_dir + "/function-shards.list", module_id + "\t" + module_identity + "\t" + cache_name + "\t" + object_path + "\t" + function_name + "\t" + function_identity + "\t" + interface_digest + "\t" + interface_dependency_text + "\n")
+    else:
+        append_text_file(shard_dir + "/nonmodule-objects.list", object_path + "\n")
+    return out
+
+
+def x86_native_emit_cached_function(out, function, cache_dir, cache_context, cache_stats=False, trusted_fingerprint="", shard_dir=""):
+    if cache_dir == "" and shard_dir == "":
         return x86_native_emit_v2_function(out, function)
     if "module_fingerprint" in function:
         if function["module_fingerprint"] == "":
@@ -25367,12 +25488,25 @@ def x86_native_emit_cached_function(out, function, cache_dir, cache_context, cac
     module_identity = ""
     if "module_path" in function:
         module_identity = function["module_path"]
+    function_identity = x86_native_function_shard_identity(function)
+    interface_digest = ""
+    interface_dependencies = []
+    if "consumed_interface_digest" in function:
+        interface_digest = function["consumed_interface_digest"]
+    if "consumed_interface_dependencies" in function:
+        interface_dependencies = function["consumed_interface_dependencies"]
     cache_name = str(compiler_cache_path_hash(fingerprint)) + "-" + str(compiler_cache_short_text_hash(module_identity)) + "-" + str(compiler_cache_short_text_hash(function["name"]))
     cache_path = cache_dir + "/" + cache_name + ".unitcache"
+    shard_kind = "function"
+    # `main` is the native program's independently linkable entry object. It
+    # is not a reusable library function, even though it shares the same
+    # lowering/assembly machinery as ordinary function shards.
+    if function["id"] == 0:
+        shard_kind = "program-entry"
     cached = generated_asm_cache_load(cache_path, fingerprint)
     if cached != "":
         generated_asm_cache_note(cache_dir, "unit-hit", cache_stats)
-        return asm_writer_append(out, cached)
+        return x86_native_emit_function_shard(out, function["name"], cached, cache_name, cache_dir, cache_stats, shard_dir, shard_kind, module_identity, function_identity, interface_digest, interface_dependencies)
     generated_asm_cache_note(cache_dir, "unit-miss", cache_stats)
     temporary_path = cache_path + ".fragment.tmp"
     fragment_writer = asm_writer_open(temporary_path)
@@ -25382,10 +25516,200 @@ def x86_native_emit_cached_function(out, function, cache_dir, cache_context, cac
     if not __tyrion_run_tool("rm", ["-f", temporary_path])["ok"]:
         fail("compiler cache rejected code=cleanup-failed;path=" + temporary_path)
     generated_asm_cache_store(cache_path, fingerprint, fragment)
-    return asm_writer_append(out, fragment)
+    return x86_native_emit_function_shard(out, function["name"], fragment, cache_name, cache_dir, cache_stats, shard_dir, shard_kind, module_identity, function_identity, interface_digest, interface_dependencies)
+
+
+def x86_native_function_shard_fields(line):
+    fields = split_inventory_text(line, "\t")
+    # The runtime string splitter deliberately omits a trailing empty item.
+    # An index with no consumed interface dependencies therefore has seven
+    # in-memory fields even though its on-disk record has the required eighth
+    # (empty) column. Normalize that representation before validating it.
+    if len(fields) == 7:
+        fields = method_append(fields, "")
+    if len(fields) != 8:
+        fail("compiler shard rejected code=invalid-function-shard-index")
+    if fields[0] == "" or fields[1] == "" or fields[2] == "" or fields[3] == "" or fields[4] == "" or fields[5] == "":
+        fail("compiler shard rejected code=incomplete-function-shard-index")
+    return fields
+
+
+def x86_native_function_shard_identity(function):
+    # The partition key is deliberately semantic rather than positional. A
+    # newly inserted sibling therefore does not move established callables to
+    # another module shard merely because its transient lowering ID changed.
+    source_name = function["name"]
+    if "source_name" in function and function["source_name"] != "":
+        source_name = function["source_name"]
+    callable_kind = "function"
+    if "callable_kind" in function and function["callable_kind"] != "":
+        callable_kind = function["callable_kind"]
+    method_name = ""
+    if "method_name" in function:
+        method_name = function["method_name"]
+    source_arity = ""
+    if "source_arity" in function:
+        source_arity = str(function["source_arity"])
+    class_id = ""
+    if "class_id" in function:
+        class_id = str(function["class_id"])
+    generator_constructor = "false"
+    if "is_generator_constructor" in function and function["is_generator_constructor"]:
+        generator_constructor = "true"
+    return "tyrion-x86-function-identity-v1|source=" + source_name + "|kind=" + callable_kind + "|method=" + method_name + "|arity=" + source_arity + "|class=" + class_id + "|generator-constructor=" + generator_constructor
+
+
+def x86_native_interface_dependency_text(dependencies):
+    text = ""
+    idx = 0
+    while idx < len(dependencies):
+        digest = dependencies[idx]
+        if digest == "" or contains_text(digest, "\t") or contains_text(digest, "\n") or contains_text(digest, "\r") or contains_text(digest, ","):
+            fail("compiler shard rejected code=invalid-interface-dependency")
+        if idx > 0:
+            text = text + ","
+        text = text + digest
+        idx = idx + 1
+    return text
+
+
+def x86_native_interface_dependency_list(text):
+    if text == "":
+        return []
+    return split_inventory_text(text, ",")
+
+
+def x86_native_module_shard_partition_count(function_count):
+    # The regular module-object boundary is one object. Larger compiler
+    # modules receive deterministic hash partitions, capped at 96 function
+    # inputs each so relocatable linking stays bounded without making normal
+    # application modules needlessly fragmented.
+    functions_per_partition = 96
+    if function_count <= functions_per_partition:
+        return 1
+    return int((function_count + functions_per_partition - 1) / functions_per_partition)
+
+
+def x86_native_function_shard_partition_index(function_identity, partition_count):
+    if partition_count < 1:
+        fail("compiler shard rejected code=invalid-partition-count")
+    return compiler_cache_short_text_hash(function_identity) % partition_count
+
+
+def x86_native_group_function_shards(index_text):
+    # Keep first-seen module order separately from lookup.  The prior
+    # list-only grouping implementation searched every existing module for
+    # every function record, turning a large self-hosted compiler's shard index
+    # into an O(functions * modules) interpreted hot loop.  This string-keyed
+    # index retains byte-for-byte record validation and deterministic order
+    # while making grouping linear in the function-shard inventory.
+    groups_by_module = {}
+    group_order = []
+    for line in split_inventory_text(index_text, "\n"):
+        fields = x86_native_function_shard_fields(line)
+        module_identity = fields[1]
+        if not (module_identity in groups_by_module):
+            groups_by_module[module_identity] = {"module_id": fields[0], "module_identity": module_identity, "cache_names": [], "objects": [], "symbols": [], "function_identities": [], "interface_digest": fields[6], "interface_dependency_text": fields[7]}
+            group_order = method_append(group_order, module_identity)
+        group = groups_by_module[module_identity]
+        group["cache_names"] = method_append(group["cache_names"], fields[2])
+        group["objects"] = method_append(group["objects"], fields[3])
+        group["symbols"] = method_append(group["symbols"], fields[4])
+        group["function_identities"] = method_append(group["function_identities"], fields[5])
+        if group["interface_digest"] != fields[6]:
+            fail("compiler shard rejected code=inconsistent-module-interface-digest;module=" + group["module_identity"])
+        if group["interface_dependency_text"] != fields[7]:
+            fail("compiler shard rejected code=inconsistent-module-interface-dependencies;module=" + group["module_identity"])
+        groups_by_module[module_identity] = group
+    return {"groups": groups_by_module, "order": group_order}
+
+
+def x86_native_compact_function_shards(target, shard_dir, cache_dir, cache_stats=False):
+    # Function objects remain the lowest-cost lowering and assembly cache
+    # boundary. Native final links, however, consume deterministic module
+    # objects. This avoids handing thousands of tiny files to the linker while
+    # retaining a precise cache input inventory for each module.
+    index_text = read_text_file(shard_dir + "/function-shards.list").strip()
+    nonmodule_text = read_text_file(shard_dir + "/nonmodule-objects.list")
+    write_text_file(shard_dir + "/objects.list", nonmodule_text)
+    if index_text == "":
+        return []
+    grouped = x86_native_group_function_shards(index_text)
+    groups_by_module = grouped["groups"]
+    group_order = grouped["order"]
+    module_objects = []
+    for module_identity in group_order:
+        group = groups_by_module[module_identity]
+        partition_count = x86_native_module_shard_partition_count(len(group["objects"]))
+        partition_index = 0
+        while partition_index < partition_count:
+            partition_cache_names = []
+            partition_objects = []
+            partition_symbols = []
+            function_idx = 0
+            while function_idx < len(group["objects"]):
+                selected_partition = x86_native_function_shard_partition_index(group["function_identities"][function_idx], partition_count)
+                if selected_partition == partition_index:
+                    partition_cache_names = method_append(partition_cache_names, group["cache_names"][function_idx])
+                    partition_objects = method_append(partition_objects, group["objects"][function_idx])
+                    partition_symbols = method_append(partition_symbols, group["symbols"][function_idx])
+                function_idx = function_idx + 1
+            if len(partition_objects) > 0:
+                # v3 adds a stable source-identity partition to the hardened
+                # v2 GNU-stack module contract. The exact unit inventory
+                # remains part of the verified cache identity.
+                module_fingerprint = "tyrion-x86-module-shard-v3\nmodule=" + group["module_identity"] + "\npartition-count=" + str(partition_count) + "\npartition-index=" + str(partition_index) + "\n"
+                for cache_name in partition_cache_names:
+                    module_fingerprint = module_fingerprint + "unit=" + cache_name + "\n"
+                module_id = "module-" + group["module_id"] + "-p" + str(partition_index + 1) + "of" + str(partition_count)
+                module_object_path = shard_dir + "/" + module_id + ".o"
+                combine_runtime_native_objects_cached(target, partition_objects, module_object_path, cache_dir, module_fingerprint, cache_stats, partition_symbols)
+                object_shard_write(object_shard_create(target, "module", module_id, str(compiler_cache_path_hash(module_fingerprint)), partition_symbols, group["interface_digest"], x86_native_interface_dependency_list(group["interface_dependency_text"])), module_object_path + ".tyobj")
+                append_text_file(shard_dir + "/objects.list", module_object_path + "\n")
+                module_objects = method_append(module_objects, module_object_path)
+            partition_index = partition_index + 1
+    return module_objects
+
+
+def x86_native_shard_root_symbols(source):
+    lines = split_inventory_text(source, "\n")
+    result = []
+    line_idx = 0
+    while line_idx < len(lines):
+        line = lines[line_idx]
+        if len(line) > 1 and line[len(line) - 1] == ":":
+            symbol = line[0:len(line) - 1].strip()
+            if not symbol.startswith(".L"):
+                result = method_append(result, symbol)
+        line_idx = line_idx + 1
+    return result
+
+
+def x86_native_export_shard_root_symbols(source):
+    # The root object owns the native runtime and process-state storage.  They
+    # were deliberately local when everything lived in one .s file; make the
+    # stable runtime ABI visible only for the diagnostic object-shard path.
+    lines = split_inventory_text(source, "\n")
+    result = ""
+    line_idx = 0
+    while line_idx < len(lines):
+        line = lines[line_idx]
+        if len(line) > 1 and line[len(line) - 1] == ":":
+            symbol = line[0:len(line) - 1].strip()
+            # GNU assembler's .L labels are intentionally object-local.  All
+            # remaining root labels are part of the root object's linkable
+            # surface, including the selected native runtime helpers.
+            if not symbol.startswith(".L"):
+                result = result + ".globl " + symbol + "\n"
+        result = result + line + "\n"
+        line_idx = line_idx + 1
+    return result
 
 def emit_linux_x86_64_native_v2_module_asm_into(out, module, cache_dir="", cache_context="", cache_stats=False):
-    module = verify_native_ir_v2(module)
+    return emit_linux_x86_64_native_v2_verified_module_asm_into(out, verify_native_ir_v2(module), cache_dir, cache_context, cache_stats)
+
+
+def emit_linux_x86_64_native_v2_verified_module_asm_into(out, module, cache_dir="", cache_context="", cache_stats=False):
     out = emit_linux_x86_64_native_v2_header_asm_into(out)
     function_idx = 0
     while function_idx < len(module["functions"]):
@@ -25395,7 +25719,10 @@ def emit_linux_x86_64_native_v2_module_asm_into(out, module, cache_dir="", cache
 
 
 def emit_linux_x86_64_native_module_asm_into(out, module):
-    module = verify_native_ir_v1(module)
+    return emit_linux_x86_64_native_verified_module_asm_into(out, verify_native_ir_v1(module))
+
+
+def emit_linux_x86_64_native_verified_module_asm_into(out, module):
     extensions = []
     if "extensions" in module:
         extensions = module["extensions"]
@@ -25784,8 +26111,206 @@ def x86_native_stream_components(module, stream_operations, primitive_manifest):
     application_components = []
     if native_ir_v2_has_text(module["components"], "exceptions"):
         application_components = ["exceptions"]
-    stream_plan = {"aggregate_core": module["ownership_manifest"] == "direct-owned-aggregate", "application": {"components": application_components}}
+    stream_plan = {"aggregate_core": module["ownership_manifest"] == "direct-owned-aggregate", "application": {"components": application_components}, "application_components": application_components}
     return native_direct_components_from_functions(stream_plan, [operation_function], primitive_manifest)
+
+
+def x86_native_verify_streamed_module(module):
+    # Per-function IR has already been structurally verified before its object
+    # is emitted.  This is deliberately the final-module counterpart: it
+    # validates every cross-unit contract without walking each function's IR
+    # a second time after all staged units have completed.
+    if module["contract"] != "tyrion-native-ir-v2":
+        fail("native-ir rejected code=contract-version")
+    if module["target_independent_abi_version"] != 2:
+        fail("native-ir rejected code=abi-version")
+    if not module["streaming_verified"]:
+        fail("native-ir rejected code=stream-module-not-verified")
+    if len(module["functions"]) == 0:
+        fail("native-ir rejected code=no-functions")
+    if not native_ir_v2_has_text(module["components"], "scalar-core"):
+        fail("native-ir rejected code=missing-component;component=scalar-core")
+    component_names = {}
+    component_idx = 0
+    while component_idx < len(module["components"]):
+        component = module["components"][component_idx]
+        if component in component_names:
+            fail("native-ir rejected code=duplicate-component;component=" + component)
+        component_names[component] = True
+        component_idx = component_idx + 1
+    extension_idx = 0
+    while extension_idx < len(module["extensions"]):
+        extension = module["extensions"][extension_idx]
+        if extension["id"] != extension_idx:
+            fail("native-ir rejected code=noncanonical-extension-id")
+        builtin = static_extension_builtin(extension["name"])
+        if builtin["present"]:
+            if extension["call_symbol"] != builtin["call_symbol"]:
+                fail("native-ir rejected code=invalid-extension-symbol;name=" + str(extension["name"]) + ";symbol=" + str(extension["call_symbol"]))
+        else:
+            if static_extension_identifier_valid(extension["name"]) != True:
+                fail("native-ir rejected code=invalid-extension-name;name=" + str(extension["name"]) + ";symbol=" + str(extension["call_symbol"]))
+            if static_extension_identifier_valid(extension["call_symbol"]) != True:
+                fail("native-ir rejected code=invalid-extension-symbol;name=" + str(extension["name"]) + ";symbol=" + str(extension["call_symbol"]))
+        extension_idx = extension_idx + 1
+    if "exception_abi" in module:
+        if module["exception_abi"] != "caller-owned-slot-status-v1":
+            fail("native-ir rejected code=exception-abi")
+    if "generator_abi" in module:
+        if module["generator_abi"] != "owned-state-resume-status-v1":
+            fail("native-ir rejected code=generator-abi")
+    expected_stream_primitives = x86_native_stream_primitive_manifest(module["stream_primitive_ids"])
+    if not native_ir_v2_text_lists_equal(module["stream_primitive_implementations"], expected_stream_primitives["implementations"]):
+        fail("native-ir rejected code=primitive-implementation-manifest")
+    if not native_ir_v2_text_lists_equal(module["stream_primitive_capabilities"], expected_stream_primitives["capabilities"]):
+        fail("native-ir rejected code=primitive-capability-manifest")
+    if not native_ir_v2_text_lists_equal(module["primitive_implementations"], module["stream_primitive_implementations"]):
+        fail("native-ir rejected code=primitive-implementation-manifest")
+    if not native_ir_v2_text_lists_equal(module["primitive_capabilities"], module["stream_primitive_capabilities"]):
+        fail("native-ir rejected code=primitive-capability-manifest")
+    stream_plan = {"aggregate_core": module["ownership_manifest"] == "direct-owned-aggregate", "application": {"components": []}, "application_components": []}
+    if "exception_abi" in module:
+        stream_plan["application_components"] = ["exceptions"]
+    operation_function = {"operation_inventory": module["stream_operation_inventory"], "blocks": []}
+    stream_primitive_manifest = {"implementations": module["stream_primitive_implementations"], "capabilities": module["stream_primitive_capabilities"]}
+    operation_functions = [operation_function]
+    expected_components = native_direct_components_from_functions(stream_plan, operation_functions, stream_primitive_manifest)
+    if not native_ir_v2_text_lists_equal(module["components"], expected_components):
+        fail("native-ir rejected code=component-manifest")
+    if "exception_abi" in module and not native_ir_v2_has_text(module["components"], "exceptions"):
+        fail("native-ir rejected code=missing-component;component=exceptions")
+    if "generator_abi" in module and not native_ir_v2_has_text(module["components"], "generators"):
+        fail("native-ir rejected code=missing-component;component=generators")
+    root_manifest = module["root_manifest"]
+    if root_manifest["contract"] != "tyrion-native-direct-roots-v1":
+        fail("native-ir rejected code=root-manifest-contract")
+    if root_manifest["target_backend"] == "":
+        fail("native-ir rejected code=root-manifest-target")
+    if not native_ir_v2_text_lists_equal(root_manifest["entry_roots"], ["main"]):
+        fail("native-ir rejected code=root-manifest-entry-roots")
+    if not native_ir_v2_text_lists_equal(root_manifest["primitive_roots"], module["primitive_implementations"]):
+        fail("native-ir rejected code=root-manifest-primitive-roots")
+    if not native_ir_v2_text_lists_equal(root_manifest["runtime_roots"], module["components"]):
+        fail("native-ir rejected code=root-manifest-runtime-roots")
+    address_taken_names = {}
+    root_idx = 0
+    while root_idx < len(root_manifest["address_taken_roots"]):
+        root_name = root_manifest["address_taken_roots"][root_idx]
+        if root_name in address_taken_names:
+            fail("native-ir rejected code=root-manifest-address-taken-duplicate;name=" + root_name)
+        address_taken_names[root_name] = True
+        root_idx = root_idx + 1
+    constant_idx = 0
+    while constant_idx < len(module["constants"]):
+        constant = module["constants"][constant_idx]
+        if constant["id"] != constant_idx:
+            fail("native-ir rejected code=noncanonical-constant-id")
+        if constant["kind"] != "bytes" and constant["kind"] != "string":
+            fail("native-ir rejected code=unknown-constant-kind;index=" + str(constant_idx))
+        if constant["length"] != len(constant["value"]):
+            fail("native-ir rejected code=constant-length;index=" + str(constant_idx))
+        constant_idx = constant_idx + 1
+    external_names = {}
+    external_idx = 0
+    while external_idx < len(module["externals"]):
+        external = module["externals"][external_idx]
+        if external["name"] == "":
+            fail("native-ir rejected code=empty-external-name")
+        if external["name"] in external_names:
+            fail("native-ir rejected code=duplicate-external-name;name=" + external["name"])
+        external_names[external["name"]] = True
+        external_idx = external_idx + 1
+    global_idx = 0
+    while global_idx < len(module["globals"]):
+        global_value = module["globals"][global_idx]
+        if global_value["id"] != global_idx:
+            fail("native-ir rejected code=noncanonical-global-id")
+        if module["production_direct"] and global_value["kind"] == "static_program":
+            fail("native-ir rejected code=direct-static-program")
+        if global_value["kind"] != "value_slot":
+            fail("native-ir rejected code=unknown-global-kind;index=" + str(global_idx))
+        global_idx = global_idx + 1
+    attribute_names = {}
+    attribute_idx = 0
+    while attribute_idx < len(module["attribute_names"]):
+        attribute_name = module["attribute_names"][attribute_idx]
+        if attribute_name == "":
+            fail("native-ir rejected code=empty-attribute-name")
+        if attribute_name in attribute_names:
+            fail("native-ir rejected code=duplicate-attribute-name;name=" + attribute_name)
+        attribute_names[attribute_name] = True
+        attribute_idx = attribute_idx + 1
+    function_names = {}
+    stream_operation_names = {}
+    stream_operation_idx = 0
+    while stream_operation_idx < len(module["stream_operation_inventory"]):
+        stream_operation_names[module["stream_operation_inventory"][stream_operation_idx]] = True
+        stream_operation_idx = stream_operation_idx + 1
+    function_operation_names = {}
+    function_idx = 0
+    while function_idx < len(module["functions"]):
+        function = module["functions"][function_idx]
+        if function["id"] != function_idx:
+            fail("native-ir rejected code=noncanonical-function-id")
+        if function["name"] == "":
+            fail("native-ir rejected code=empty-function-name")
+        if function["name"] in function_names:
+            fail("native-ir rejected code=duplicate-function-name;name=" + function["name"])
+        if not function["stream_verified"]:
+            fail("native-ir rejected code=stream-function-not-verified;function=" + function["name"])
+        function_names[function["name"]] = function
+        operation_idx = 0
+        while operation_idx < len(function["operation_inventory"]):
+            operation = function["operation_inventory"][operation_idx]
+            if not (operation in stream_operation_names):
+                fail("native-ir rejected code=stream-operation-missing;operation=" + operation + ";function=" + function["name"])
+            function_operation_names[operation] = True
+            operation_idx = operation_idx + 1
+        if "address_taken" in function and function["address_taken"] and not (function["name"] in address_taken_names):
+            fail("native-ir rejected code=root-manifest-address-taken-missing;name=" + function["name"])
+        function_idx = function_idx + 1
+    stream_operation_idx = 0
+    while stream_operation_idx < len(module["stream_operation_inventory"]):
+        operation = module["stream_operation_inventory"][stream_operation_idx]
+        if not (operation in function_operation_names):
+            fail("native-ir rejected code=stream-operation-orphan;operation=" + operation)
+        stream_operation_idx = stream_operation_idx + 1
+    root_idx = 0
+    while root_idx < len(root_manifest["address_taken_roots"]):
+        root_name = root_manifest["address_taken_roots"][root_idx]
+        if not (root_name in function_names):
+            fail("native-ir rejected code=function-not-found;name=" + root_name)
+        root_function = function_names[root_name]
+        # Methods are address-taken through their class descriptors just like
+        # lambdas and named functions are through callable values.
+        if not ("callable_kind" in root_function) or (root_function["callable_kind"] != "lambda" and root_function["callable_kind"] != "function" and root_function["callable_kind"] != "method"):
+            fail("native-ir rejected code=root-manifest-address-taken-kind;name=" + root_name)
+        if not ("address_taken" in root_function) or not root_function["address_taken"]:
+            fail("native-ir rejected code=root-manifest-address-taken-metadata;name=" + root_name)
+        root_idx = root_idx + 1
+    class_idx = 0
+    while class_idx < len(module["class_descriptors"]):
+        descriptor = module["class_descriptors"][class_idx]
+        if descriptor["id"] != class_idx + 1 or descriptor["name"] == "":
+            fail("native-ir rejected code=noncanonical-class-descriptor")
+        prior_class = 0
+        while prior_class < class_idx:
+            if module["class_descriptors"][prior_class]["name"] == descriptor["name"]:
+                fail("native-ir rejected code=duplicate-class-name;name=" + descriptor["name"])
+            prior_class = prior_class + 1
+        method_names = {}
+        method_idx = 0
+        while method_idx < len(descriptor["methods"]):
+            method = descriptor["methods"][method_idx]
+            target = native_ir_v2_function_by_id(module, method["function_id"])
+            if target["name"] != method["symbol"] or target["callable_kind"] != "method" or target["class_id"] != descriptor["id"] or target["method_name"] != method["name"] or target["source_arity"] != method["arity"]:
+                fail("native-ir rejected code=class-method-descriptor;class=" + descriptor["name"] + ";method=" + method["name"])
+            if method["name"] in method_names:
+                fail("native-ir rejected code=duplicate-class-method;class=" + descriptor["name"] + ";method=" + method["name"])
+            method_names[method["name"]] = True
+            method_idx = method_idx + 1
+        class_idx = class_idx + 1
+    return module
 
 
 def x86_native_stream_append_unique_primitive_id(primitive_ids, primitive_id):
@@ -25823,7 +26348,7 @@ def x86_native_stream_primitive_manifest(primitive_ids):
 
 def x86_native_function_with_stream_metadata(function, function_operations, function_primitive_ids, function_primitives):
     published = {"id": function["id"], "name": function["name"], "visibility": function["visibility"], "parameters": function["parameters"], "result_type": function["result_type"], "entry_block": function["entry_block"], "frame": function["frame"], "blocks": function["blocks"], "effects": function["effects"], "ownership": function["ownership"], "operation_inventory": function_operations, "primitive_ids": function_primitive_ids, "primitive_implementations": function_primitives["implementations"], "primitive_capabilities": function_primitives["capabilities"]}
-    for field in ["source_name", "source_arity", "callable_kind", "address_taken", "capture_count", "class_id", "method_name", "module_path", "module_fingerprint", "is_generator_constructor"]:
+    for field in ["source_name", "source_arity", "callable_kind", "address_taken", "capture_count", "class_id", "method_name", "module_path", "module_fingerprint", "consumed_interface_digest", "consumed_interface_dependencies", "is_generator_constructor"]:
         if field in function:
             published[field] = function[field]
     if "local_constants" in function:
@@ -25831,8 +26356,24 @@ def x86_native_function_with_stream_metadata(function, function_operations, func
     return published
 
 
+def x86_native_lowering_linkage_declarations(plan):
+    # A lowering-unit cache needs the stable ABI address of every possible
+    # callee, not descriptive source metadata such as parameter arity. Arity
+    # and defaults belong to module interface fingerprints, so keeping them
+    # in this whole-program token needlessly invalidated unrelated modules.
+    declarations = [{"id": 0, "symbol": "main", "callable_kind": "main", "class_id": 0, "method_name": "", "generator": False}]
+    function_idx = 0
+    while function_idx < len(plan["functions"]):
+        function = plan["functions"][function_idx]
+        declarations = method_append(declarations, {"id": function["id"], "symbol": function["symbol"], "callable_kind": function["callable_kind"], "class_id": function["class_id"], "method_name": function["method_name"], "generator": function["is_generator"]})
+        if function["is_generator"]:
+            declarations = method_append(declarations, {"id": function["resume_id"], "symbol": function["resume_symbol"], "callable_kind": "generator-resume", "class_id": function["class_id"], "method_name": function["method_name"], "generator": False})
+        function_idx = function_idx + 1
+    return declarations
+
+
 def x86_native_lowering_layout_identity(plan, cache_context):
-    layout = {"contract": "tyrion-x86-lowering-layout-v1", "target": plan["target"], "declarations": native_direct_stream_declarations(plan), "classes": plan["classes"], "attribute_names": plan["attribute_names"], "global_names": plan["global_names"], "root_manifest": plan["root_manifest"]}
+    layout = {"contract": "tyrion-x86-lowering-layout-v2", "target": plan["target"], "declarations": x86_native_lowering_linkage_declarations(plan), "classes": plan["classes"], "attribute_names": plan["attribute_names"], "global_names": plan["global_names"], "root_manifest": plan["root_manifest"]}
     return cache_context + "\n" + __tyrion_native_cache_encode(layout)
 
 
@@ -25840,20 +26381,24 @@ def x86_native_lowering_layout_token(plan, cache_dir, cache_context):
     if cache_dir == "":
         return ""
     identity = x86_native_lowering_layout_identity(plan, cache_context)
-    token = str(len(identity)) + "-" + str(compiler_cache_path_hash(identity)) + "-" + str(compiler_cache_short_text_hash(identity))
+    # The lowering layout identity is a whole-program record. Its cache
+    # payload checks the full identity, so keep token creation bounded.
+    token = str(len(identity)) + "-" + str(compiler_cache_path_hash(identity)) + "-" + str(compiler_cache_bounded_text_hash(identity))
     cache_path = cache_dir + "/" + token + ".lowerlayout"
-    try:
-        cached = __tyrion_native_cache_decode(read_text_file(cache_path))
-        if cached["contract"] == "tyrion-x86-lowering-layout-v1" and cached["identity"] == identity:
-            return token
-        return ""
-    except:
-        record = {"contract": "tyrion-x86-lowering-layout-v1", "identity": identity}
-        temporary_path = cache_path + ".tmp"
-        write_text_file(temporary_path, __tyrion_native_cache_encode(record))
-        if not __tyrion_run_tool("mv", [temporary_path, cache_path])["ok"]:
-            fail("compiler cache rejected code=publish-failed;path=" + cache_path)
-        return token
+    if compiler_optional_file_exists(cache_path):
+        try:
+            cached = __tyrion_native_cache_decode(read_text_file(cache_path))
+            if cached["contract"] == "tyrion-x86-lowering-layout-v2" and cached["identity"] == identity:
+                return token
+            return ""
+        except:
+            cached = None
+    record = {"contract": "tyrion-x86-lowering-layout-v2", "identity": identity}
+    temporary_path = cache_path + ".tmp"
+    write_text_file(temporary_path, __tyrion_native_cache_encode(record))
+    if not __tyrion_run_tool("mv", [temporary_path, cache_path])["ok"]:
+        fail("compiler cache rejected code=publish-failed;path=" + cache_path)
+    return token
 
 
 def x86_native_root_module_fingerprint(plan):
@@ -25874,12 +26419,43 @@ def x86_native_root_module_path(plan):
     return fingerprints[len(fingerprints) - 1]["path"]
 
 
+def x86_native_root_interface_digest(plan):
+    fingerprints = []
+    if "module_fingerprints" in plan["program"]:
+        fingerprints = plan["program"]["module_fingerprints"]
+    if len(fingerprints) == 0:
+        return ""
+    if "interface_digest" in fingerprints[len(fingerprints) - 1]:
+        return fingerprints[len(fingerprints) - 1]["interface_digest"]
+    return ""
+
+
+def x86_native_root_interface_dependencies(plan):
+    fingerprints = []
+    if "module_fingerprints" in plan["program"]:
+        fingerprints = plan["program"]["module_fingerprints"]
+    if len(fingerprints) == 0:
+        return []
+    if "interface_dependencies" in fingerprints[len(fingerprints) - 1]:
+        return fingerprints[len(fingerprints) - 1]["interface_dependencies"]
+    return []
+
+
 def x86_native_lowering_unit_fingerprint(layout_token, unit_kind, function_id, source_name, module_fingerprint):
-    return "tyrion-x86-lowering-unit-v2\nverifier=tyrion-native-ir-v2-slot-rows\nlayout=" + layout_token + "\nkind=" + unit_kind + "\nid=" + str(function_id) + "\nsource=" + source_name + "\nmodule=" + module_fingerprint
+    # The bounded filename token deliberately samples the beginning and end
+    # of this record. Keep the per-unit identity at the beginning: the module
+    # fingerprint and layout can both be large whole-program records, whereas
+    # kind/id/source uniquely select the unit being lowered. The cache record
+    # still retains this entire string and compares it byte-for-byte on load.
+    return "tyrion-x86-lowering-unit-v3\nkind=" + unit_kind + "\nid=" + str(function_id) + "\nsource=" + source_name + "\nverifier=tyrion-native-ir-v2-slot-rows\nmodule=" + module_fingerprint + "\nlayout=" + layout_token
 
 
 def x86_native_lowering_unit_cache_path(cache_dir, fingerprint):
-    cache_name = str(compiler_cache_path_hash(fingerprint)) + "-" + str(compiler_cache_short_text_hash(fingerprint))
+    # A lowering fingerprint can contain a large module record. Do not run the
+    # complete-text helper here: generated-cache loads verify the exact
+    # fingerprint, so bounded filename sampling is sufficient and collision
+    # safe.
+    cache_name = str(compiler_cache_path_hash(fingerprint)) + "-" + str(compiler_cache_bounded_text_hash(fingerprint))
     return cache_dir + "/" + cache_name + ".lowercache"
 
 
@@ -25887,17 +26463,63 @@ def x86_native_lowering_unit_load(cache_dir, fingerprint, cache_stats=False):
     if cache_dir == "" or fingerprint == "":
         return None
     cache_path = x86_native_lowering_unit_cache_path(cache_dir, fingerprint)
-    try:
-        cached = __tyrion_native_cache_decode(read_text_file(cache_path))
-        if cached["contract"] == "tyrion-x86-lowering-unit-v2" and cached["fingerprint"] == fingerprint:
-            unit = cached["unit"]
-            if "verified" in unit and unit["verified"] == True:
-                generated_asm_cache_note(cache_dir, "lower-hit", cache_stats)
-                return unit
-    except:
-        cached = None
+    if compiler_optional_file_exists(cache_path):
+        try:
+            cached = __tyrion_native_cache_decode(read_text_file(cache_path))
+            if cached["contract"] == "tyrion-x86-lowering-unit-v3" and cached["fingerprint"] == fingerprint:
+                unit = cached["unit"]
+                if "verified" in unit and unit["verified"] == True:
+                    generated_asm_cache_note(cache_dir, "lower-hit", cache_stats)
+                    return unit
+        except:
+            cached = None
     generated_asm_cache_note(cache_dir, "lower-miss", cache_stats)
     return None
+
+
+def x86_native_lowering_stat_digest(value):
+    return str(len(value)) + "-" + str(compiler_cache_path_hash(value)) + "-" + str(compiler_cache_bounded_text_hash(value))
+
+
+def x86_native_lowering_stat_identity(unit_kind, module_path, definition_path, source_name):
+    return "tyrion-x86-lowering-stat-unit-v1\nkind=" + unit_kind + "\nmodule=" + module_path + "\ndefinition=" + definition_path + "\nsource=" + source_name
+
+
+def x86_native_lowering_stat_note(cache_dir, cache_stats, unit_kind, module_path, definition_path, source_name, layout_token, implementation_fingerprint, interface_digest, hit):
+    # Cache misses used to be opaque `lower-miss` counters. Persist a compact
+    # previous identity only while cache stats are requested, then classify
+    # every unit as new, implementation-changed, consumed-interface-changed,
+    # layout-changed, or a missing/corrupt cache record. The full lowering
+    # cache continues to compare its exact fingerprint independently.
+    if cache_dir == "" or not cache_stats:
+        return
+    identity = x86_native_lowering_stat_identity(unit_kind, module_path, definition_path, source_name)
+    identity_token = x86_native_lowering_stat_digest(identity)
+    record_path = cache_dir + "/" + identity_token + ".lowerstat"
+    implementation_digest = x86_native_lowering_stat_digest(implementation_fingerprint)
+    reason = "cache-hit"
+    if not hit:
+        reason = "new-unit"
+        if compiler_optional_file_exists(record_path):
+            try:
+                previous = __tyrion_native_cache_decode(read_text_file(record_path))
+                if previous["contract"] == "tyrion-x86-lowering-stat-v1" and previous["identity"] == identity:
+                    if previous["layout_token"] != layout_token:
+                        reason = "lowering-layout-changed"
+                    elif previous["interface_digest"] != interface_digest:
+                        reason = "consumed-interface-changed"
+                    elif previous["implementation_digest"] != implementation_digest:
+                        reason = "implementation-changed"
+                    else:
+                        reason = "cache-record-missing-or-corrupt"
+            except:
+                previous = none
+    record = {"contract": "tyrion-x86-lowering-stat-v1", "identity": identity, "layout_token": layout_token, "implementation_digest": implementation_digest, "interface_digest": interface_digest}
+    temporary_path = record_path + ".tmp"
+    write_text_file(temporary_path, __tyrion_native_cache_encode(record))
+    if not __tyrion_run_tool("mv", [temporary_path, record_path])["ok"]:
+        fail("compiler cache rejected code=publish-failed;path=" + record_path)
+    generated_asm_cache_note(cache_dir, "lower-detail;unit=" + source_name + ";kind=" + unit_kind + ";result=" + reason, cache_stats)
 
 
 def x86_native_lowering_unit_store(cache_dir, fingerprint, unit):
@@ -25905,7 +26527,7 @@ def x86_native_lowering_unit_store(cache_dir, fingerprint, unit):
         return
     cache_path = x86_native_lowering_unit_cache_path(cache_dir, fingerprint)
     temporary_path = cache_path + ".tmp"
-    record = {"contract": "tyrion-x86-lowering-unit-v2", "fingerprint": fingerprint, "unit": unit}
+    record = {"contract": "tyrion-x86-lowering-unit-v3", "fingerprint": fingerprint, "unit": unit}
     write_text_file(temporary_path, __tyrion_native_cache_encode(record))
     if not __tyrion_run_tool("mv", [temporary_path, cache_path])["ok"]:
         fail("compiler cache rejected code=publish-failed;path=" + cache_path)
@@ -25915,7 +26537,7 @@ def x86_native_lowering_unit(function, operation_inventory, primitive_ids):
     return {"verified": True, "function": function, "operation_inventory": operation_inventory, "primitive_ids": primitive_ids}
 
 
-def x86_native_stream_verify_emit_function(out, module, function, function_operations, function_primitive_ids, constant_pool, cache_dir="", cache_context="", cache_stats=False, verify_function=True, trusted_fingerprint=""):
+def x86_native_stream_verify_emit_function(out, module, function, function_operations, function_primitive_ids, constant_pool, cache_dir="", cache_context="", cache_stats=False, verify_function=True, trusted_fingerprint="", shard_dir=""):
     function_primitives = x86_native_stream_primitive_manifest(function_primitive_ids)
     function = x86_native_function_with_stream_metadata(function, function_operations, function_primitive_ids, function_primitives)
     primitive_idx = 0
@@ -25975,11 +26597,41 @@ def x86_native_stream_verify_emit_function(out, module, function, function_opera
     functions = module["functions"]
     functions[function["id"]] = declaration
     module["functions"] = functions
-    out = x86_native_emit_cached_function(out, function, cache_dir, cache_context, cache_stats, trusted_fingerprint)
+    out = x86_native_emit_cached_function(out, function, cache_dir, cache_context, cache_stats, trusted_fingerprint, shard_dir)
     return {"out": out, "module": module}
 
 
-def emit_linux_x86_64_direct_plan_asm_into(out, plan, cache_dir="", cache_context="", cache_stats=False):
+def x86_native_stream_initialize_module(module):
+    # Keep direct-native record mutation behind a parameter boundary. During a
+    # self-hosted successor build, assigning a factory-produced aggregate to a
+    # local and immediately indexing it crosses the lowerer's conservative
+    # definite-assignment boundary. A parameter has one unambiguous initialized
+    # frame slot and preserves the same module identity and mutation semantics.
+    module["streaming_verified"] = True
+    module["constant_count"] = 0
+    return module
+
+
+def x86_native_stream_finalize_module(module, stream_operations, stream_primitive_ids, stream_primitive_implementations, stream_primitive_capabilities):
+    module["streaming_verified"] = True
+    module["stream_operation_inventory"] = stream_operations
+    module["stream_primitive_ids"] = stream_primitive_ids
+    module["stream_primitive_implementations"] = stream_primitive_implementations
+    module["stream_primitive_capabilities"] = stream_primitive_capabilities
+    return module
+
+
+def x86_native_stream_final_module_from_plan(plan, primitive_manifest, stream_operations, stream_primitive_ids, stream_primitive_implementations, stream_primitive_capabilities):
+    # The function-emission loops are deliberately allowed to release their
+    # temporary aggregates.  Older self-hosted lowerers merge that loop state
+    # conservatively and can subsequently regard a factory-result local as
+    # unreadable, even though its value is still live.  `plan` is a parameter
+    # and therefore an initialized frame slot in every generation; keep the
+    # streaming module there until the final module image is assembled.
+    return x86_native_stream_finalize_module(native_direct_streamed_module_from_parts(plan, plan["streaming_module"]["functions"], primitive_manifest, stream_operations), stream_operations, stream_primitive_ids, stream_primitive_implementations, stream_primitive_capabilities)
+
+
+def emit_linux_x86_64_direct_plan_asm_into(out, plan, cache_dir="", cache_context="", cache_stats=False, shard_dir="", include_header=True):
     if plan["contract"] != "tyrion-native-direct-plan-v1":
         fail("direct-native lowering rejected code=plan-contract")
     full_symbol_index = native_direct_reachability_index(plan["functions"], plan["classes"])
@@ -25988,10 +26640,14 @@ def emit_linux_x86_64_direct_plan_asm_into(out, plan, cache_dir="", cache_contex
     constant_pool = native_direct_constant_pool_create()
     primitive_manifest = {"implementations": [], "capabilities": []}
     declarations = native_direct_stream_declarations(plan)
-    module = native_direct_module_from_parts(plan, declarations, [], primitive_manifest)
-    module["streaming_verified"] = True
-    module["constant_count"] = 0
-    out = emit_linux_x86_64_native_v2_header_asm_into(out)
+    plan["streaming_module"] = x86_native_stream_initialize_module(native_direct_module_from_parts(plan, declarations, [], primitive_manifest))
+    # Preserve the streamed module through the long function loops using the
+    # caller-owned plan record.  See x86_native_stream_final_module_from_plan.
+    # The ordinary assembly lane owns one complete translation unit. The
+    # object lane writes its process/program metadata into a separate object,
+    # so its runtime root intentionally starts at the tail/runtime section.
+    if include_header:
+        out = emit_linux_x86_64_native_v2_header_asm_into(out)
     lowering_layout_token = x86_native_lowering_layout_token(plan, cache_dir, cache_context)
 
     main_module_fingerprint = x86_native_root_module_fingerprint(plan)
@@ -26000,6 +26656,7 @@ def emit_linux_x86_64_direct_plan_asm_into(out, plan, cache_dir="", cache_contex
         main_lowering_fingerprint = x86_native_lowering_unit_fingerprint(lowering_layout_token, "main", 0, "main", main_module_fingerprint)
     main_lowering_unit = x86_native_lowering_unit_load(cache_dir, main_lowering_fingerprint, cache_stats)
     main_lowering_miss = main_lowering_unit == None
+    x86_native_lowering_stat_note(cache_dir, cache_stats, "main", x86_native_root_module_path(plan), "program-root", "main", lowering_layout_token, main_module_fingerprint, x86_native_root_interface_digest(plan), not main_lowering_miss)
     if main_lowering_miss:
         state = native_direct_function_state(plan, function_plan_store, symbol_index, constant_pool, primitive_manifest, False)
         state = native_direct_lower_statements(state, plan["executable_items"], "program")
@@ -26021,15 +26678,28 @@ def emit_linux_x86_64_direct_plan_asm_into(out, plan, cache_dir="", cache_contex
         function["local_constants"] = main_constant_lists[0]
         main_lowering_unit = x86_native_lowering_unit(function, state["operation_inventory"], state["primitive_ids"])
     function = main_lowering_unit["function"]
-    emitted = x86_native_stream_verify_emit_function(out, module, function, main_lowering_unit["operation_inventory"], main_lowering_unit["primitive_ids"], constant_pool, cache_dir, cache_context, cache_stats, main_lowering_miss, main_lowering_fingerprint)
+    function["consumed_interface_digest"] = x86_native_root_interface_digest(plan)
+    function["consumed_interface_dependencies"] = x86_native_root_interface_dependencies(plan)
+    emitted = x86_native_stream_verify_emit_function(out, plan["streaming_module"], function, main_lowering_unit["operation_inventory"], main_lowering_unit["primitive_ids"], constant_pool, cache_dir, cache_context, cache_stats, main_lowering_miss, main_lowering_fingerprint, shard_dir)
     out = emitted["out"]
-    module = emitted["module"]
+    # The streamed verifier returns an updated module record.  A nested-record
+    # argument is copied by older self-hosted evaluators, so retain that return
+    # in the parameter-owned plan after every emitted unit.  Otherwise the
+    # final root tail sees an empty operation inventory and omits its runtime
+    # helpers from the object link.
+    plan["streaming_module"] = emitted["module"]
     if main_lowering_miss:
         x86_native_lowering_unit_store(cache_dir, main_lowering_fingerprint, main_lowering_unit)
     state = none
     function = none
     emitted = none
     main_lowering_unit = none
+    # No later stage needs the original top-level statement graph: the main
+    # shard is now materialized and module verification uses its streamed
+    # declaration. Drop the companion source-index list as well, rather than
+    # retaining the root AST until every function shard has been emitted.
+    plan["executable_items"] = []
+    plan["executable_source_indices"] = []
 
     function_idx = 0
     while function_idx < len(plan["functions"]):
@@ -26039,6 +26709,7 @@ def emit_linux_x86_64_direct_plan_asm_into(out, plan, cache_dir="", cache_contex
             lowering_fingerprint = x86_native_lowering_unit_fingerprint(lowering_layout_token, "function", function_plan["id"], function_plan["source_name"], function_plan["module_fingerprint"])
         lowering_unit = x86_native_lowering_unit_load(cache_dir, lowering_fingerprint, cache_stats)
         lowering_miss = lowering_unit == None
+        x86_native_lowering_stat_note(cache_dir, cache_stats, "function", function_plan["module_path"], function_plan["definition_path"], function_plan["source_name"], lowering_layout_token, function_plan["module_fingerprint"], function_plan["consumed_interface_digest"], not lowering_miss)
         function_constant_pool = native_direct_constant_pool_create()
         if lowering_miss:
             function_primitive_manifest = {"implementations": [], "capabilities": []}
@@ -26052,19 +26723,34 @@ def emit_linux_x86_64_direct_plan_asm_into(out, plan, cache_dir="", cache_contex
             function = finished["function"]
             function["module_path"] = function_plan["module_path"]
             function["module_fingerprint"] = function_plan["module_fingerprint"]
+            function["consumed_interface_digest"] = function_plan["consumed_interface_digest"]
+            function["consumed_interface_dependencies"] = function_plan["consumed_interface_dependencies"]
             function_constant_lists = __tyrion_native_ast_builder_finish(function_constant_pool["constants"])
             function["local_constants"] = function_constant_lists[0]
             lowering_unit = x86_native_lowering_unit(function, finished["state"]["operation_inventory"], finished["state"]["primitive_ids"])
         function = lowering_unit["function"]
-        emitted = x86_native_stream_verify_emit_function(out, module, function, lowering_unit["operation_inventory"], lowering_unit["primitive_ids"], function_constant_pool, cache_dir, cache_context, cache_stats, lowering_miss, lowering_fingerprint)
+        function["consumed_interface_digest"] = function_plan["consumed_interface_digest"]
+        function["consumed_interface_dependencies"] = function_plan["consumed_interface_dependencies"]
+        emitted = x86_native_stream_verify_emit_function(out, plan["streaming_module"], function, lowering_unit["operation_inventory"], lowering_unit["primitive_ids"], function_constant_pool, cache_dir, cache_context, cache_stats, lowering_miss, lowering_fingerprint, shard_dir)
         out = emitted["out"]
-        module = emitted["module"]
+        plan["streaming_module"] = emitted["module"]
         if lowering_miss:
             x86_native_lowering_unit_store(cache_dir, lowering_fingerprint, lowering_unit)
         function_state = none
         finished = none
         emitted = none
         lowering_unit = none
+        # The plan's compact call table was created before this loop and all
+        # later root/module verification uses the streamed declarations, not a
+        # source function body. Keep a generator body until its paired resume
+        # entry has been lowered below; every other body can be released now.
+        # This matters for a cold self-host build: retaining thousands of
+        # already-emitted AST bodies otherwise grows RSS for no later use.
+        if not function_plan["is_generator"]:
+            function_plan["body"] = []
+            functions = plan["functions"]
+            functions[function_idx] = function_plan
+            plan["functions"] = functions
         function_idx = function_idx + 1
 
     function_idx = 0
@@ -26076,6 +26762,7 @@ def emit_linux_x86_64_direct_plan_asm_into(out, plan, cache_dir="", cache_contex
                 lowering_fingerprint = x86_native_lowering_unit_fingerprint(lowering_layout_token, "generator-resume", function_plan["resume_id"], function_plan["source_name"], function_plan["module_fingerprint"])
             lowering_unit = x86_native_lowering_unit_load(cache_dir, lowering_fingerprint, cache_stats)
             lowering_miss = lowering_unit == None
+            x86_native_lowering_stat_note(cache_dir, cache_stats, "generator-resume", function_plan["module_path"], function_plan["definition_path"] + ".resume", function_plan["source_name"], lowering_layout_token, function_plan["module_fingerprint"], function_plan["consumed_interface_digest"], not lowering_miss)
             resume_constant_pool = native_direct_constant_pool_create()
             if lowering_miss:
                 resume_primitive_manifest = {"implementations": [], "capabilities": []}
@@ -26086,49 +26773,64 @@ def emit_linux_x86_64_direct_plan_asm_into(out, plan, cache_dir="", cache_contex
                 function = finished["function"]
                 function["module_path"] = function_plan["module_path"]
                 function["module_fingerprint"] = function_plan["module_fingerprint"]
+                function["consumed_interface_digest"] = function_plan["consumed_interface_digest"]
+                function["consumed_interface_dependencies"] = function_plan["consumed_interface_dependencies"]
                 resume_constant_lists = __tyrion_native_ast_builder_finish(resume_constant_pool["constants"])
                 function["local_constants"] = resume_constant_lists[0]
                 lowering_unit = x86_native_lowering_unit(function, finished["state"]["operation_inventory"], finished["state"]["primitive_ids"])
             function = lowering_unit["function"]
-            emitted = x86_native_stream_verify_emit_function(out, module, function, lowering_unit["operation_inventory"], lowering_unit["primitive_ids"], resume_constant_pool, cache_dir, cache_context, cache_stats, lowering_miss, lowering_fingerprint)
+            function["consumed_interface_digest"] = function_plan["consumed_interface_digest"]
+            function["consumed_interface_dependencies"] = function_plan["consumed_interface_dependencies"]
+            emitted = x86_native_stream_verify_emit_function(out, plan["streaming_module"], function, lowering_unit["operation_inventory"], lowering_unit["primitive_ids"], resume_constant_pool, cache_dir, cache_context, cache_stats, lowering_miss, lowering_fingerprint, shard_dir)
             out = emitted["out"]
-            module = emitted["module"]
+            plan["streaming_module"] = emitted["module"]
             if lowering_miss:
                 x86_native_lowering_unit_store(cache_dir, lowering_fingerprint, lowering_unit)
             resume_state = none
             finished = none
             emitted = none
             lowering_unit = none
+            # The generator constructor and its resume entry are now both
+            # materialized (or restored). The source body has no further
+            # consumer in the streaming x86 path.
+            function_plan["body"] = []
+            functions = plan["functions"]
+            functions[function_idx] = function_plan
+            plan["functions"] = functions
         function_idx = function_idx + 1
 
-    stream_operations = module["stream_operation_inventory"]
-    stream_primitive_ids = module["stream_primitive_ids"]
+    stream_operations = plan["streaming_module"]["stream_operation_inventory"]
+    stream_primitive_ids = plan["streaming_module"]["stream_primitive_ids"]
     primitive_manifest = x86_native_stream_primitive_manifest(stream_primitive_ids)
     stream_primitive_implementations = primitive_manifest["implementations"]
     stream_primitive_capabilities = primitive_manifest["capabilities"]
-    module = native_direct_module_from_parts(plan, module["functions"], [], primitive_manifest)
-    module["streaming_verified"] = True
-    module["stream_operation_inventory"] = stream_operations
-    module["stream_primitive_ids"] = stream_primitive_ids
-    module["stream_primitive_implementations"] = stream_primitive_implementations
-    module["stream_primitive_capabilities"] = stream_primitive_capabilities
-    operation_function = {"operation_inventory": stream_operations, "blocks": []}
-    module["components"] = native_direct_components_from_functions(plan, [operation_function], primitive_manifest)
-    root_manifest = module["root_manifest"]
-    root_manifest["runtime_roots"] = module["components"]
-    module["root_manifest"] = root_manifest
-    module = verify_native_ir_v2(module)
-    return emit_linux_x86_64_native_v2_tail_asm_into(out, module)
+    return x86_native_emit_cached_tail(out, x86_native_verify_streamed_module(x86_native_stream_final_module_from_plan(plan, primitive_manifest, stream_operations, stream_primitive_ids, stream_primitive_implementations, stream_primitive_capabilities)), cache_dir, cache_context, cache_stats)
 
 
-def emit_linux_x86_64_direct_program_with_extension_config_asm_into(out, program, extensions, dynamic_extension_mode, dynamic_extension_root, cache_dir="", cache_context="", cache_stats=False):
+def emit_linux_x86_64_direct_program_with_extension_config_asm_into(out, program, extensions, dynamic_extension_mode, dynamic_extension_root, cache_dir="", cache_context="", cache_stats=False, shard_dir="", include_header=True):
     target = target_spec("linux", "x86_64")
     application = native_direct_analyze(program, target)
     plan = native_direct_plan(program, application, target)
+    # The streaming emitter lowers from `functions` and `executable_items`.
+    # After native_direct_plan has made those units, keeping the original full
+    # program AST only retains a duplicate graph of declarations and bodies.
+    # Preserve the small module-fingerprint table needed for root-unit cache
+    # identity, then release that duplicate before cold compiler emission.
+    program_identity = {"module_fingerprints": []}
+    if "module_fingerprints" in plan["program"]:
+        program_identity["module_fingerprints"] = plan["program"]["module_fingerprints"]
+    plan["program"] = program_identity
+    # `native_direct_plan` copied the compact analysis result and every
+    # lowering input it needs.  The source argument and analysis envelope both
+    # still point at the original program graph; dropping them makes the
+    # per-main/per-function releases above effective instead of retaining the
+    # same AST through a second owner for the entire cold build.
+    application = none
+    program = none
     plan["extensions"] = extensions
     plan["dynamic_extension_mode"] = dynamic_extension_mode
     plan["dynamic_extension_root"] = dynamic_extension_root
-    return emit_linux_x86_64_direct_plan_asm_into(out, plan, cache_dir, cache_context, cache_stats)
+    return emit_linux_x86_64_direct_plan_asm_into(out, plan, cache_dir, cache_context, cache_stats, shard_dir, include_header)
 
 def emit_linux_x86_64_direct_program_asm_into(out, program, extensions):
     return emit_linux_x86_64_direct_program_with_extension_config_asm_into(out, program, extensions, "off", "")

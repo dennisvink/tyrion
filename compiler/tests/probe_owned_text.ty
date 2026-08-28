@@ -1,0 +1,11 @@
+def owned_text(text):
+    result = ""
+    index = 0
+    while index < len(text):
+        result = result + text[index]
+        index = index + 1
+    return result
+
+value = owned_text("toolchain")
+print(value)
+print(value == "toolchain")

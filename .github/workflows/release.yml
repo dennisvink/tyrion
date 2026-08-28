@@ -63,10 +63,10 @@ jobs:
           mkdir -p build dist
 
           ./bootstrap/build/tyrionc \
-            --exec-call "$GITHUB_WORKSPACE/tyrionc.ty" \
-            build_native \
+            --selfhost-cli "$GITHUB_WORKSPACE/tyrionc.ty" \
+            --build \
             "$GITHUB_WORKSPACE/tyrionc.ty" \
-            "$GITHUB_WORKSPACE/build/c1"
+            --out "$GITHUB_WORKSPACE/build/c1"
 
           ./build/c1 \
             --build "$GITHUB_WORKSPACE/tyrionc.ty" \

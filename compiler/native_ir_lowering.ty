@@ -79,11 +79,41 @@ def native_direct_analyze(program, target):
     return {"contract": "tyrion-native-direct-analysis-v1", "target": target, "program": program, "application": application}
 
 
+def native_direct_owned_name(name):
+    # Names outlive the parser/cache records that originally supplied them.
+    # Native source images may preserve an AST substring as a borrowed view, so
+    # do not retain that view in lowering state, slot indexes, or dataflow
+    # facts.  This deliberately materializes a bounded NUL-terminated value.
+    result = ""
+    index = 0
+    while index < len(name):
+        result = result + name[index]
+        index = index + 1
+    return result
+
+
+def native_direct_name_equal(left, right):
+    # This is a transient comparison only. Every lowering table that retains
+    # a name materializes it at its insertion boundary, so copying either
+    # operand here would turn the compiler's hot lookup paths into repeated
+    # allocation and character-by-character concatenation without extending
+    # any lifetime. Borrowed parser views are safe to read for this call.
+    if len(left) != len(right):
+        return False
+    index = 0
+    while index < len(left):
+        if left[index] != right[index]:
+            return False
+        index = index + 1
+    return True
+
+
 def native_direct_append_local(locals, name):
+    name = native_direct_owned_name(name)
     found = False
     local_idx = 0
     while local_idx < len(locals):
-        if locals[local_idx]["name"] == name:
+        if native_direct_name_equal(locals[local_idx]["name"], name):
             found = True
         local_idx = local_idx + 1
     if not found:
@@ -494,6 +524,21 @@ def native_direct_module_path_for_index(program, index):
             range_idx = range_idx + 1
     return ""
 
+
+def native_direct_function_cache_record(program, module_path, definition_path, fallback):
+    # Module identity remains the conservative fallback for legacy callers,
+    # lambdas without a module-owned definition path, and old parsed-program
+    # cache records. Ordinary top-level functions and methods use their exact
+    # body identity plus the module interface fingerprint instead.
+    if "function_fingerprints" in program:
+        idx = 0
+        while idx < len(program["function_fingerprints"]):
+            candidate = program["function_fingerprints"][idx]
+            if candidate["path"] == module_path and candidate["definition_path"] == definition_path:
+                return {"fingerprint": candidate["fingerprint"], "interface_digest": candidate["interface_digest"], "interface_dependencies": candidate["interface_dependencies"]}
+            idx = idx + 1
+    return {"fingerprint": fallback, "interface_digest": "", "interface_dependencies": []}
+
 def native_direct_function_plans(program):
     plans = __tyrion_native_ast_builder_create()
     function_names = native_direct_declared_callable_names(program)
@@ -772,6 +817,11 @@ def native_direct_root_manifest(target):
     primitive_roots = ["read_text_file", "write_text_file", "run_tool", "run_tool_capture", "writer_open", "writer_append", "writer_close", "writer_bytes", "writer_set_backend", "writer_is_x86", "ast_builder_create", "ast_builder_len", "ast_builder_append", "ast_builder_finish", "ast_builder_get", "token_builder_count", "token_builder_append", "token_builder_field"]
     runtime_roots = ["scalar-core", "aggregate-core", "file", "process", "writer", "ast-builder"]
     return {"contract": "tyrion-native-direct-roots-v1", "target_backend": target["backend"], "target_specialized": True, "report_unhandled_exception": True, "entry_roots": ["main"], "address_taken_roots": [], "primitive_roots": primitive_roots, "runtime_roots": runtime_roots}
+
+
+def native_direct_application_components(application):
+    application_record = application["application"]
+    return application_record["components"]
 
 
 def native_direct_collect_reachable_expression(ids, expression, path, scope_id, reachability):
@@ -1375,9 +1425,10 @@ def native_direct_max_function_arity(function_plans):
 
 
 def native_direct_append_unique_name(names, name):
+    name = native_direct_owned_name(name)
     idx = 0
     while idx < len(names):
-        if names[idx] == name:
+        if native_direct_name_equal(names[idx], name):
             return names
         idx = idx + 1
     return method_append(names, name)
@@ -1394,7 +1445,7 @@ def native_direct_collect_aggregate_names(items, names):
             elif value["kind"] == "var":
                 source_idx = 0
                 while source_idx < len(names):
-                    if names[source_idx] == value["value"]:
+                    if native_direct_name_equal(names[source_idx], value["value"]):
                         names = native_direct_append_unique_name(names, statement["target"]["value"])
                     source_idx = source_idx + 1
         elif statement["kind"] == "if":
@@ -2019,10 +2070,15 @@ def native_direct_plan(program, application, target):
                 if module_fingerprint["path"] == function_plan["module_path"]:
                     function_plan["module_fingerprint"] = module_fingerprint["fingerprint"]
                 module_fingerprint_idx = module_fingerprint_idx + 1
+        function_cache_record = native_direct_function_cache_record(program, function_plan["module_path"], function_plan["definition_path"], function_plan["module_fingerprint"])
+        function_plan["module_fingerprint"] = function_cache_record["fingerprint"]
+        function_plan["consumed_interface_digest"] = function_cache_record["interface_digest"]
+        function_plan["consumed_interface_dependencies"] = function_cache_record["interface_dependencies"]
         __tyrion_native_ast_builder_append(planned_functions, 0, function_plan)
         function_idx = function_idx + 1
     planned_function_lists = __tyrion_native_ast_builder_finish(planned_functions)
-    return {"contract": "tyrion-native-direct-plan-v1", "target": target, "program": program, "executable_items": executable_items, "executable_source_indices": executable_source_indices, "application": application["application"], "extensions": [], "dynamic_extension_mode": "off", "dynamic_extension_root": "", "root_manifest": root_manifest, "locals": locals, "global_names": global_names, "loop_control_slot_count": loop_control_slot_count, "exception_control_slot_count": exception_control_slot_count, "value_temporary_slot_count": value_temporary_slot_count, "aggregate_names": aggregate_names, "string_names": string_names, "aggregate_core": aggregate_core, "functions": planned_function_lists[0], "classes": class_plans, "attribute_names": attribute_names, "max_function_arity": max_function_arity, "declared_function_count": len(all_function_plans)}
+    application_components = native_direct_application_components(application)
+    return {"contract": "tyrion-native-direct-plan-v1", "target": target, "program": program, "executable_items": executable_items, "executable_source_indices": executable_source_indices, "application": application["application"], "application_components": application_components, "extensions": [], "dynamic_extension_mode": "off", "dynamic_extension_root": "", "root_manifest": root_manifest, "locals": locals, "global_names": global_names, "loop_control_slot_count": loop_control_slot_count, "exception_control_slot_count": exception_control_slot_count, "value_temporary_slot_count": value_temporary_slot_count, "aggregate_names": aggregate_names, "string_names": string_names, "aggregate_core": aggregate_core, "functions": planned_function_lists[0], "classes": class_plans, "attribute_names": attribute_names, "max_function_arity": max_function_arity, "declared_function_count": len(all_function_plans)}
 
 
 def native_direct_constant_pool_create():
@@ -2324,6 +2380,7 @@ def native_direct_local_hash(name):
 
 
 def native_direct_local_index_append(state, name, slot, owned):
+    name = native_direct_owned_name(name)
     index = state["local_index"]
     bucket = native_direct_local_hash(name)
     __tyrion_native_ast_builder_append(index["entries"], 0, {"name": name, "slot": slot, "owned": owned, "next": index["heads"][bucket]})
@@ -2346,11 +2403,12 @@ def native_direct_rebuild_local_index(state):
 
 
 def native_direct_local_entry(state, name):
+    name = native_direct_owned_name(name)
     bucket = native_direct_local_hash(name)
     cursor = state["local_index"]["heads"][bucket]
     while cursor > 0:
         entry = __tyrion_native_ast_builder_get(state["local_index"]["entries"], 0, cursor - 1)
-        if entry["name"] == name:
+        if native_direct_name_equal(entry["name"], name):
             return entry
         cursor = entry["next"]
     return {"name": "", "slot": -1, "owned": False, "next": 0}
@@ -2364,9 +2422,10 @@ def native_direct_local_slot(state, name):
 
 
 def native_direct_global_index(state, name):
+    name = native_direct_owned_name(name)
     idx = 0
     while idx < len(state["global_names"]):
-        if state["global_names"][idx] == name:
+        if native_direct_name_equal(state["global_names"][idx], name):
             return idx
         idx = idx + 1
     return -1
@@ -2389,22 +2448,25 @@ def native_direct_value_name_is_bound(state, name):
 
 
 def native_direct_name_in_list(names, name):
+    name = native_direct_owned_name(name)
     idx = 0
     while idx < len(names):
-        if names[idx] == name:
+        if native_direct_name_equal(names[idx], name):
             return True
         idx = idx + 1
     return False
 
 def native_direct_range_descriptor(state, name):
+    name = native_direct_owned_name(name)
     index = 0
     while index < len(state["range_names"]):
-        if state["range_names"][index] == name:
+        if native_direct_name_equal(state["range_names"][index], name):
             return state["range_descriptors"][index]
         index = index + 1
     return none
 
 def native_direct_record_range_assignment(state, name, expression):
+    name = native_direct_owned_name(name)
     if expression["kind"] != "call" or expression["callee"]["kind"] != "var" or expression["callee"]["value"] != "range":
         return state
     args = []
@@ -2425,7 +2487,7 @@ def native_direct_record_range_assignment(state, name, expression):
         return state
     index = 0
     while index < len(state["range_names"]):
-        if state["range_names"][index] == name:
+        if native_direct_name_equal(state["range_names"][index], name):
             range_descriptors = state["range_descriptors"]
             range_descriptors[index] = descriptor
             state["range_descriptors"] = range_descriptors
@@ -2437,15 +2499,17 @@ def native_direct_record_range_assignment(state, name, expression):
 
 
 def native_direct_mark_local_initialized(state, name):
+    name = native_direct_owned_name(name)
     if not native_direct_name_in_list(state["initialized_locals"], name):
         state["initialized_locals"] = method_append(state["initialized_locals"], name)
     return state
 
 
 def native_direct_known_bool(state, name):
+    name = native_direct_owned_name(name)
     idx = 0
     while idx < len(state["known_bools"]):
-        if state["known_bools"][idx]["name"] == name:
+        if native_direct_name_equal(state["known_bools"][idx]["name"], name):
             if state["known_bools"][idx]["value"]:
                 return 1
             return 0
@@ -2454,10 +2518,11 @@ def native_direct_known_bool(state, name):
 
 
 def native_direct_set_known_bool(state, name, known, value):
+    name = native_direct_owned_name(name)
     updated = []
     idx = 0
     while idx < len(state["known_bools"]):
-        if state["known_bools"][idx]["name"] != name:
+        if not native_direct_name_equal(state["known_bools"][idx]["name"], name):
             updated = method_append(updated, state["known_bools"][idx])
         idx = idx + 1
     if known:
@@ -3917,9 +3982,13 @@ def native_direct_closure_targets(state):
     while idx < __tyrion_native_ast_builder_len(state["function_plan_store"], 0):
         plan = __tyrion_native_ast_builder_get(state["function_plan_store"], 0, idx)
         # The verifier requires the complete stable candidate table for
-        # dynamic calls.  Body pruning remains independent: these are only
-        # compact metadata entries, while unreachable bodies are still stubs.
-        targets = method_append(targets, {"id": plan["id"], "name": plan["symbol"], "arity": len(plan["parameters"])})
+        # dynamic closure calls. Methods have their own bound-method ABI and
+        # are entered through class descriptors, so including them here would
+        # advertise an invalid closure-dispatch target.
+        if plan["callable_kind"] == "lambda" or plan["callable_kind"] == "function":
+            # Body pruning remains independent: these are only compact
+            # metadata entries, while unreachable bodies are still stubs.
+            targets = method_append(targets, {"id": plan["id"], "name": plan["symbol"], "arity": len(plan["parameters"])})
         idx = idx + 1
     return targets
 
@@ -6449,7 +6518,10 @@ def native_direct_components_from_functions(plan, functions, primitive_manifest)
         components = native_direct_append_component(components, "print")
     if native_direct_functions_have_operation(functions, "direct_object_new") or native_direct_functions_have_operation(functions, "direct_object_class_id") or native_direct_functions_have_operation(functions, "direct_object_attr_get") or native_direct_functions_have_operation(functions, "direct_object_attr_set"):
         components = native_direct_append_component(components, "objects")
-    if native_direct_name_in_list(plan["application"]["components"], "exceptions"):
+    # The direct plan publishes this one-level field so the C bootstrap never
+    # has to carry a nested AST-backed record selection through a call.
+    application_components = plan["application_components"]
+    if native_direct_name_in_list(application_components, "exceptions"):
         components = native_direct_append_component(components, "exceptions")
     if native_direct_functions_have_operation(functions, "direct_generator_new") or native_direct_functions_have_operation(functions, "direct_generator_saved_slot") or native_direct_functions_have_operation(functions, "direct_generator_state") or native_direct_functions_have_operation(functions, "direct_generator_set_state") or native_direct_functions_have_operation(functions, "direct_generator_finish"):
         components = native_direct_append_component(components, "generators")
@@ -6486,22 +6558,19 @@ def native_direct_components_from_functions(plan, functions, primitive_manifest)
     return components
 
 
-def native_direct_module_from_parts(plan, functions, constants, primitive_manifest):
-    externals = []
-    externals.append({"name": "write", "parameters": ["i32", "ptr", "usize"], "result_type": "isize", "effect": "io"})
-    components = native_direct_components_from_functions(plan, functions, primitive_manifest)
-    root_manifest = plan["root_manifest"]
-    root_manifest["primitive_roots"] = primitive_manifest["implementations"]
-    root_manifest["runtime_roots"] = components
-    plan["root_manifest"] = root_manifest
-    module = native_ir_v2_module(functions, constants, externals, components, True)
+def native_direct_module_apply_metadata(module, plan, primitive_manifest, streamed):
+    # `module` is a function parameter, so direct lowering gives it one
+    # unambiguous initialized frame slot.  Keep metadata mutation here rather
+    # than rebinding a local aggregate and then immediately indexing it in the
+    # builder; the latter previously crossed a self-hosted definite-assignment
+    # boundary during C2 -> C3 generation.
     module["global_slots"] = plan["global_names"]
     module["root_manifest"] = plan["root_manifest"]
     module["class_descriptors"] = plan["classes"]
     module["attribute_names"] = plan["attribute_names"]
-    if native_direct_name_in_list(plan["application"]["components"], "exceptions"):
+    if native_direct_name_in_list(plan["application_components"], "exceptions"):
         module["exception_abi"] = "caller-owned-slot-status-v1"
-    if native_direct_name_in_list(plan["application"]["components"], "generator"):
+    if native_direct_name_in_list(plan["application_components"], "generator"):
         module["generator_abi"] = "owned-state-resume-status-v1"
     if plan["aggregate_core"]:
         module["ownership_manifest"] = "direct-owned-aggregate"
@@ -6510,13 +6579,47 @@ def native_direct_module_from_parts(plan, functions, constants, primitive_manife
     module["extensions"] = plan["extensions"]
     module["dynamic_extension_mode"] = plan["dynamic_extension_mode"]
     module["dynamic_extension_root"] = plan["dynamic_extension_root"]
+    if streamed:
+        module["streaming_verified"] = True
+        module["constant_count"] = 0
     return module
+
+
+def native_direct_module_from_parts(plan, functions, constants, primitive_manifest):
+    externals = []
+    externals.append({"name": "write", "parameters": ["i32", "ptr", "usize"], "result_type": "isize", "effect": "io"})
+    components = native_direct_components_from_functions(plan, functions, primitive_manifest)
+    root_manifest = plan["root_manifest"]
+    root_manifest["primitive_roots"] = primitive_manifest["implementations"]
+    root_manifest["runtime_roots"] = components
+    plan["root_manifest"] = root_manifest
+    return native_direct_module_apply_metadata(native_ir_v2_module(functions, constants, externals, components, True), plan, primitive_manifest, False)
+
+
+def native_direct_streamed_module_from_parts(plan, functions, primitive_manifest, stream_operations):
+    # A streamed x86 module has already published the complete operation
+    # inventory while its function units were verified and emitted.  Do not
+    # rescan every declaration merely to rediscover the runtime components;
+    # that would reintroduce a whole-module pass at the end of a staged build.
+    externals = []
+    externals.append({"name": "write", "parameters": ["i32", "ptr", "usize"], "result_type": "isize", "effect": "io"})
+    operation_function = {"operation_inventory": stream_operations, "blocks": []}
+    components = native_direct_components_from_functions(plan, [operation_function], primitive_manifest)
+    root_manifest = plan["root_manifest"]
+    root_manifest["primitive_roots"] = primitive_manifest["implementations"]
+    root_manifest["runtime_roots"] = components
+    plan["root_manifest"] = root_manifest
+    return native_direct_module_apply_metadata(native_ir_v2_module(functions, [], externals, components, True), plan, primitive_manifest, True)
 
 
 def native_direct_stream_declaration(function_id, name, visibility, parameters, result_type):
     function = native_ir_v2_function(function_id, name, visibility, parameters, result_type, native_ir_v2_frame(0, 0, 0, 0), [])
     function["operation_inventory"] = []
-    function["stream_verified"] = False
+    # Streamed declarations are placeholders for callables that are verified
+    # individually before emission.  The final streamed-module verifier only
+    # runs after that emission pass, so carry the final contract on the stable
+    # declaration instead of relying on a later nested-record mutation.
+    function["stream_verified"] = True
     function["primitive_implementations"] = []
     function["primitive_capabilities"] = []
     return function
@@ -6676,8 +6779,10 @@ def native_direct_source_module(source, target):
     return native_direct_module_from_program(program, target, [])
 
 
-def native_direct_source_summary(source):
-    module = native_direct_source_module(source, target_spec("linux", "x86_64"))
+def native_direct_source_summary_from_module(module):
+    # Keep record indexing in a helper with an initialized parameter.  A
+    # self-hosted lowerer must not have to prove a factory result remains
+    # assigned after the call that produced it.
     function = module["functions"][0]
     instruction_count = 0
     block_idx = 0
@@ -6687,8 +6792,11 @@ def native_direct_source_summary(source):
     return module["contract"] + ":functions=" + str(len(module["functions"])) + ":blocks=" + str(len(function["blocks"])) + ":constants=" + str(len(module["constants"])) + ":instructions=" + str(instruction_count)
 
 
-def native_direct_source_component_summary(source):
-    module = native_direct_source_module(source, target_spec("linux", "x86_64"))
+def native_direct_source_summary(source):
+    return native_direct_source_summary_from_module(native_direct_source_module(source, target_spec("linux", "x86_64")))
+
+
+def native_direct_source_component_summary_from_module(module):
     text = ""
     component_idx = 0
     while component_idx < len(module["components"]):
@@ -6699,8 +6807,11 @@ def native_direct_source_component_summary(source):
     return "tyrion-native-direct-components-v1:count=" + str(len(module["components"])) + ":components=" + text
 
 
-def native_direct_path_summary(path):
-    module = native_direct_path_module(path, target_spec("linux", "x86_64"), [])
+def native_direct_source_component_summary(source):
+    return native_direct_source_component_summary_from_module(native_direct_source_module(source, target_spec("linux", "x86_64")))
+
+
+def native_direct_path_summary_from_module(module):
     instruction_count = 0
     block_count = 0
     function_idx = 0
@@ -6721,6 +6832,10 @@ def native_direct_path_summary(path):
         primitive_text = primitive_text + primitive_implementations[primitive_idx]
         primitive_idx = primitive_idx + 1
     return module["contract"] + ":functions=" + str(len(module["functions"])) + ":blocks=" + str(block_count) + ":constants=" + str(len(module["constants"])) + ":instructions=" + str(instruction_count) + ":primitives=" + primitive_text
+
+
+def native_direct_path_summary(path):
+    return native_direct_path_summary_from_module(native_direct_path_module(path, target_spec("linux", "x86_64"), []))
 
 
 def native_direct_module_primitive_implementations(module):
@@ -6765,8 +6880,7 @@ def native_direct_module_primitive_capabilities(module):
     return capabilities
 
 
-def native_direct_path_primitive_summary(path):
-    module = native_direct_path_module(path, target_spec("linux", "x86_64"), [])
+def native_direct_path_primitive_summary_from_module(module):
     implementations = native_direct_module_primitive_implementations(module)
     text = ""
     idx = 0
@@ -6776,6 +6890,10 @@ def native_direct_path_primitive_summary(path):
         text = text + implementations[idx]
         idx = idx + 1
     return "tyrion-native-direct-primitives-v1:count=" + str(len(implementations)) + ":implementations=" + text
+
+
+def native_direct_path_primitive_summary(path):
+    return native_direct_path_primitive_summary_from_module(native_direct_path_module(path, target_spec("linux", "x86_64"), []))
 
 
 def native_direct_path_plan_summary(path):
